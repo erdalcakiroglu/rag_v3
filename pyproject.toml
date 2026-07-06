@@ -1,0 +1,85 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ragintel"
+version = "0.1.0"
+description = "RAG v2 ingestion pipeline (FAZ 1) — config-first, PostgreSQL 17 + pgvector"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "RAG v2" }]
+
+# FAZ 1 / İP-0 çekirdek bağımlılıkları. 7b tablosu nitelikseldir; sürüm pinleme
+# İP-0'ın işidir → mevcut ortamda çözülen sürümlere pinlendi. Ağır bağımlılıklar
+# (docling, FlagEmbedding, torch...) İP-0'a EKLENMEZ; her İP kendi dilimine getirir.
+dependencies = [
+    "pydantic==2.12.5",
+    "pydantic-settings==2.14.2",   # docling ile hizalandı
+    "psycopg[binary]==3.3.2",
+    "psycopg-pool==3.3.0",
+    "pgvector==0.4.2",             # İP-8: vector tipi adaptörü + COPY binary
+
+    "structlog==26.1.0",
+    "opentelemetry-sdk==1.38.0",
+    "opentelemetry-exporter-otlp-proto-http==1.38.0",
+    "python-dotenv==1.2.1",
+    # İP-1: içerik-tabanlı tip tespiti. Windows'ta DLL'li fork, diğerlerinde
+    # python-magic + sistem libmagic.
+    "python-magic==0.4.27; platform_system != 'Windows'",
+    "python-magic-bin==0.4.14; platform_system == 'Windows'",
+    # İP-2: parse adaptörü. Docling birincil (pdf/docx, dahili OCR=rapidocr);
+    # pymupdf/python-docx yedek backend; xlsx=openpyxl, txt=charset-normalizer;
+    # dil tespiti=lingua.
+    "docling==2.108.0",
+    "pymupdf==1.26.7",
+    "python-docx==1.2.0",
+    "openpyxl==3.1.5",
+    "charset-normalizer==3.4.4",
+    "lingua-language-detector==2.2.0",
+    # İP-3: kırık encoding onarımı (cleaning).
+    "ftfy==6.3.1",
+    # İP-5: BGE-M3 tokenizer ile token sayımı (tiktoken YASAK). Yalnızca
+    # tokenizer (transformers/tokenizers); embedding modeli İP-7'de değil.
+    "transformers==4.57.3",
+    "tokenizers==0.22.1",
+    # İP-7 (ADR-012): embedding backend = remote Ollama HTTP. Tek yeni bağımlılık
+    # httpx; torch/FlagEmbedding EKLENMEZ (yerel model yüklenmez).
+    "httpx==0.28.1",
+    # Uyumluluk sabitleri: torch 2.3.1+cpu (docling üzerinden) numpy<2'ye
+    # derlenmiştir; opencv 4.10 numpy<2 uyumludur. Yeni sürümler numpy 2 çekip
+    # torch'u kırıyor — bu ikili birlikte pinlenmeli.
+    "numpy==1.26.4",
+    "opencv-python==4.10.0.84",
+    # FAZ 4 (ADR-001/003/010): agentic loop. langgraph ailesi numpy'a bağımlı
+    # DEĞİL — numpy 1.26/torch matrisi etkilenmez (bkz. docs/FAZ4_Bagimlilik_Cakisma_Raporu.md).
+    # litellm tiktoken'ı transitif çeker; yasak "ragintel/** içinde doğrudan import"
+    # olarak netleştirildi (İP-5) — guard testi tests/test_faz4_no_tiktoken_import.py.
+    "langgraph==1.2.7",
+    "langgraph-checkpoint-postgres==3.1.0",  # PostgresSaver (psycopg3)
+    "litellm==1.90.2",                        # LLM gateway (ADR-003)
+    "openai==2.44.0",                         # litellm >=2.20.0 gereği
+    # FAZ 7 öncü: servis katmanı (senkron /api/ask → FinalResponse) + UI.
+    "fastapi==0.128.0",
+    "uvicorn==0.40.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.0.2",
+]
+
+[project.scripts]
+ragintel = "ragintel.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["ragintel*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# slow (docling/torch) testleri varsayılan koşuda atlanır; çalıştırmak: pytest -m slow
+addopts = "-q -m 'not slow'"
+markers = [
+    "db: gerçek PostgreSQL bağlantısı gerektiren test",
+    "slow: ağır bağımlılık (docling/torch) — varsayılan koşuda atlanır",
+]

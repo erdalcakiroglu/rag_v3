@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ragintel — Doküman Asistanı</title>
+<style>
+  :root { --bg:#0f1419; --panel:#1a222c; --line:#2a3542; --txt:#e6edf3; --mut:#9fb0c0;
+          --acc:#4a9eff; --hi:#2ea043; --me:#d29922; --lo:#f85149; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:15px/1.55 -apple-system,Segoe UI,Roboto,sans-serif; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); font-weight:600; }
+  header small { color:var(--mut); font-weight:400; margin-left:8px; }
+  main { max-width:900px; margin:0 auto; padding:20px; }
+  .ask { display:flex; gap:8px; }
+  .ask input { flex:1; padding:12px 14px; background:var(--panel); border:1px solid var(--line);
+               border-radius:8px; color:var(--txt); font-size:15px; }
+  .ask button { padding:12px 20px; background:var(--acc); color:#fff; border:0; border-radius:8px;
+                font-weight:600; cursor:pointer; }
+  .ask button:disabled { opacity:.5; cursor:wait; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:18px; margin-top:18px; }
+  .badge { display:inline-block; padding:2px 10px; border-radius:20px; font-size:12px; font-weight:700; }
+  .b-high{background:rgba(46,160,67,.18);color:var(--hi)} .b-medium{background:rgba(210,153,34,.18);color:var(--me)}
+  .b-low{background:rgba(248,81,73,.18);color:var(--lo)}
+  .answer { margin:12px 0; white-space:pre-wrap; }
+  .answer code{background:#0d1117;padding:1px 5px;border-radius:4px}
+  h3 { font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:var(--mut); margin:16px 0 8px; }
+  .src { border-left:3px solid var(--acc); padding:6px 10px; margin:6px 0; cursor:pointer; border-radius:0 6px 6px 0;
+         background:#0d1117; }
+  .src:hover{background:#131c26} .src .q{display:none;color:var(--mut);font-style:italic;margin-top:6px}
+  .src.open .q{display:block}
+  .chips{display:flex;flex-wrap:wrap;gap:8px} .chip{background:#0d1117;border:1px solid var(--line);
+         border-radius:16px;padding:6px 12px;font-size:13px;cursor:pointer;color:var(--acc)}
+  .chip:hover{border-color:var(--acc)}
+  .fb{display:flex;gap:8px;align-items:center;margin-top:14px;color:var(--mut);font-size:13px}
+  .fb button{background:transparent;border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer;font-size:15px}
+  .fb button.on{border-color:var(--acc);background:rgba(74,158,255,.12)}
+  .meta{color:var(--mut);font-size:12px;margin-top:12px;border-top:1px solid var(--line);padding-top:8px}
+  .warn{background:rgba(210,153,34,.14);border:1px solid var(--me);color:var(--me);padding:8px 12px;border-radius:8px;margin-top:12px;font-size:13px}
+  .err{color:var(--lo)}
+</style>
+</head>
+<body>
+<header>ragintel <small>kurumsal doküman asistanı — FAZ 7 öncü</small></header>
+<main>
+  <form class="ask" id="askForm">
+    <input id="q" placeholder="Sorunuzu yazın… (ör. Karbon vergisini ilk uygulayan ülke hangisidir?)" autocomplete="off">
+    <button id="askBtn" type="submit">Sor</button>
+  </form>
+  <div id="out"></div>
+</main>
+<script>
+const out = document.getElementById('out'), qEl = document.getElementById('q'), btn = document.getElementById('askBtn');
+let sessionId = localStorage.getItem('ragintel_session') || null;
+
+function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function md(s){return esc(s).replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/`([^`]+)`/g,'<code>$1</code>');}
+
+document.getElementById('askForm').addEventListener('submit', e=>{ e.preventDefault(); ask(qEl.value); });
+
+async function ask(question){
+  question=(question||'').trim(); if(!question) return;
+  qEl.value=question; btn.disabled=true; btn.textContent='…';
+  out.innerHTML='<div class="card">Yanıt hazırlanıyor…</div>';
+  try{
+    const r = await fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({question, session_id:sessionId})});
+    if(!r.ok){ const t=await r.text(); out.innerHTML=`<div class="card err">Hata ${r.status}: ${esc(t)}</div>`; return; }
+    sessionId = r.headers.get('X-Session-Id') || sessionId;
+    if(sessionId) localStorage.setItem('ragintel_session', sessionId);
+    const injected = r.headers.get('X-Injection-Flagged')==='1';
+    render(await r.json(), injected);
+  }catch(err){ out.innerHTML=`<div class="card err">Ağ hatası: ${esc(String(err))}</div>`; }
+  finally{ btn.disabled=false; btn.textContent='Sor'; }
+}
+
+function render(resp, injected){
+  const c = resp.confidence||'low';
+  const label = {high:'yüksek güven',medium:'orta güven',low:'düşük güven'}[c]||c;
+  let h = `<div class="card"><span class="badge b-${c}">${label}</span>`;
+  if(injected) h += `<div class="warn">⚠ Soruda şüpheli kalıp işaretlendi (reddedilmedi; kayda geçti).</div>`;
+  h += `<div class="answer">${md(resp.answer)}</div>`;
+  if(resp.sources && resp.sources.length){
+    h += `<h3>Kaynaklar</h3>`;
+    resp.sources.forEach(s=>{
+      const loc = s.page!=null ? `s.${s.page}` : '';
+      h += `<div class="src" onclick="this.classList.toggle('open')"><b>[${s.n}]</b> ${esc(s.file_name)} ${loc}
+             ${s.section?('· '+esc(s.section)):''}<div class="q">“${esc(s.quote)}”</div></div>`;
+    });
+  } else {
+    h += `<div class="warn">Bu soru için kaynak gösterilemedi — yanıt dürüstçe "bulunamadı" olabilir.</div>`;
+  }
+  if(resp.followups && resp.followups.length){
+    h += `<h3>Devam soruları</h3><div class="chips">`;
+    resp.followups.forEach(f=> h += `<span class="chip" onclick="ask(${JSON.stringify(f).replace(/"/g,'&quot;')})">${esc(f)}</span>`);
+    h += `</div>`;
+  }
+  const tid = (resp.meta&&resp.meta.trace_id)||'';
+  h += `<div class="fb"><span>Bu yanıt yardımcı oldu mu?</span>
+        <button id="up" onclick="feedback(1,'${tid}',this)">👍</button>
+        <button id="down" onclick="feedback(-1,'${tid}',this)">👎</button><span id="fbmsg"></span></div>`;
+  const m = resp.meta||{};
+  h += `<div class="meta">tur: ${m.iterations} · token: ${m.tokens} · model: ${esc(m.model||'')} · trace: ${esc((tid||'').slice(0,12))}</div></div>`;
+  out.innerHTML = h;
+}
+
+async function feedback(rating, traceId, el){
+  document.querySelectorAll('.fb button').forEach(b=>b.classList.remove('on')); el.classList.add('on');
+  const msg=document.getElementById('fbmsg');
+  try{
+    const r=await fetch('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({session_id:sessionId,trace_id:traceId,rating})});
+    const j=await r.json();
+    msg.textContent = j.recorded ? ' — teşekkürler, kaydedildi' : ` — (${j.status})`;
+  }catch(e){ msg.textContent=' — gönderilemedi'; }
+}
+</script>
+</body>
+</html>

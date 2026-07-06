@@ -1,0 +1,33 @@
+# Ortam / sırlar (7d: .env asla repo'ya girmez)
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# Runtime storage + ham korpus (HASSAS: GGB sunucu envanteri, telifli PDF'ler —
+# repo'ya girmez; .env.example gibi şablonlar hariç)
+var/
+raw_files/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Yerel secret/kimlik notları ve Langfuse altyapı env (repo dışı)
+db_info.md
+docs/langfuse.env
+
+# Geçici smoke korpusu
+tmp/
+docs/Langfuse_Dokumani.md

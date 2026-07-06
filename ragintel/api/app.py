@@ -1,0 +1,97 @@
+"""FastAPI uygulaması — /api/ask, /api/feedback, /api/health + tek sayfa UI.
+
+Yanıt gövdesi Tasarim_FAZ4 §5 FinalResponse BİREBİR; session_id/injection
+durumu HTTP header'larda taşınır (gövde §5-saf kalır).
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi.responses import HTMLResponse, JSONResponse
+
+from .runtime import InputRejected, RagRuntime
+from .schemas import AskRequest, FeedbackRequest, FinalResponse
+
+_STATIC = Path(__file__).parent / "static"
+
+
+def build_default_runtime() -> RagRuntime:
+    """Üretim runtime'ı: DB + PostgresSaver + LiteLLM/Ollama gateway."""
+    from langgraph.checkpoint.postgres import PostgresSaver
+
+    from ..config.loader import load_config
+    from ..config.settings import DbSettings, LiteLLMSettings
+    from ..database import Database, make_db_reader
+    from ..llm.gateway import LiteLLMGateway
+
+    db = Database(DbSettings()).open()
+    cfg = load_config(db_reader=make_db_reader(db))
+    # Demo esnekliği: model/api_base OS env ile override edilebilir (LiteLLMSettings
+    # .env-only olduğundan api_base'i açıkça geçiriyoruz).
+    model = os.environ.get("RAGINTEL_AGENT_MODEL") or cfg.group("agent").model
+    api_base = os.environ.get("RAGINTEL_LLM_API_BASE") or LiteLLMSettings().api_base
+    req_timeout = float(os.environ.get("RAGINTEL_LLM_REQUEST_TIMEOUT") or LiteLLMSettings().request_timeout)
+    gateway = LiteLLMGateway(model=model, settings=LiteLLMSettings(api_base=api_base, request_timeout=req_timeout))
+    cm = PostgresSaver.from_conn_string(DbSettings().conninfo())
+    saver = cm.__enter__()
+    rt = RagRuntime(db=db, config=cfg, gateway=gateway, checkpointer=saver)
+    rt._cm, rt._db = cm, db  # shutdown için
+    return rt
+
+
+def create_app(runtime: RagRuntime | None = None) -> FastAPI:
+    app = FastAPI(title="ragintel", version="0.1", description="RAG v2 — FAZ 7 öncü servis")
+    state: dict = {"runtime": runtime}
+
+    @app.on_event("startup")
+    def _startup():
+        if state["runtime"] is None:
+            state["runtime"] = build_default_runtime()
+
+    @app.on_event("shutdown")
+    def _shutdown():
+        rt = state["runtime"]
+        cm = getattr(rt, "_cm", None)
+        if cm is not None:
+            try:
+                cm.__exit__(None, None, None)
+            except Exception:
+                pass
+
+    def rt() -> RagRuntime:
+        if state["runtime"] is None:
+            raise HTTPException(503, "runtime hazır değil")
+        return state["runtime"]
+
+    @app.get("/", response_class=HTMLResponse)
+    def index() -> str:
+        return (_STATIC / "index.html").read_text(encoding="utf-8")
+
+    @app.post("/api/ask")
+    def ask(req: AskRequest, response: Response, x_user_id: str | None = Header(default=None)):
+        try:
+            res = rt().ask(req.question, req.session_id, x_user_id)
+        except InputRejected as exc:
+            raise HTTPException(400, str(exc))
+        # §5 sözleşmesini doğrula/serialize et (drift olursa test yakalar).
+        final = FinalResponse.model_validate(res.final_response)
+        response.headers["X-Session-Id"] = res.session_id
+        response.headers["X-Injection-Flagged"] = "1" if res.injection_flagged else "0"
+        return JSONResponse(final.model_dump(), headers={
+            "X-Session-Id": res.session_id,
+            "X-Injection-Flagged": "1" if res.injection_flagged else "0",
+        })
+
+    @app.post("/api/feedback")
+    def feedback(req: FeedbackRequest):
+        return rt().feedback(session_id=req.session_id, trace_id=req.trace_id,
+                             rating=req.rating, comment=req.comment)
+
+    @app.get("/api/health")
+    def health():
+        return rt().health()
+
+    return app
