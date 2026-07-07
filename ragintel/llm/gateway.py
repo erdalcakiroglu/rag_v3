@@ -51,13 +51,17 @@ class LiteLLMGateway:
     def complete(self, *, messages: list[dict], tools: list[dict]) -> LLMResponse:
         import litellm
 
-        resp = litellm.completion(
-            model=f"{self.settings.provider}/{self.model}",
-            messages=messages,
-            tools=tools or None,
-            api_base=self.settings.api_base,
-            timeout=self.settings.request_timeout,
-        )
+        kwargs: dict = {
+            "model": f"{self.settings.provider}/{self.model}",
+            "messages": messages,
+            "tools": tools or None,
+            "api_base": self.settings.api_base,
+            "timeout": self.settings.request_timeout,
+        }
+        # Auth'lu OpenAI-compat uç (ör. Open WebUI/H200 /ollama/v1) → Bearer token.
+        if self.settings.api_key:
+            kwargs["api_key"] = self.settings.api_key
+        resp = litellm.completion(**kwargs)
         message = resp.choices[0].message
         tool_calls: list[ToolCall] = []
         for tc in message.tool_calls or []:

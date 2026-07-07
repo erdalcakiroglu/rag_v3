@@ -239,4 +239,5 @@ def test_bridge_fabricated_quote_is_flagged_through_real_context():
         coverage_threshold=0.7,
     )
     assert res["passed"] is False
-    assert f"fabricated_quote:{good_chunk_id}" in res["issues"]
+    # §4 faithful-paraphrase: bağlamda desteklenmeyen (uydurma) alıntı → unsupported_quote.
+    assert f"unsupported_quote:{good_chunk_id}" in res["issues"]

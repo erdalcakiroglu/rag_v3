@@ -8,10 +8,21 @@ nesnelerine coercion yapılmaz, böylece gateway'e doğrudan verilebilir. State
 
 from __future__ import annotations
 
-import operator
 from typing import Annotated, TypedDict
 
 from ..retrieval.types import ContextBuildResult, RetrievedChunk, UserContext
+
+
+def merge_messages(left: list | None, right: list | None) -> list:
+    """Mesaj kanalı reducer'ı — liste birleştirme + TUR SIFIRLAMA.
+
+    `right is None` bir SIFIRLAMA sinyalidir: yeni tur başında (prepare) agent
+    scratchpad'i temizlenir. Aksi halde `operator.add` gibi birleştirir. Sıfırlama
+    olmadan, kalıcı session (thread) altında önceki turun ham tool-call/tool-result
+    mesajları birikip prompt'u şişirir ve modeli zehirler (çok-turlu regresyon)."""
+    if right is None:
+        return []
+    return list(left or []) + list(right or [])
 
 
 class Citation(TypedDict):
@@ -39,9 +50,9 @@ class AgentState(TypedDict):
     query: str
     user_ctx: UserContext
     session_id: str
-    # çalışma alanı
-    messages: Annotated[list, operator.add]    # LiteLLM biçimli konuşma geçmişi
-    retrieved: list[RetrievedChunk]            # birikimli, dedup — TAM havuz (teşhis)
+    # çalışma alanı (TUR-YEREL: prepare her turda sıfırlar — çapraz-tur zehirlenme yok)
+    messages: Annotated[list, merge_messages]  # LiteLLM biçimli tur scratchpad'i
+    retrieved: list[RetrievedChunk]            # bu turda birikimli, dedup — TAM havuz (teşhis)
     context: ContextBuildResult | None         # context builder çıktısı; validate/compose GİRDİSİ
     pending_tool_calls: list[dict] | None      # agent → tools node arası bekleyen çağrılar
     # çıktı adayları

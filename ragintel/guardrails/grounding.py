@@ -6,9 +6,15 @@ LLM'in gerçekten gördüğü bağlam. Bütçeyle elenen chunk'lar bu evrende YO
 onlara verilen citation `citation_not_in_context` sayılır. Elenen chunk'lar dahil
 tüm retrieved havuzu yalnızca teşhis amaçlı span'de kalır.
 
+Quote geçerliliği (§4, faithful-paraphrase'e gevşetildi): quote ya cited chunk'ta
+BİREBİR geçer, ya da içerik-token'larının yeterli oranı TÜM BAĞLAMDA bulunur.
+Böylece model doğru bilgiyi kendi cümlesiyle ifade ettiğinde (parafraz/sentez)
+citation reddedilmez; ama bağlamda OLMAYAN bilgi (uydurma yıl/ülle vb.) düşük
+örtüşmeyle `unsupported_quote` olarak elenir → anti-halüsinasyon korunur.
+
 Coverage = geçerli citation'a bağlanan BENZERSİZ cümle / toplam cümle. Geçersiz
-(fabricated/not-in-context) citation'lar paya girmez; tek cümleye verilen çoklu
-citation o cümleyi bir kez sayar (şişme yok).
+citation'lar paya girmez; tek cümleye verilen çoklu citation o cümleyi bir kez
+sayar (şişme yok).
 """
 
 from __future__ import annotations
@@ -20,6 +26,7 @@ from ..retrieval.types import RetrievedChunk
 from ..text import normalize_for_quote
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+_WORD = re.compile(r"[^\W\d_]+|\d+", re.UNICODE)  # kelime VEYA sayı (noktalama hariç, Türkçe dahil)
 
 
 def _sentences(text: str | None) -> list[str]:
@@ -28,10 +35,45 @@ def _sentences(text: str | None) -> list[str]:
     return [part.strip() for part in _SENTENCE_SPLIT.split(text.strip()) if part.strip()]
 
 
-def _claim_covers_sentence(claim_norm: str, sentence_norm: str) -> bool:
+def _tokens(norm: str) -> list[str]:
+    """Noktalamadan arındırılmış tüm token'lar (küme/örtüşme kıyasları için)."""
+    return _WORD.findall(norm)
+
+
+def _content_tokens(norm: str) -> list[str]:
+    """İçerik-taşıyan token'lar: uzun kelimeler + sayılar (kısa bağlaç/edatları ele).
+    Türkçe stopword'lerin çoğu ≤3 harf; ayırt edici sinyal sayılar ve özel adlardır."""
+    return [w for w in _tokens(norm) if len(w) >= 4 or w.isdigit()]
+
+
+def _claim_covers_sentence(claim_norm: str, sentence_norm: str, overlap_threshold: float = 0.6) -> bool:
+    """Cümle bu claim tarafından kapsanıyor mu? Birebir/substring VEYA faithful-
+    paraphrase: claim'in İÇERİK-token'larının ≥ eşik oranı cümlede geçiyorsa
+    (claim'in öne sürdüğü olgular cümlede varsa) kapsanmış sayılır."""
     if not claim_norm or not sentence_norm:
         return False
-    return claim_norm == sentence_norm or claim_norm in sentence_norm or sentence_norm in claim_norm
+    if claim_norm == sentence_norm or claim_norm in sentence_norm or sentence_norm in claim_norm:
+        return True
+    ctok = _content_tokens(claim_norm)
+    if len(ctok) < 2:  # çok kısa claim → yalnızca substring (yukarıda düştü); şişme önlenir
+        return False
+    sset = set(_tokens(sentence_norm))
+    hit = sum(1 for w in ctok if w in sset)
+    return hit / len(ctok) >= overlap_threshold
+
+
+def _quote_supported(quote_norm: str, chunk_norm: str, context_tokens: set[str], overlap_threshold: float) -> bool:
+    """Quote geçerli mi? (1) cited chunk'ta birebir → evet; (2) içerik-token'ların
+    ≥ eşik oranı tüm bağlamda geçiyorsa (faithful paraphrase) → evet."""
+    if not quote_norm:
+        return True  # quote yok → claim-only citation; quote kısıtı uygulanmaz
+    if quote_norm in chunk_norm:
+        return True
+    qtok = _content_tokens(quote_norm)
+    if not qtok:  # içerik token'ı yok (çok kısa) → yalnızca birebir kabul (yukarıda düştü)
+        return False
+    hit = sum(1 for w in qtok if w in context_tokens)
+    return hit / len(qtok) >= overlap_threshold
 
 
 def validate_grounding(
@@ -40,10 +82,14 @@ def validate_grounding(
     citations: list[Citation],
     context_chunks: list[RetrievedChunk],
     coverage_threshold: float,
+    quote_overlap_threshold: float = 0.7,
 ) -> ValidationResult:
-    """`context_chunks`: LLM'in gördüğü bağlam (context builder'ın sakladıkları)."""
+    """`context_chunks`: LLM'in gördüğü bağlam (context builder'ın sakladıkları).
+    `quote_overlap_threshold`: faithful-paraphrase için içerik-token örtüşme eşiği."""
     issues: list[str] = []
     context_map = {int(chunk["chunk_id"]): chunk for chunk in context_chunks}
+    # Faithful-paraphrase kontrolü: quote'un içeriği TÜM bağlamda destekleniyor mu.
+    context_tokens = {tok for chunk in context_chunks for tok in _tokens(normalize_for_quote(chunk["text"]))}
     valid_claims: list[str] = []
 
     for citation in citations:
@@ -62,8 +108,8 @@ def validate_grounding(
             continue
         quote_norm = normalize_for_quote(str(citation.get("quote", "")))
         chunk_norm = normalize_for_quote(chunk["text"])
-        if quote_norm and quote_norm not in chunk_norm:
-            issues.append(f"fabricated_quote:{chunk_id}")
+        if not _quote_supported(quote_norm, chunk_norm, context_tokens, quote_overlap_threshold):
+            issues.append(f"unsupported_quote:{chunk_id}")
             continue
         # Yalnızca geçerli citation'ın bağlandığı cümle (claim) coverage'a girer.
         claim_norm = normalize_for_quote(str(citation.get("claim", "")))

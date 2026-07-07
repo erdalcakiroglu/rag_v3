@@ -184,8 +184,9 @@ class LiteLLMSettings(DotenvOnlySettings):
         extra="ignore",
     )
 
-    provider: str = "ollama_chat"   # litellm sağlayıcı öneki
+    provider: str = "ollama_chat"   # litellm sağlayıcı öneki (auth'lu OpenAI-compat için 'openai')
     api_base: str = "http://banasor.goldenglobalbank.com.tr:11434"
+    api_key: str = ""               # OpenAI-compat uç (ör. Open WebUI /ollama/v1) Bearer token'ı
     request_timeout: float = 120.0
 
 
@@ -349,6 +350,9 @@ class AgentConfig(BaseModel):
     timeout_sec: int = 60
     validation_coverage_threshold: float = 0.70
     confidence_high_coverage_threshold: float = 0.90
+    # §4 faithful-paraphrase: quote birebir değilse, içerik-token'larının bu oranı
+    # bağlamda geçmeli (halüsinasyonu eler, parafrazı kabul eder).
+    validation_quote_overlap_threshold: float = 0.70
     compose_followup_count: int = 2
     # FAZ 4: agent LLM'i (config-first). Dev'de CPU Ollama'daki küçük model;
     # H200 gelince ör. "qwen3.5:35b" — DB/ENV (RAGINTEL_AGENT_MODEL) ile değişir,

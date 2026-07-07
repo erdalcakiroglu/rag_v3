@@ -43,19 +43,34 @@ def test_validate_grounding_passes_on_valid_quote_and_coverage():
     assert res["coverage"] == 1.0
 
 
-def test_validate_grounding_flags_missing_chunk_and_fake_quote():
+def test_validate_grounding_flags_missing_chunk_and_unsupported_quote():
+    # Halüsinasyon: quote'un içeriği bağlamda YOK → düşük örtüşme → unsupported_quote.
     res = validate_grounding(
         draft_answer="Bir. İki.",
         citations=[
-            {"claim": "Bir.", "chunk_id": 10, "quote": "olmayan ifade"},
+            {"claim": "Bir.", "chunk_id": 10, "quote": "olmayan uydurma ifade"},
             {"claim": "İki.", "chunk_id": 99, "quote": "x"},
         ],
         context_chunks=[_chunk(10, "Karbon vergisi emisyonu fiyatlar.")],
         coverage_threshold=0.9,
     )
     assert res["passed"] is False
-    assert "fabricated_quote:10" in res["issues"]
+    assert "unsupported_quote:10" in res["issues"]
     assert "citation_not_in_context:99" in res["issues"]
+
+
+def test_validate_grounding_accepts_faithful_paraphrase():
+    # §4 gevşetme: quote birebir değil ama içeriği bağlamda geçiyor (parafraz) →
+    # kabul; answer cümlesi de claim'le token-örtüşmesiyle kapsanır → coverage 1.0.
+    res = validate_grounding(
+        draft_answer="Karbon vergisini ilk uygulayan ülke Finlandiya olmuştur.",
+        citations=[{"claim": "İlk uygulayan ülke Finlandiya.", "chunk_id": 10,
+                    "quote": "ilk uygulayan ülke 1990 yılında Finlandiya olmuştur"}],
+        context_chunks=[_chunk(10, "Karbon vergisini ilk uygulayan ülke 1990 yılında Finlandiya olmuştur.")],
+        coverage_threshold=0.7,
+    )
+    assert res["passed"] is True
+    assert res["coverage"] == 1.0
 
 
 def test_validate_grounding_tolerates_malformed_citations():

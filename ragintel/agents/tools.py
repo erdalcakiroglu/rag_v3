@@ -97,8 +97,8 @@ SUBMIT_ANSWER_SCHEMA = {
                         "type": "object",
                         "properties": {
                             "claim": {"type": "string", "description": "Yanıttaki iddia (cümle)"},
-                            "chunk_id": {"type": "integer"},
-                            "quote": {"type": "string", "description": "Chunk metninden birebir destekleyen ifade"},
+                            "chunk_id": {"type": "integer", "description": "Alıntının dayandığı bağlam bloğunun köşeli parantezli [n] numarası (ör. [3] için 3)"},
+                            "quote": {"type": "string", "description": "O bloğun metninden birebir destekleyen ifade"},
                         },
                         "required": ["claim", "chunk_id", "quote"],
                     },

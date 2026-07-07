@@ -24,8 +24,13 @@ def prepare_state(state: dict, *, config: EffectiveConfig | None = None) -> dict
             "max_tokens": int(agent_cfg.max_tokens),
             "deadline_ts": time.time() + float(agent_cfg.timeout_sec),
         }
-    # Sadece delta döndürülür (messages reducer=operator.add; tam state dönersek çiftlenir).
+    # Yeni tur: agent scratchpad mesajlarını SIFIRLA (kalıcı session/thread altında
+    # önceki turun tool-call/tool-result mesajları birikip prompt'u şişirir ve modeli
+    # zehirler — çok-turlu regresyon). messages=None → merge_messages reset sinyali.
+    # retrieved bu turun girdisinden korunur (API her istekte retrieved=[] verir →
+    # taze; graf testleri retrieved'i enjekte edebilir → bozulmaz).
     return {
+        "messages": None,
         "retrieved": list(state.get("retrieved") or []),
         "context": None,
         "pending_tool_calls": None,

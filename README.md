@@ -109,6 +109,59 @@ ENV değişken adları tek alt çizgi (7d ev-stili): `RAGINTEL_DB_HOST`,
 > ezer (pydantic-settings standardı). Bağlantı beklenmedik şekilde başarısızsa
 > `env | grep RAGINTEL` ile bayat değişken olup olmadığını kontrol edin.
 
+## Servis (API) + Chat UI (FAZ 7)
+
+Senkron `POST /api/ask` → FinalResponse (Tasarim_FAZ4 §5) + tek sayfa Türkçe chat UI.
+Agentic loop'u (LangGraph) sarar; çok-turlu konuşma PostgresSaver `thread_id=session_id`
+ile gelir. **Ön koşul:** korpus ingest edilmiş olmalı (yukarıdaki İP-10 akışı) ve
+FAZ 4 checkpoint tabloları uygulanmış olmalı (`docs/FAZ4_Sema.sql`).
+
+### Çalıştırma
+
+Agent LLM'i **config-first**: model `app_config('agent').model`'den (DB), bağlantı
+`.env`'den (`RAGINTEL_LLM_API_BASE`, `RAGINTEL_LLM_REQUEST_TIMEOUT`) gelir. Kalıcı
+ayarlandıysa tek satır yeter:
+
+```powershell
+cd C:\Users\<kullanıcı>\PycharmProjects\rag_v3
+python -m uvicorn ragintel.api.app:create_app --factory --host 127.0.0.1 --port 8000
+```
+
+`Application startup complete` görünce tarayıcıda **http://127.0.0.1:8000** açın.
+Durdurmak: **Ctrl+C**. Port doluysa `--port 8001`. Geliştirmede `--reload` eklenebilir.
+
+Farklı bir model/host'a geçici yönlendirmek için OS env ile override edebilirsiniz
+(`os.environ` config'ten önce gelir):
+
+```powershell
+$env:RAGINTEL_AGENT_MODEL="qwen3.5:35b"      # geçici model override
+$env:RAGINTEL_LLM_API_BASE="http://<host>:11434"
+```
+
+> Kalıcı ayar: model → `python -c "..."`/SQL ile `app_config('agent').model`;
+> bağlantı → `.env`'e `RAGINTEL_LLM_API_BASE`. (`RAGINTEL_AGENT_MODEL` `.env`'den
+> OKUNMAZ — o yalnızca OS env veya DB config'tir.)
+
+### Uç noktalar
+
+| Endpoint | Açıklama |
+|---|---|
+| `GET /` | Tek sayfa chat UI (markdown yanıt, kaynaklar/quote, confidence rozeti, followup çipleri, 👍/👎) |
+| `POST /api/ask` | `{question, session_id?}` → FinalResponse §5. `X-User-Id` header (yoksa `dev`); `X-Session-Id`/`X-Injection-Flagged` yanıt header'larında |
+| `POST /api/feedback` | `{session_id, trace_id, rating(+1/-1), comment?}` → Langfuse score |
+| `GET /api/health` | DB/Ollama/TEI/Langfuse durumu (Ollama down→`unhealthy`, TEI down→`degraded`) |
+
+### Notlar
+
+- **Girdi guardrail:** boş/uzun soru reddi (`agent.max_question_chars`); İP-4 injection
+  **flag-only** (reddetmez, işaretler+devam eder). `user_ctx` LLM'e sızmaz; MVP'de
+  `allowed_doc_scopes=['default']` sabit (gerçek AuthN FAZ 6/7 — kodda TODO).
+- **Dürüst fallback:** LLM/altyapı erişilemezse sistem çökmez; "kaynaklarda bulunamadı"
+  veya "dil modeli erişilemedi" yanıtı döner (gizlenmez, bu bir özelliktir).
+- **Langfuse:** `.env`'de `RAGINTEL_LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY` doluysa her
+  istek trace (api.request→agent.run→node'lar) + feedback score Langfuse'a gider;
+  boşsa no-op (7e).
+
 ## Test
 
 ```bash

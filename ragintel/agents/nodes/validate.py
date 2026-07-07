@@ -30,5 +30,6 @@ def validate_state(state: dict, *, config: EffectiveConfig | None = None) -> dic
         citations=state.get("citations", []),
         context_chunks=_context_chunks(state),
         coverage_threshold=float(agent_cfg.validation_coverage_threshold),
+        quote_overlap_threshold=float(getattr(agent_cfg, "validation_quote_overlap_threshold", 0.7)),
     )
     return {**state, "validation": validation}

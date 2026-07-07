@@ -15,6 +15,7 @@ import time
 from ...config.loader import EffectiveConfig, load_config
 from ...observability.tracing import set_span_attributes, start_span
 from ...retrieval.types import ContextBuildResult
+from ...text import normalize_for_quote
 from ..prompts import load_system_prompt
 from ..tools import SUBMIT_ANSWER, ToolRegistry, accumulated_chunks  # noqa: F401 (accumulated_chunks tools_node'da)
 
@@ -34,6 +35,43 @@ def _normalize_citations(raw) -> list[dict]:
             continue
         out.append({"claim": str(item.get("claim", "")), "chunk_id": cid, "quote": str(item.get("quote", ""))})
     return out
+
+
+def _resolve_citation_ids(
+    citations: list[dict], context: ContextBuildResult | None, retrieved: list[dict]
+) -> list[dict]:
+    """Citation'ın chunk_id'sini GERÇEK chunk_id'ye çöz.
+
+    Model, bağlamda yalnızca bloğun görünür `[n]` etiketini görür (gerçek chunk_id
+    prompt'ta yoktur) → çoğu model `chunk_id` alanına `n` yazar. Bunu bloğun gerçek
+    chunk_id'sine eşleriz. Model zaten gerçek chunk_id verdiyse (ör. test mock'u)
+    dokunmayız. Çok-chunk'lı blokta quote'u BİREBİR içeren chunk seçilir; yoksa ilk
+    chunk (validate yine de fabricated_quote ile eler)."""
+    if not context or not context.get("blocks"):
+        return citations
+    blocks = context["blocks"]
+    real_ids = {int(cid) for b in blocks for cid in b["chunk_ids"]}
+    index_to_block = {int(b["n"]): b for b in blocks}
+    text_by_id = {int(c["chunk_id"]): str(c.get("text", "")) for c in retrieved}
+    resolved: list[dict] = []
+    for c in citations:
+        cid = int(c["chunk_id"])
+        if cid in real_ids:  # zaten gerçek chunk_id → dokunma
+            resolved.append(c)
+            continue
+        block = index_to_block.get(cid)
+        if block is None:  # ne gerçek id ne geçerli [n] → bırak, validate eler
+            resolved.append(c)
+            continue
+        chosen = int(block["chunk_ids"][0])
+        qn = normalize_for_quote(str(c.get("quote", "")))
+        if qn:
+            for bid in block["chunk_ids"]:
+                if qn in normalize_for_quote(text_by_id.get(int(bid), "")):
+                    chosen = int(bid)
+                    break
+        resolved.append({**c, "chunk_id": chosen})
+    return resolved
 
 
 def _render_context(context: ContextBuildResult | None) -> str:
@@ -125,7 +163,11 @@ def agent_node(
         if submit is not None:
             set_span_attributes(decision="submit_answer")
             update["draft_answer"] = str(submit.arguments.get("answer") or "")
-            update["citations"] = _normalize_citations(submit.arguments.get("citations"))
+            update["citations"] = _resolve_citation_ids(
+                _normalize_citations(submit.arguments.get("citations")),
+                context,
+                state.get("retrieved") or [],
+            )
             update["pending_tool_calls"] = None
             return update
 

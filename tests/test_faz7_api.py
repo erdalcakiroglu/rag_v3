@@ -114,7 +114,11 @@ def test_injection_query_flagged_not_rejected(live_db):
 
 
 @pytest.mark.db
-def test_multi_turn_same_session_sees_prior_context(live_db):
+def test_multi_turn_same_session_starts_clean_scratchpad(live_db):
+    # SCRATCHPAD İZOLASYONU: aynı session (thread) ikinci turda, prepare mesaj
+    # kanalını sıfırlar → 2. turun İLK gateway çağrısı önceki turun ham tool-call/
+    # tool-result scratchpad'ini TAŞIMAZ (yalnızca system+user). Aksi halde birikim
+    # prompt'u şişirip modeli zehirler (çok-turlu regresyon; gözlemlenen 134s+fallback).
     gw = GroundedMock()
     client = TestClient(create_app(_runtime(live_db, gateway=gw)))
     r1 = client.post("/api/ask", json={"question": "Karbon vergisi nedir?"})
@@ -122,10 +126,10 @@ def test_multi_turn_same_session_sees_prior_context(live_db):
     n_after_t1 = len(gw.calls)
     r2 = client.post("/api/ask", json={"question": "Peki hangi ülkeler uyguluyor?", "session_id": sid})
     assert r2.status_code == 200 and r2.headers["X-Session-Id"] == sid
-    # 2. turun ilk gateway çağrısı, 1. turun tool alışverişini (birikmiş messages) görmeli
     turn2_first_msgs = gw.calls[n_after_t1]
     roles = [m.get("role") for m in turn2_first_msgs]
-    assert "tool" in roles or any(m.get("tool_calls") for m in turn2_first_msgs), "önceki tur bağlamı taşınmadı"
+    assert roles == ["system", "user"], f"2. tur temiz scratchpad ile başlamalı, taşındı: {roles}"
+    assert not any(m.get("role") == "tool" or m.get("tool_calls") for m in turn2_first_msgs)
 
 
 @pytest.mark.db
