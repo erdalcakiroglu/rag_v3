@@ -188,6 +188,13 @@ class LiteLLMSettings(DotenvOnlySettings):
     api_base: str = "http://banasor.goldenglobalbank.com.tr:11434"
     api_key: str = ""               # OpenAI-compat uç (ör. Open WebUI /ollama/v1) Bearer token'ı
     request_timeout: float = 120.0
+    # Rate-limit/geçici hata için Retry-After'a uyan backoff'lu retry sayısı
+    # (Groq free-tier TPM/günlük kap gözetimi; RAGINTEL_LLM_MAX_RETRIES).
+    max_retries: int = 5
+    # Provider-swap kolaylığı (ADR-003 ek): model adını .env'den de override et
+    # (RAGINTEL_LLM_MODEL). Boşsa config-first DB app_config('agent').model kazanır.
+    # Öncelik (build_default_runtime): OS env RAGINTEL_AGENT_MODEL > .env RAGINTEL_LLM_MODEL > DB.
+    model: str = ""
 
 
 class LangfuseSettings(DotenvOnlySettings):

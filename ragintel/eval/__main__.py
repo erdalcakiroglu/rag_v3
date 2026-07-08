@@ -78,6 +78,19 @@ def _cmd_retrieval(args) -> int:
         db.close()
 
 
+def _cmd_run(args) -> int:
+    from .harness import evaluate, format_report
+
+    result = evaluate(version=args.golden, limit=args.limit, runs=args.runs,
+                      agent_model=args.agent_model, judge_model=args.judge_model,
+                      question_delay=args.question_delay)
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    else:
+        print(format_report(result))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     _force_utf8()
     parser = argparse.ArgumentParser(prog="python -m ragintel.eval")
@@ -94,11 +107,23 @@ def main(argv: list[str] | None = None) -> int:
     rt.add_argument("--top-k", type=int, default=None, help="Retrieval derinliği (varsayılan max(k)=20)")
     rt.add_argument("--json", action="store_true", help="Tam JSON sonuç")
 
+    rn = sub.add_parser("run", help="Uçtan uca RAGAS-tarzı eval (İP-2.3, DEV-MODE judge=groq)")
+    rn.add_argument("--golden", default="v0", help="DB set_version (varsayılan v0)")
+    rn.add_argument("--mode", default="report", choices=("report",), help="report (fail etmez, gösterge)")
+    rn.add_argument("--limit", type=int, default=None, help="Dry-run: ilk N answerable (+2 unanswerable)")
+    rn.add_argument("--runs", type=int, default=3, help="Judge medyanı için koşu sayısı (varsayılan 3)")
+    rn.add_argument("--agent-model", default=None, help="Ajan LLM (varsayılan qwen/qwen3-32b — tool-calling)")
+    rn.add_argument("--judge-model", default=None, help="Judge LLM (varsayılan llama-3.3-70b-versatile)")
+    rn.add_argument("--question-delay", type=float, default=1.0, help="Sorular arası throttle sn (TPM)")
+    rn.add_argument("--json", action="store_true", help="Tam JSON sonuç")
+
     args = parser.parse_args(argv)
     if args.cmd == "load":
         return _cmd_load(args)
     if args.cmd == "retrieval":
         return _cmd_retrieval(args)
+    if args.cmd == "run":
+        return _cmd_run(args)
     return 1
 
 
