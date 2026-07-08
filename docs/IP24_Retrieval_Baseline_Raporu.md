@@ -14,6 +14,12 @@ Görev "v0 golden set DB'de, korpus 39 mühürlü" varsayıyordu; gerçek durum:
 
 **Bu baseline draft dosyasından koşuldu** (`--from-file`), DB'ye YAZILMADAN. Resmi `--golden v0` yolu, onaylı v0 yüklendiğinde **aynı sayıları** verecek (determinizm kanıtlı). Sayıları mühürlemek için: (a) onaylı v0 DB'ye yüklenmeli, (b) XLSX'lerin golden korpusa dahil/hariç kararı verilmeli (§4).
 
+> **ÇÖZÜLDÜ (2026-07-08):** Onaylı v0 (36 kayıt, `created_by=erdal`) DB'ye yüklendi ve resmi
+> baseline mühürlendi → [v0_Resmi_Baseline_Raporu.md](v0_Resmi_Baseline_Raporu.md). Determinizm
+> kanıtlandı (resmi `--golden v0` = draft `--from-file`, birebir). **vector** IP24 ile birebir;
+> **hybrid** İP-3.6 config retune'u (weighted 0.8/0.2) nedeniyle değişti — bu rapordaki RRF hybrid
+> tablosu **geçersiz** işaretlendi (§2). XLSX/mühür-sayısı kararı (§4) hâlâ açık.
+
 ---
 
 ## 1. Quote→chunk eşleme raporu (ground truth)
@@ -37,7 +43,14 @@ Her `gold_evidence.quote` → `normalize_for_quote` → `chunk_text_norm` içind
 | table_based | 5 | 0.400 | 0.800 | 0.800 | 0.347 | 0.326 | 0.450 | 0.450 |
 | **multi_hop** | 5 | **0.300** | 0.300 | 0.400 | 0.367 | 0.261 | 0.261 | 0.290 |
 
-### hybrid (dense + tsvector BM25, RRF)
+### hybrid (dense + tsvector BM25, RRF) — ⚠ TUNING-ÖNCESI, GEÇERSIZ
+
+> **GEÇERSIZ (2026-07-08):** Bu tablo hybrid'i **RRF, 1.0/1.0** ile koşmuştur. İP-3.6 tuning'i
+> config'i **weighted 0.8/0.2**'ye aldı (app_config, `updated_by=codex`; bkz. IP36 §6). Resmi
+> hybrid baseline artık [v0_Resmi_Baseline_Raporu.md](v0_Resmi_Baseline_Raporu.md)'dedir
+> (MRR 0.549; weighted altında hybrid=vector). Aşağıdaki RRF sayıları yalnızca tarihsel kayıttır.
+> (vector tablosu geçerliliğini korur — füzyondan bağımsız.)
+
 | kategori | n | recall@5 | recall@10 | recall@20 | MRR | nDCG@5 | nDCG@10 | nDCG@20 |
 |---|---|---|---|---|---|---|---|---|
 | **GENEL** | 31 | 0.597 | 0.677 | 0.758 | 0.528 | 0.510 | 0.537 | 0.561 |
