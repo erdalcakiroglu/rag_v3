@@ -14,6 +14,8 @@ Sonuçlar `judge=groq/dev-mode` etiketli: RESMİ KARNE DEĞİL (bkz. judge.py).
 
 from __future__ import annotations
 
+import json
+import os
 import time
 
 from ..agents.graph import build_agent_graph, run_agent
@@ -49,6 +51,35 @@ _NOTFOUND_MARKERS = (
     "belgelerde bulunm", "bilgi bulunm", "yanıt üretilemedi",
 )
 _CTX_CAP = 10  # judge maliyeti: en fazla bu kadar bağlam parçası değerlendirilir
+
+
+def _load_ck(path: str | None) -> dict:
+    """Checkpoint: {"answers":{id:row}, "scores":{id:scores}, "errors":{id:msg}}."""
+    ck = {"answers": {}, "scores": {}, "errors": {}}
+    if path and os.path.exists(path):
+        data = json.load(open(path, encoding="utf-8"))
+        for k in ck:
+            ck[k] = data.get(k, {})
+    return ck
+
+
+def _save_ck(path: str | None, ck: dict) -> None:
+    if not path:
+        return
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(ck, fh, ensure_ascii=False)
+    os.replace(tmp, path)  # atomik yazım (kesinti güvenli)
+
+
+def _rate_limited(exc: Exception) -> bool:
+    """Gateway/judge retry'ları tükendikten sonra hâlâ rate-limit → günlük kap: durakla."""
+    import litellm
+
+    if isinstance(exc, litellm.RateLimitError):
+        return True
+    s = str(exc).lower()
+    return "rate limit" in s or "tokens per" in s or "too large" in s
 
 
 def _cat_order(cats):
@@ -105,6 +136,7 @@ def run_question(app, rec: dict) -> dict:
     return {
         "id": rec["id"],
         "category": rec["category"],
+        "answerable": bool(rec["answerable"]),
         "question": rec["question"],
         "ground_truth": rec["ideal_answer"],
         "answer": str(final.get("answer") or ""),
@@ -178,8 +210,10 @@ def _iteration_stats(rows: list[dict]) -> dict:
 
 def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
              agent_model: str | None = None, judge_model: str | None = None,
-             question_delay: float = 1.0) -> dict:
-    """Uçtan uca eval; `limit` verilirse dry-run (ilk N answerable + orantılı unanswerable)."""
+             question_delay: float = 1.0, out_path: str | None = None) -> dict:
+    """Uçtan uca eval; `limit` → dry-run. `out_path` → checkpoint/resume (gece koşusu):
+    her soru/skor sonrası kaydedilir; günlük rate-limit kapına takılınca zarifçe DURAKLAR
+    (status=paused), tekrar koşulunca kaldığı yerden devam eder; tamamlanınca status=complete."""
     db, cfg, model, app = build_eval_app(agent_model)
     try:
         with db.connection() as conn:
@@ -197,48 +231,81 @@ def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
         judge = Judge(model=judge_model or DEFAULT_JUDGE_MODEL)
         embedder = JudgeEmbedder()
         t0 = time.perf_counter()
-
-        # 1) Dataset üretimi (gerçek agent yanıtları) — answerable + unanswerable
-        _LOG.info("eval_dataset_start", answerable=len(answerable), unanswerable=len(unanswerable),
-                  judge=JUDGE_LABEL, agent_model=model)
-        ans_rows, unans_rows, errors = [], [], []
+        ck = _load_ck(out_path)
         queue = answerable + unanswerable
+        by_id = {r["id"]: r for r in queue}
+        paused = None  # ("answer"|"score", id) — günlük kap durağı
+
+        # 1) Dataset üretimi (resumable) — checkpoint'te olan sorular atlanır
+        _LOG.info("eval_dataset_start", answerable=len(answerable), unanswerable=len(unanswerable),
+                  judge=JUDGE_LABEL, agent_model=model, resumed=len(ck["answers"]))
         for idx, rec in enumerate(queue):
+            if rec["id"] in ck["answers"] or rec["id"] in ck["errors"]:
+                continue
             try:
                 row = run_question(app, rec)
-                (ans_rows if rec["answerable"] else unans_rows).append(row)
+                ck["answers"][rec["id"]] = row
+                _save_ck(out_path, ck)
                 _LOG.info("eval_answered", id=rec["id"], iterations=row["iterations"],
                           confidence=row["confidence"], answerable=rec["answerable"])
             except Exception as exc:
-                errors.append({"id": rec["id"], "error": str(exc)[:200]})
+                if _rate_limited(exc):
+                    paused = ("answer", rec["id"])
+                    _LOG.warning("eval_paused_ratelimit", phase="answer", id=rec["id"])
+                    break
+                ck["errors"][rec["id"]] = str(exc)[:200]
+                _save_ck(out_path, ck)
                 _LOG.warning("eval_answer_failed", id=rec["id"], error=str(exc)[:160])
             if question_delay and idx < len(queue) - 1:
                 time.sleep(question_delay)  # TPM yumuşatma (gateway backoff'a ek throttle)
 
-        # 2) RAGAS-tarzı skorlama (answerable, 3 koşu medyanı)
-        scored = []
-        for row in ans_rows:
-            scores = _score_answerable(judge, embedder, row, runs)
-            scored.append({"id": row["id"], "category": row["category"],
-                           "iterations": row["iterations"], "confidence": row["confidence"], **scores})
-            _LOG.info("eval_scored", id=row["id"], **scores)
+        # 2) RAGAS-tarzı skorlama (answerable, `runs` koşu medyanı; resumable)
+        if paused is None:
+            for rid, row in ck["answers"].items():
+                if not row.get("answerable") or rid in ck["scores"]:
+                    continue
+                try:
+                    ck["scores"][rid] = _score_answerable(judge, embedder, row, runs)
+                    _save_ck(out_path, ck)
+                    _LOG.info("eval_scored", id=rid, **ck["scores"][rid])
+                except Exception as exc:
+                    if _rate_limited(exc):
+                        paused = ("score", rid)
+                        _LOG.warning("eval_paused_ratelimit", phase="score", id=rid)
+                        break
+                    ck["errors"][rid] = str(exc)[:200]
+                    _save_ck(out_path, ck)
 
-        # 3) Dürüstlük (unanswerable)
+        # 3) Rapor derleme (kısmi veya tam)
+        ans_rows = [r for r in ck["answers"].values() if r.get("answerable")]
+        unans_rows = [r for r in ck["answers"].values() if not r.get("answerable")]
+        scored = [
+            {"id": rid, "category": ck["answers"][rid]["category"],
+             "iterations": ck["answers"][rid]["iterations"], "confidence": ck["answers"][rid]["confidence"],
+             **ck["scores"][rid]}
+            for rid in ck["scores"] if rid in ck["answers"]
+        ]
         honesty_rows = [_honesty(r) for r in unans_rows]
         honest_pass = sum(1 for h in honesty_rows if h["honest"])
-
         agg = _aggregate(scored)
         iters = _iteration_stats(ans_rows + unans_rows)
         targets = {
             k: {"target": v, "value": agg["overall"][k], "pass": agg["overall"][k] >= v}
             for k, v in _TARGETS.items()
         }
+        done_answers = len(ck["answers"]) + len(ck["errors"])
+        complete = paused is None and done_answers >= len(queue) and len(scored) == len(ans_rows)
         return {
             "judge": JUDGE_LABEL, "judge_model": judge.model, "agent_model": model,
             "golden": version, "mode": "report", "dev_mode": True, "runs": runs, "limit": limit,
+            "status": "complete" if complete else "paused",
+            "paused_at": {"phase": paused[0], "id": paused[1]} if paused else None,
+            "progress": {"answered": len(ck["answers"]), "scored": len(scored),
+                         "queue": len(queue), "answerable": len(answerable)},
             "elapsed_sec": round(time.perf_counter() - t0, 1),
+            "checkpoint": out_path,
             "dataset": {"answerable_run": len(ans_rows), "unanswerable_run": len(unans_rows),
-                        "errors": errors},
+                        "errors": [{"id": k, "error": v} for k, v in ck["errors"].items()]},
             "ragas": {**agg, "per_question": scored},
             "honesty": {"pass": honest_pass, "total": len(honesty_rows),
                         "score": f"{honest_pass}/{len(honesty_rows)}", "per_question": honesty_rows},
@@ -252,6 +319,15 @@ def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
 def format_report(result: dict) -> str:
     L = []
     L.append(f"=== İP-2.3 Eval Raporu — judge={result['judge']} (DEV-MODE, resmi karne DEĞİL) ===")
+    st = result.get("status", "complete")
+    pr = result.get("progress", {})
+    status_line = f"DURUM: {st.upper()}"
+    if st == "paused":
+        pa = result.get("paused_at") or {}
+        status_line += (f" (günlük kap — {pa.get('phase')}@{pa.get('id')}) · "
+                        f"ilerleme: {pr.get('answered')}/{pr.get('queue')} yanıt, "
+                        f"{pr.get('scored')}/{pr.get('answerable')} skor → tekrar koşunca devam eder")
+    L.append(status_line)
     L.append(f"golden={result['golden']} · agent={result['agent_model']} · judge={result['judge_model']} "
              f"· runs={result['runs']} (medyan) · süre={result['elapsed_sec']}s"
              + (f" · DRY-RUN limit={result['limit']}" if result.get("limit") else ""))

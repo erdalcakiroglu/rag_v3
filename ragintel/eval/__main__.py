@@ -83,12 +83,13 @@ def _cmd_run(args) -> int:
 
     result = evaluate(version=args.golden, limit=args.limit, runs=args.runs,
                       agent_model=args.agent_model, judge_model=args.judge_model,
-                      question_delay=args.question_delay)
+                      question_delay=args.question_delay, out_path=args.out)
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     else:
         print(format_report(result))
-    return 0
+    # paused (günlük kap) → 10: scheduler tekrar koşup devam etsin; complete → 0
+    return 0 if result.get("status", "complete") == "complete" else 10
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -115,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     rn.add_argument("--agent-model", default=None, help="Ajan LLM (varsayılan qwen/qwen3-32b — tool-calling)")
     rn.add_argument("--judge-model", default=None, help="Judge LLM (varsayılan llama-3.3-70b-versatile)")
     rn.add_argument("--question-delay", type=float, default=1.0, help="Sorular arası throttle sn (TPM)")
+    rn.add_argument("--out", default=None, help="Checkpoint dosyası (gece koşusu resume; kap'a takılınca devam)")
     rn.add_argument("--json", action="store_true", help="Tam JSON sonuç")
 
     args = parser.parse_args(argv)

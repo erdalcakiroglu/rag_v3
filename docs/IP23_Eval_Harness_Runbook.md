@@ -65,6 +65,32 @@ Bu adım tamamlanmadan hiçbir eval sayısı "resmi" olarak sunulmaz.
 - **Tam 36×3 için öneri:** Groq **Dev tier** (limitler kalkar, dakikalar) VEYA gece koşusu
   (backoff + throttle ile günlük pencereye yayılmış).
 
+## Gece koşusu (free-tier, resume/checkpoint — karar A)
+
+Tam 36×3 free-tier'da günlük token kapına (TPD) birden fazla pencerede takılabilir.
+Harness **checkpoint/resume** ile buna dayanıklıdır:
+
+```
+python -m ragintel.eval run --golden v0 --mode report \
+    --out var/eval/v0_run.json --question-delay 1.5 > var/eval/v0_report.txt 2>&1
+```
+
+- Her soru/skor sonrası `--out` dosyasına yazılır (atomik). Günlük kapa takılınca
+  **zarifçe durur** (`status=paused`, exit **10**) — ilerleme korunur.
+- **Aynı komutu tekrar koş** → kaldığı yerden devam eder (biten sorular atlanır).
+- Tümü bitince `status=complete` (exit **0**) ve tam rapor üretilir.
+
+**Zamanlama (Windows Task Scheduler, modelsiz/otonom):** her gece 02:00'de, tamamlanana
+kadar (exit 0) tekrar dener — DB/embedder iç ağda olduğundan koşu **bu makinede** olmalı
+(bulut ajanı iç ağa erişemez):
+
+```
+schtasks /Create /TN ragintel-eval-v0 /SC DAILY /ST 02:00 /F /TR ^
+ "cmd /c cd /d C:\Users\erdal.cakiroglu\PycharmProjects\rag_v3 && python -m ragintel.eval run --golden v0 --mode report --out var\eval\v0_run.json --question-delay 1.5 >> var\eval\v0_report.txt 2>&1"
+```
+
+Tamamlanınca görev silinebilir: `schtasks /Delete /TN ragintel-eval-v0 /F`.
+
 ## Dry-run bulgusu (2026-07-08)
 
 Harness + 4 metrik + dürüstlük + iterasyon doğrulandı (geçen sorularda faith 1.0 /
