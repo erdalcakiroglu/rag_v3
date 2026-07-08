@@ -66,6 +66,9 @@ def _load_ck(path: str | None) -> dict:
 def _save_ck(path: str | None, ck: dict) -> None:
     if not path:
         return
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(ck, fh, ensure_ascii=False)
