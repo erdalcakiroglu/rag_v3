@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 # Öncelik zincirinden yönetilen pipeline config grupları.
-PIPELINE_GROUPS = ("chunking", "embedding", "ingestion", "quality", "injection", "retrieval", "agent", "prompts", "pii")
+PIPELINE_GROUPS = ("chunking", "embedding", "ingestion", "quality", "injection", "retrieval", "agent", "prompts", "pii", "eval_gates")
 
 
 # --------------------------------------------------------------------------
@@ -376,6 +376,15 @@ class AgentConfig(BaseModel):
     max_question_chars: int = 2000
 
 
+class EvalGatesConfig(BaseModel):
+    """FAZ 8 CI eval gate eşikleri (DEV — mühürlü dilim-1 karnesinin ~%5 altı; regresyon
+    yakalar, mükemmellik dayatmaz). Değişince gate davranışı değişir (config-first)."""
+
+    honesty_min_ratio: float = 0.80        # dürüstlük pass/total (≥4/5)
+    faithfulness_min: float = 0.70
+    context_precision_min: float = 0.75
+
+
 class PiiConfig(BaseModel):
     """FAZ 6 P2: output PII maskeleme (KVKK temel seti). TCKN+tarih deterministik;
     custom_patterns ile genişletilebilir (app_config('pii'))."""
@@ -407,6 +416,7 @@ GROUP_MODELS: dict[str, type[BaseModel]] = {
     "agent": AgentConfig,
     "prompts": PromptsConfig,
     "pii": PiiConfig,
+    "eval_gates": EvalGatesConfig,
 }
 
 

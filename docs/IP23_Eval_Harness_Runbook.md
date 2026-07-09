@@ -91,6 +91,26 @@ schtasks /Create /TN ragintel-eval-v0 /SC DAILY /ST 02:00 /F /TR ^
 
 Tamamlanınca görev silinebilir: `schtasks /Delete /TN ragintel-eval-v0 /F`.
 
+## CI eval gate (FAZ 8)
+
+`python -m ragintel.eval gate [--smoke] [--json]` — golden'ı koşar, `app_config('eval_gates')`
+eşikleriyle kıyaslar. **Çıkış kodları:** 0 PASS · 1 FAIL (eşik altı/regresyon) · 2 ALTYAPI
+(embedder/DB/rate-limit — CI'da bloklamaz, uyarı). Eşikler config-first (dürüstlük ≥0.80,
+faithfulness ≥0.70, precision ≥0.75 — DEV; mühürlü dilim-1 karnesinin ~%5 altı).
+
+- **Her push/PR:** `gate --smoke` (5 soru, hızlı) — [.github/workflows/eval-gate.yml](../.github/workflows/eval-gate.yml)
+  (**self-hosted runner ŞART** — iç ağ DB/embedder erişimi).
+- **Nightly TAM 36:** GitHub Actions `schedule` (01:00 UTC) VEYA self-hosted runner yoksa yerel
+  Windows Task Scheduler:
+
+```
+schtasks /Create /TN ragintel-eval-gate /SC DAILY /ST 03:00 /F /TR ^
+ "cmd /c cd /d C:\Users\erdal.cakiroglu\PycharmProjects\rag_v3 && python -m ragintel.eval gate --judge-model deepseek-v4-flash >> var\eval\gate_nightly.log 2>&1"
+```
+
+Eşik değiştirmek (davranış anında değişir): Admin panel → Config → `eval_gates`, ya da
+`app_config('eval_gates')` UPDATE.
+
 ## Dry-run bulgusu (2026-07-08)
 
 Harness + 4 metrik + dürüstlük + iterasyon doğrulandı (geçen sorularda faith 1.0 /

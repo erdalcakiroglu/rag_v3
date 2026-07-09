@@ -92,6 +92,38 @@ def _cmd_run(args) -> int:
     return 0 if result.get("status", "complete") == "complete" else 10
 
 
+def _cmd_gate(args) -> int:
+    """CI eval gate: golden'ı koşar, eşiklerle kıyaslar. pass=0 / fail=1 / altyapı=2."""
+    from ..config.loader import load_config
+    from ..config.settings import DbSettings
+    from ..database import Database
+    from ..database.config_store import make_db_reader
+    from .gates import format_gate, gate_decision, thresholds_from_config
+    from .harness import evaluate
+
+    try:
+        db = Database(DbSettings()).open()
+        try:
+            cfg = load_config(db_reader=make_db_reader(db))
+        finally:
+            db.close()
+        thr = thresholds_from_config(cfg)
+        result = evaluate(version=args.golden, limit=(5 if args.smoke else None), runs=args.runs,
+                          agent_model=args.agent_model, judge_model=args.judge_model)
+    except Exception as exc:  # DB/harness kurulum hatası → altyapı (exit 2)
+        print(f"=== EVAL GATE — ERROR ⚠ (altyapı, exit 2) ===\nharness çalıştırılamadı: {str(exc)[:200]}")
+        return 2
+
+    outcome = gate_decision(result, thr)
+    if args.json:
+        print(json.dumps({"code": outcome.code, "reason": outcome.reason,
+                          "checks": [{"name": n, "value": v, "threshold": t, "ok": ok} for n, v, t, ok in outcome.checks],
+                          "thresholds": vars(thr)}, ensure_ascii=False, indent=2))
+    else:
+        print(format_gate(outcome, result, thr, smoke=args.smoke))
+    return outcome.code
+
+
 def main(argv: list[str] | None = None) -> int:
     _force_utf8()
     parser = argparse.ArgumentParser(prog="python -m ragintel.eval")
@@ -119,6 +151,14 @@ def main(argv: list[str] | None = None) -> int:
     rn.add_argument("--out", default=None, help="Checkpoint dosyası (gece koşusu resume; kap'a takılınca devam)")
     rn.add_argument("--json", action="store_true", help="Tam JSON sonuç")
 
+    gt = sub.add_parser("gate", help="CI eval gate (İP-8): eşiklerle kıyas, pass=0/fail=1/altyapı=2")
+    gt.add_argument("--golden", default="v0", help="DB set_version (varsayılan v0)")
+    gt.add_argument("--smoke", action="store_true", help="Hızlı mod: 5 soru (her push); tam 36 nightly")
+    gt.add_argument("--runs", type=int, default=1, help="Judge medyanı koşu sayısı (gate'te vars. 1)")
+    gt.add_argument("--agent-model", default=None)
+    gt.add_argument("--judge-model", default=None)
+    gt.add_argument("--json", action="store_true", help="Tam JSON sonuç")
+
     args = parser.parse_args(argv)
     if args.cmd == "load":
         return _cmd_load(args)
@@ -126,6 +166,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_retrieval(args)
     if args.cmd == "run":
         return _cmd_run(args)
+    if args.cmd == "gate":
+        return _cmd_gate(args)
     return 1
 
 

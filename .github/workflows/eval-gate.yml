@@ -1,0 +1,64 @@
+# FAZ 8 — CI eval gate (İP-8). GitHub Actions.
+#
+# ÖNEMLİ: SELF-HOSTED runner ŞART — gate DB (192.168.36.15) + embedder (finagoseek)
+# iç ağ kaynaklarına erişir; GitHub cloud runner'ları bu iç ağa ulaşamaz.
+# Runner'ı GGB ağında kurun (Settings → Actions → Runners) ve etiketleyin: [self-hosted, ragintel].
+#
+# Sırlar (Settings → Secrets → Actions):
+#   RAGINTEL_LLM_API_KEY  — judge/agent (DeepSeek gsk/sk...) anahtarı
+# Bağlantı ayarları (DB/embedder/LLM api_base) runner'daki .env'den gelir.
+#
+# Çıkış kodları: 0 PASS · 1 FAIL (regresyon → PR bloklar) · 2 ALTYAPI (bloklamaz, uyarı).
+
+name: eval-gate
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+  schedule:
+    - cron: "0 1 * * *"   # nightly 01:00 UTC — TAM 36
+  workflow_dispatch:       # elle tetik
+
+concurrency:
+  group: eval-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: [self-hosted, ragintel]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Bağımlılıklar
+        run: pip install -e . || pip install -r requirements.txt
+
+      - name: Eval gate
+        env:
+          RAGINTEL_LLM_API_KEY: ${{ secrets.RAGINTEL_LLM_API_KEY }}
+          PYTHONIOENCODING: "utf-8"
+        run: |
+          # schedule (nightly) → TAM 36; diğer tetikler → smoke (5, hızlı)
+          if [ "${{ github.event_name }}" = "schedule" ]; then MODE=""; else MODE="--smoke"; fi
+          echo "Mod: ${MODE:-full(36)}"
+          set +e
+          python -m ragintel.eval gate $MODE --judge-model deepseek-v4-flash
+          CODE=$?
+          set -e
+          if [ "$CODE" = "0" ]; then
+            echo "::notice::Eval gate PASS (exit 0)"
+          elif [ "$CODE" = "1" ]; then
+            echo "::error::Eval gate FAIL — kalite eşiği altında (regresyon). exit 1"
+            exit 1
+          elif [ "$CODE" = "2" ]; then
+            # Altyapı hatası (embedder/DB/rate-limit) — PR'ı BLOKLAMAZ, uyarı bırakır.
+            echo "::warning::Eval gate ALTYAPI hatası (exit 2) — bloklamıyor; runner/iç-ağ/kotayı kontrol edin."
+            exit 0
+          else
+            echo "::error::Beklenmeyen gate çıkışı: $CODE"; exit 1
+          fi
