@@ -20,6 +20,20 @@ from structlog.contextvars import (
 _CONFIGURED = False
 
 
+def _pii_scrub_processor(logger, method_name, event_dict):
+    """FAZ 6 P2: log kayıtlarındaki string değerlerde TCKN'yi maskeler (PII log'a SIZMAZ).
+    Lazy import — guardrails paketi ↔ logging dairesel import'unu önler."""
+    from ..guardrails.pii import PiiPolicy, mask_pii
+
+    pol = PiiPolicy(mask_tckn=True, mask_dates=False)  # log'da yalnızca TCKN scrub
+    for key, val in list(event_dict.items()):
+        if isinstance(val, str) and len(val) >= 11:
+            masked, n = mask_pii(val, pol)
+            if n:
+                event_dict[key] = masked
+    return event_dict
+
+
 def configure_logging(*, level: str = "INFO", json: bool = True) -> None:
     """structlog + stdlib logging'i tek sefer yapılandırır."""
     global _CONFIGURED
@@ -40,6 +54,7 @@ def configure_logging(*, level: str = "INFO", json: bool = True) -> None:
             structlog.processors.TimeStamper(fmt="iso", utc=True),
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
+            _pii_scrub_processor,  # FAZ 6: TCKN log'a sızmaz
             renderer,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(log_level),

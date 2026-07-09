@@ -23,6 +23,7 @@ from ..observability.logging import get_logger
 from ..observability.tracing import set_span_attributes, start_span
 from ..retrieval import ContextBuilder, RetrievalService
 from ..agents.tools import ToolRegistry
+from .auth import DbUserResolver
 
 
 class InputRejected(ValueError):
@@ -48,34 +49,71 @@ class AskResult:
 
 class RagRuntime:
     def __init__(self, *, db, config: EffectiveConfig, gateway, checkpointer,
-                 service=None, context_builder=None, registry=None, langfuse: LangfuseSettings | None = None):
+                 service=None, context_builder=None, registry=None, langfuse: LangfuseSettings | None = None,
+                 resolver=None):
         self.db = db
         self.cfg = config
         self.log = get_logger("api.runtime")
+        # FAZ 6 AuthN: Bearer token → user_ctx. LDAP resolver (FAZ 9) buraya enjekte edilir.
+        self.resolver = resolver or DbUserResolver(db)
         self.injection = InjectionScanner(config)
         self.max_q = int(config.group("agent").max_question_chars)
         self.langfuse = langfuse or LangfuseSettings()
         service = service or RetrievalService(db=db, config=config)
         context_builder = context_builder or ContextBuilder(db=db, config=config)
         registry = registry or ToolRegistry(service)
+        # warm-up için tutulur: context_builder→tokenizer, service→embedder ön-ısıtma
+        self.context_builder = context_builder
+        self.service = service
         self.app = build_agent_graph(
             gateway=gateway, context_builder=context_builder, registry=registry,
             config=config, checkpointer=checkpointer)
         self._lock = threading.Lock()  # MVP: graph invocation'ları serileştir (tek-bağlantı saver)
+        self._warm = threading.Event()  # tokenizer yüklenene kadar "warming"
 
-    # -- user_ctx (MVP; gerçek AuthN FAZ 6/7) ----------------------------------
-    def resolve_user_ctx(self, user_id: str | None) -> dict:
-        # TODO(FAZ6-7): gerçek kimlik doğrulama + role/scope çözümü. Şimdilik
-        # header'dan user_id (yoksa 'dev'); allowed_doc_scopes SABİT ['default'].
-        return {
-            "user_id": user_id or "dev",
-            "tenant_id": "default",
-            "roles": ["user"],
-            "allowed_doc_scopes": ["default"],
-        }
+    # -- warm-up (tokenizer ön-ısıtma) -----------------------------------------
+    @property
+    def is_warm(self) -> bool:
+        return self._warm.is_set()
 
-    # -- /api/ask --------------------------------------------------------------
-    def ask(self, question: str, session_id: str | None, user_id: str | None) -> AskResult:
+    def warm_up(self) -> None:
+        """Soğuk-yükleme cezalarını startup'a taşır (§9b/9). İki bağımsız adım;
+        biri hata verse diğeri çalışır ve flag yine set edilir (warm-up bloklamaz,
+        sadece o bileşen ilk istekte yavaş olur):
+          - tokenizer: BGE-M3 AutoTokenizer (context_builder her turda token sayar)
+          - embedder: remote Ollama bge-m3 ilk /api/embed round-trip'i (~4.6s)"""
+        try:
+            self._warm_component(
+                "tokenizer",
+                lambda: self.context_builder.token_counter.count("ısınma"),
+                available=lambda: hasattr(getattr(self.context_builder, "token_counter", None), "count"),
+            )
+            self._warm_component(
+                "embedder",
+                lambda: self.service.embedder.embed_batch(["ısınma"]),
+                available=lambda: hasattr(getattr(self.service, "embedder", None), "embed_batch"),
+            )
+        finally:
+            self._warm.set()
+
+    def _warm_component(self, name: str, action, *, available) -> None:
+        try:
+            if not available():
+                return
+            t0 = time.perf_counter()
+            action()
+            self.log.info("warmup_done", component=name, warmup_ms=int((time.perf_counter() - t0) * 1000))
+        except Exception as exc:
+            self.log.warning("warmup_failed", component=name, error=str(exc)[:200])
+
+    def warm_up_async(self) -> None:
+        """Warm-up'ı arka planda başlatır (startup bloklamaz; health 'warming' döner)."""
+        threading.Thread(target=self.warm_up, name="ragintel-warmup", daemon=True).start()
+
+    # -- /api/ask (FAZ 6: Bearer token → user_ctx, fail-closed) -----------------
+    def ask(self, question: str, session_id: str | None, token: str | None) -> AskResult:
+        # AuthN ÖNCE: geçersiz/eksik token → Unauthorized (API 401). Fail-closed.
+        user_ctx = self.resolver.resolve(token)
         q = (question or "").strip()
         if not q:
             raise InputRejected("Soru boş olamaz.")
@@ -83,7 +121,6 @@ class RagRuntime:
             raise InputRejected(f"Soru çok uzun (>{self.max_q} karakter).")
         session_id = session_id or f"sess-{uuid.uuid4().hex[:16]}"
         inj = self.injection.scan(q)
-        user_ctx = self.resolve_user_ctx(user_id)
         initial = {"query": q, "user_ctx": user_ctx, "session_id": session_id, "retrieved": []}
         run_cfg = {"configurable": {"thread_id": session_id}}
 
@@ -146,7 +183,13 @@ class RagRuntime:
         checks = {"db": self._check_db(), "ollama": self._check_http(OllamaSettings().base_url + "/api/tags"),
                   "tei": self._check_http(TeiSettings().rerank_url.rstrip("/") + "/health"),
                   "langfuse": "enabled" if self.langfuse.enabled else "disabled"}
-        return {"status": derive_health_status(checks), "checks": checks}
+        warm = self.is_warm
+        checks["warmup"] = "ok" if warm else "warming"
+        base = derive_health_status(checks)
+        # Warming, unhealthy'yi MASKELEMEZ (db/ollama down daha kritik); sadece
+        # aksi halde çalışır durumdayken "henüz ilk istek yavaş olur" sinyali.
+        status = base if base == "unhealthy" or warm else "warming"
+        return {"status": status, "checks": checks}
 
     def _check_db(self) -> str:
         try:

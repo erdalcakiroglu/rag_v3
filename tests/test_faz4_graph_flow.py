@@ -151,7 +151,10 @@ def test_retry_fail_goes_to_fallback():
     assert len(gw.calls) == 2               # retry sonrası ikinci fail → fallback (üçüncü çağrı yok)
     final = out["final_response"]
     assert final["confidence"] == "low"
-    assert "Güvenilir yanıt üretilemedi" in final["answer"]
+    assert "Cevap bulunamadı" in final["answer"]
+    # FAZ 5: fallback → sources BOŞ; incelenen chunk meta.reviewed_sources'a.
+    assert final["sources"] == []
+    assert final["meta"]["reviewed_sources"]
 
 
 def test_budget_exhaustion_forces_answer_with_submit_only():

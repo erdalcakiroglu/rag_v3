@@ -28,6 +28,13 @@ class Meta(BaseModel):
     model: str
     trace_id: str
     generated_at: int | None = None   # bizim eklentimiz (§5 dışı, opsiyonel)
+    # FAZ 5: reddedilen/fallback yanıtta İNCELENEN ama cevabı desteklemeyen chunk'lar.
+    # `sources` yalnızca cevabı DESTEKLEYEN kanıttır; declined yolunda sources=[] olur ve
+    # incelenen chunk'lar buraya taşınır (citation DEĞİL — UI ayrı etiketler). Additive,
+    # geriye-uyumlu (varsayılan boş; extra=forbid'e bilinçli eklendi — §5-v2 revizyonu).
+    reviewed_sources: list[Source] = Field(default_factory=list)
+    # FAZ 6 P2: yanıt+quote'larda maskelenen PII adedi (izlenebilirlik; additive).
+    pii_masked_count: int = 0
 
 
 class FinalResponse(BaseModel):

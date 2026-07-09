@@ -39,7 +39,10 @@ def _validate_node(state: dict, *, config: EffectiveConfig) -> dict:
 def _compose_node(state: dict, *, config: EffectiveConfig) -> dict:
     with start_span("agent.compose"):
         response = compose_response(state, config=config)
-        set_span_attributes(confidence=response["confidence"], source_count=len(response["sources"]))
+        set_span_attributes(
+            confidence=response["confidence"], source_count=len(response["sources"]),
+            pii_masked_count=int(response["meta"].get("pii_masked_count", 0)),
+        )
     return {"final_response": response}
 
 

@@ -23,8 +23,35 @@ from ..config.settings import LiteLLMSettings, OllamaSettings
 from ..ingestion.embedding.embedder import OllamaEmbedder
 from ..observability.logging import get_logger
 
-JUDGE_LABEL = "groq/dev-mode"
+JUDGE_LABEL = "groq/dev-mode"  # geriye-uyum sabiti; gerçek etiket dev_label() ile üretilir
 _LOG = get_logger("eval.judge")
+
+
+def dev_label(api_base: str) -> str:
+    """Judge etiketi sağlayıcıya göre: hepsi DEV-MODE (resmi karne değil)."""
+    b = (api_base or "").lower()
+    provider = "deepseek" if "deepseek" in b else "groq" if "groq" in b else "cloud"
+    return f"{provider}/dev-mode"
+
+
+def _verdict(v) -> int:
+    """Judge verdict'ini 0/1'e indirger — model int/bool/string dönebilir
+    (ör. 'supported'/'unsupported'/'desteklenir'). Negatifler ÖNCE kontrol edilir
+    ('not supported' → 0)."""
+    if isinstance(v, bool):
+        return int(v)
+    if isinstance(v, (int, float)):
+        return 1 if int(v) == 1 else 0
+    s = str(v).strip().lower()
+    if s in ("1", "yes", "true", "evet"):
+        return 1
+    if s in ("0", "no", "false", "hayır", "hayir", ""):
+        return 0
+    if any(neg in s for neg in ("unsupport", "not support", "desteklenm", "irrelevant", "ilgisiz", "atfedilem")):
+        return 0
+    if any(pos in s for pos in ("support", "destekl", "relevant", "attribut", "yararlı", "useful", "ilgili")):
+        return 1
+    return 0
 
 # RAGAS-tarzı metrik metodolojisi judge prompt'ları (İngilizce talimat + Türkçe içerik).
 _SYS = "You are a meticulous RAG evaluation judge. Output ONLY valid minified JSON, no prose."
@@ -65,7 +92,7 @@ class Judge:
     def __post_init__(self):
         self.settings = self.settings or LiteLLMSettings()
         self.model = self.model or self.settings.model or "llama-3.3-70b-versatile"
-        self.label = JUDGE_LABEL
+        self.label = dev_label(self.settings.api_base)
 
     def ask_json(self, user: str):
         import litellm
@@ -142,7 +169,7 @@ def faithfulness(judge: Judge, answer: str, contexts: list[str]) -> float:
     sts = data.get("statements") if isinstance(data, dict) else data
     if not sts:
         return 1.0  # olgusal iddia yok → çelişki de yok
-    verdicts = [1 if int(s.get("verdict", 0)) == 1 else 0 for s in sts]
+    verdicts = [_verdict(s.get("verdict", 0)) for s in sts]
     return sum(verdicts) / len(verdicts)
 
 
@@ -160,7 +187,7 @@ def context_recall(judge: Judge, ground_truth: str, contexts: list[str]) -> floa
     sts = data.get("statements") if isinstance(data, dict) else data
     if not sts:
         return 0.0
-    verdicts = [1 if int(s.get("verdict", 0)) == 1 else 0 for s in sts]
+    verdicts = [_verdict(s.get("verdict", 0)) for s in sts]
     return sum(verdicts) / len(verdicts)
 
 
@@ -180,7 +207,7 @@ def context_precision(judge: Judge, question: str, contexts: list[str], ground_t
     data = judge.ask_json(prompt)
     raw = data.get("verdicts") if isinstance(data, dict) else data
     n = min(len(contexts), len(raw or []))
-    verdicts = [1 if int(raw[i]) == 1 else 0 for i in range(n)]
+    verdicts = [_verdict(raw[i]) for i in range(n)]
     total_rel = sum(verdicts)
     if total_rel == 0:
         return 0.0
@@ -205,7 +232,7 @@ def answer_relevancy(judge: Judge, embedder: JudgeEmbedder, question: str, answe
         'JSON şeması: {"questions":["...","...","..."],"noncommittal":0}'
     )
     data = judge.ask_json(prompt)
-    if isinstance(data, dict) and int(data.get("noncommittal", 0)) == 1:
+    if isinstance(data, dict) and _verdict(data.get("noncommittal", 0)) == 1:
         return 0.0
     gen = (data.get("questions") if isinstance(data, dict) else data) or []
     gen = [q for q in gen if isinstance(q, str) and q.strip()]

@@ -29,6 +29,8 @@
          background:#0d1117; }
   .src:hover{background:#131c26} .src .q{display:none;color:var(--mut);font-style:italic;margin-top:6px}
   .src.open .q{display:block}
+  .src.reviewed{border-left-color:var(--mut);cursor:default;opacity:.85;font-size:13px}
+  .reviewed-h{color:var(--mut)} .reviewed-h .muted{font-weight:400;font-size:12px;opacity:.8}
   .chips{display:flex;flex-wrap:wrap;gap:8px} .chip{background:#0d1117;border:1px solid var(--line);
          border-radius:16px;padding:6px 12px;font-size:13px;cursor:pointer;color:var(--acc)}
   .chip:hover{border-color:var(--acc)}
@@ -58,13 +60,30 @@ function md(s){return esc(s).replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/`([^
 
 document.getElementById('askForm').addEventListener('submit', e=>{ e.preventDefault(); ask(qEl.value); });
 
+// FAZ 6: Bearer token (localStorage). API fail-closed → token zorunlu.
+function authHeaders(){
+  const h={'Content-Type':'application/json'};
+  const t=localStorage.getItem('ragintel_token');
+  if(t) h['Authorization']='Bearer '+t;
+  return h;
+}
+function promptToken(){
+  const t=prompt('API token (Authorization: Bearer). Yöneticinizden alın:');
+  if(t && t.trim()){ localStorage.setItem('ragintel_token', t.trim()); return true; }
+  return false;
+}
+
 async function ask(question){
   question=(question||'').trim(); if(!question) return;
   qEl.value=question; btn.disabled=true; btn.textContent='…';
   out.innerHTML='<div class="card">Yanıt hazırlanıyor…</div>';
   try{
-    const r = await fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},
+    const r = await fetch('/api/ask',{method:'POST',headers:authHeaders(),
       body:JSON.stringify({question, session_id:sessionId})});
+    if(r.status===401){ // token yok/geçersiz → sor ve tekrar dene
+      out.innerHTML='<div class="card err">Kimlik doğrulama gerekli.</div>';
+      if(promptToken()){ btn.disabled=false; return ask(question); } return;
+    }
     if(!r.ok){ const t=await r.text(); out.innerHTML=`<div class="card err">Hata ${r.status}: ${esc(t)}</div>`; return; }
     sessionId = r.headers.get('X-Session-Id') || sessionId;
     if(sessionId) localStorage.setItem('ragintel_session', sessionId);
@@ -88,7 +107,19 @@ function render(resp, injected){
              ${s.section?('· '+esc(s.section)):''}<div class="q">“${esc(s.quote)}”</div></div>`;
     });
   } else {
-    h += `<div class="warn">Bu soru için kaynak gösterilemedi — yanıt dürüstçe "bulunamadı" olabilir.</div>`;
+    // FAZ 5: reddedilen yanıtta kaynak GÖSTERİLMEZ (citation değil). İncelenen ama cevabı
+    // desteklemeyen chunk'lar meta.reviewed_sources'ta — ayrı etiketli, alıntı görünümü DIŞINDA.
+    const reviewed = (resp.meta && resp.meta.reviewed_sources) || [];
+    if(reviewed.length){
+      h += `<div class="warn">Cevap bulunamadı — bu soruyu doğrudan yanıtlayan kaynak yok.</div>`;
+      h += `<h3 class="reviewed-h">İncelenen kaynaklar <span class="muted">(cevabı desteklemiyor)</span></h3>`;
+      reviewed.forEach(s=>{
+        const loc = s.page!=null ? `s.${s.page}` : '';
+        h += `<div class="src reviewed">${esc(s.file_name)} ${loc}${s.section?('· '+esc(s.section)):''}</div>`;
+      });
+    } else {
+      h += `<div class="warn">Bu soru için kaynak gösterilemedi — yanıt dürüstçe "bulunamadı".</div>`;
+    }
   }
   if(resp.followups && resp.followups.length){
     h += `<h3>Devam soruları</h3><div class="chips">`;
@@ -108,7 +139,7 @@ async function feedback(rating, traceId, el){
   document.querySelectorAll('.fb button').forEach(b=>b.classList.remove('on')); el.classList.add('on');
   const msg=document.getElementById('fbmsg');
   try{
-    const r=await fetch('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},
+    const r=await fetch('/api/feedback',{method:'POST',headers:authHeaders(),
       body:JSON.stringify({session_id:sessionId,trace_id:traceId,rating})});
     const j=await r.json();
     msg.textContent = j.recorded ? ' — teşekkürler, kaydedildi' : ` — (${j.status})`;

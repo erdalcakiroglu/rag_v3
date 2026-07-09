@@ -12,6 +12,7 @@ from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from .auth import Unauthorized, bearer_token
 from .runtime import InputRejected, RagRuntime
 from .schemas import AskRequest, FeedbackRequest, FinalResponse
 
@@ -29,11 +30,13 @@ def build_default_runtime() -> RagRuntime:
 
     db = Database(DbSettings()).open()
     cfg = load_config(db_reader=make_db_reader(db))
-    # Demo esnekliği: model/api_base OS env ile override edilebilir (LiteLLMSettings
-    # .env-only olduğundan api_base'i açıkça geçiriyoruz).
-    model = os.environ.get("RAGINTEL_AGENT_MODEL") or cfg.group("agent").model
-    api_base = os.environ.get("RAGINTEL_LLM_API_BASE") or LiteLLMSettings().api_base
-    req_timeout = float(os.environ.get("RAGINTEL_LLM_REQUEST_TIMEOUT") or LiteLLMSettings().request_timeout)
+    # Demo/provider-swap esnekliği: model/api_base OS env ile override edilebilir
+    # (LiteLLMSettings .env-only olduğundan api_base'i açıkça geçiriyoruz).
+    # Model önceliği: OS env RAGINTEL_AGENT_MODEL > .env RAGINTEL_LLM_MODEL > DB.
+    llm = LiteLLMSettings()
+    model = os.environ.get("RAGINTEL_AGENT_MODEL") or llm.model or cfg.group("agent").model
+    api_base = os.environ.get("RAGINTEL_LLM_API_BASE") or llm.api_base
+    req_timeout = float(os.environ.get("RAGINTEL_LLM_REQUEST_TIMEOUT") or llm.request_timeout)
     gateway = LiteLLMGateway(model=model, settings=LiteLLMSettings(api_base=api_base, request_timeout=req_timeout))
     cm = PostgresSaver.from_conn_string(DbSettings().conninfo())
     saver = cm.__enter__()
@@ -50,6 +53,9 @@ def create_app(runtime: RagRuntime | None = None) -> FastAPI:
     def _startup():
         if state["runtime"] is None:
             state["runtime"] = build_default_runtime()
+        # Tokenizer'ı arka planda ön-ısıt: ilk kullanıcı ~15s soğuk yükleme
+        # beklemesin. Bitene kadar /api/health "warming" döner.
+        state["runtime"].warm_up_async()
 
     @app.on_event("shutdown")
     def _shutdown():
@@ -71,9 +77,12 @@ def create_app(runtime: RagRuntime | None = None) -> FastAPI:
         return (_STATIC / "index.html").read_text(encoding="utf-8")
 
     @app.post("/api/ask")
-    def ask(req: AskRequest, response: Response, x_user_id: str | None = Header(default=None)):
+    def ask(req: AskRequest, response: Response, authorization: str | None = Header(default=None)):
+        # FAZ 6: Authorization: Bearer <token> ZORUNLU (fail-closed). X-User-Id KALDIRILDI.
         try:
-            res = rt().ask(req.question, req.session_id, x_user_id)
+            res = rt().ask(req.question, req.session_id, bearer_token(authorization))
+        except Unauthorized as exc:
+            raise HTTPException(401, str(exc), headers={"WWW-Authenticate": "Bearer"})
         except InputRejected as exc:
             raise HTTPException(400, str(exc))
         # §5 sözleşmesini doğrula/serialize et (drift olursa test yakalar).
@@ -93,5 +102,9 @@ def create_app(runtime: RagRuntime | None = None) -> FastAPI:
     @app.get("/api/health")
     def health():
         return rt().health()
+
+    # FAZ 7 — Admin panel uçları (/admin sayfası + /api/admin/*, admin guard'lı).
+    from .admin import register_admin_routes
+    register_admin_routes(app, rt)
 
     return app

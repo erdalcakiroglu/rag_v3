@@ -99,10 +99,11 @@ DEFAULT_JUDGE_MODEL = "llama-3.3-70b-versatile"
 
 
 def build_eval_app(agent_model: str | None = None):
-    """Eval için graph + çevre nesneleri (Groq gateway + gerçek retrieval, checkpoint yok)."""
+    """Eval için graph + çevre nesneleri (bulut gateway + gerçek retrieval, checkpoint yok).
+    Ajan modeli: CLI --agent-model > .env RAGINTEL_LLM_MODEL > DEFAULT_AGENT_MODEL."""
     db = Database(DbSettings()).open()
     cfg = load_config(db_reader=make_db_reader(db))
-    model = agent_model or DEFAULT_AGENT_MODEL
+    model = agent_model or LiteLLMSettings().model or DEFAULT_AGENT_MODEL
     gateway = LiteLLMGateway(model=model, settings=LiteLLMSettings())
     service = RetrievalService(db=db, config=cfg)
     context_builder = ContextBuilder(db=db, config=cfg)
@@ -168,14 +169,26 @@ def _score_answerable(judge: Judge, embedder: JudgeEmbedder, row: dict, runs: in
 
 
 def _honesty(row: dict) -> dict:
-    """Unanswerable dürüstlük: 'bulunamadı' dedi mi (declined) VE kaynak uydurmadı mı?"""
+    """Unanswerable dürüstlük: 'bulunamadı' dedi mi (declined) VE kaynak uydurmadı mı?
+    Tanım KATI: cevapsızda herhangi citation = fail. `kind` sadece raporlama için sınıf
+    (fail/pass'i DEĞİŞTİRMEZ): honest | border_declined_cited (bulunamadı DEDİ ama cite etti)
+    | fabricated_confident (net halüsinasyon: declined yok + cite)."""
     ans = (row["answer"] or "").lower()
     declined = row["confidence"] == "low" or any(m in ans for m in _NOTFOUND_MARKERS)
     fabricated = len(row["sources"]) > 0
+    honest = bool(declined and not fabricated)
+    if honest:
+        kind = "honest"
+    elif declined and fabricated:
+        kind = "border_declined_cited"
+    elif fabricated:
+        kind = "fabricated_confident"
+    else:
+        kind = "other"
     return {
         "id": row["id"], "confidence": row["confidence"], "n_sources": len(row["sources"]),
         "iterations": row["iterations"], "declined": declined, "fabricated_sources": fabricated,
-        "honest": bool(declined and not fabricated),
+        "honest": honest, "kind": kind,
     }
 
 
@@ -231,7 +244,7 @@ def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
             answerable = answerable[:limit]
             unanswerable = unanswerable[: min(2, limit)]
 
-        judge = Judge(model=judge_model or DEFAULT_JUDGE_MODEL)
+        judge = Judge(model=judge_model or LiteLLMSettings().model or DEFAULT_JUDGE_MODEL)
         embedder = JudgeEmbedder()
         t0 = time.perf_counter()
         ck = _load_ck(out_path)
@@ -241,7 +254,7 @@ def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
 
         # 1) Dataset üretimi (resumable) — checkpoint'te olan sorular atlanır
         _LOG.info("eval_dataset_start", answerable=len(answerable), unanswerable=len(unanswerable),
-                  judge=JUDGE_LABEL, agent_model=model, resumed=len(ck["answers"]))
+                  judge=judge.label, agent_model=model, resumed=len(ck["answers"]))
         for idx, rec in enumerate(queue):
             if rec["id"] in ck["answers"] or rec["id"] in ck["errors"]:
                 continue
@@ -299,7 +312,7 @@ def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
         done_answers = len(ck["answers"]) + len(ck["errors"])
         complete = paused is None and done_answers >= len(queue) and len(scored) == len(ans_rows)
         return {
-            "judge": JUDGE_LABEL, "judge_model": judge.model, "agent_model": model,
+            "judge": judge.label, "judge_model": judge.model, "agent_model": model,
             "golden": version, "mode": "report", "dev_mode": True, "runs": runs, "limit": limit,
             "status": "complete" if complete else "paused",
             "paused_at": {"phase": paused[0], "id": paused[1]} if paused else None,
@@ -356,7 +369,7 @@ def format_report(result: dict) -> str:
     L.append(f"\n-- Unanswerable dürüstlük (RAGAS dışı, deterministik): {h['score']} --")
     for r in h["per_question"]:
         flag = "✓" if r["honest"] else "✗"
-        L.append(f"  {flag} {r['id']}  conf={r['confidence']} kaynak={r['n_sources']} "
+        L.append(f"  {flag} {r['id']}  [{r.get('kind','')}] conf={r['confidence']} kaynak={r['n_sources']} "
                  f"declined={r['declined']} uydurma={r['fabricated_sources']} iter={r['iterations']}")
 
     it = result["iterations"]

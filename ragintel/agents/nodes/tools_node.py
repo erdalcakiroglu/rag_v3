@@ -8,9 +8,32 @@
 from __future__ import annotations
 
 import json
+import time
 
+from ...observability.logging import get_logger
 from ...observability.tracing import set_span_attributes, start_span
 from ..tools import ToolRegistry, accumulated_chunks
+
+_LOG = get_logger("agent.tools")
+
+
+def _tool_receipt(output) -> dict | list:
+    """Chunk döndüren tool çıktısını kompakt MAKBUZA indir (Tasarım §9b/8).
+
+    Tam chunk metni yalnızca `state.retrieved` → context bloğu yolunda taşınır;
+    tool-result mesajına KOYULMAZ (çift-taşıma → prompt şişmesi önlenir). LLM
+    içeriği context'te `[n]` etiketleriyle görür. Makbuzdaki `found_chunk_ids`
+    GERÇEK chunk_id'lerdir → lookup_document/rerank bunlarla çalışır. Chunk
+    döndürmeyen çıktılar (ranking/memory/error) olduğu gibi kalır."""
+    if isinstance(output, dict) and isinstance(output.get("chunks"), list):
+        ids = [int(c["chunk_id"]) for c in output["chunks"] if "chunk_id" in c]
+        return {
+            "found_chunk_ids": ids,
+            "count": len(ids),
+            "note": "İçerik bağlam bloklarında [n] olarak sunuldu; "
+                    "lookup_document/rerank için bu chunk_id'leri kullan.",
+        }
+    return output
 
 
 def _dedup(chunks: list) -> list:
@@ -35,17 +58,21 @@ def tools_node(state: dict, *, registry: ToolRegistry) -> dict:
     with start_span("agent.tools", tool_calls=",".join(c["name"] for c in calls) or "none"):
         for call in calls:
             name = call["name"]
+            t0 = time.perf_counter()
             try:
                 output = registry.execute(name, call.get("arguments") or {}, user_ctx=user_ctx)
             except Exception as exc:  # tool exception → LLM'e mesaj, crash değil
                 output = {"error": f"tool_error: {exc}"}
+            tool_ms = int((time.perf_counter() - t0) * 1000)
+            _LOG.info("tool_timing", tool=name, tool_ms=tool_ms)
+            # Tam chunk'lar retrieved'e (→ context) gider; tool-result'a MAKBUZ konur.
             accumulated.extend(accumulated_chunks(output))
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": call.get("id", ""),
                     "name": name,
-                    "content": json.dumps(output, ensure_ascii=False, default=str),
+                    "content": json.dumps(_tool_receipt(output), ensure_ascii=False, default=str),
                 }
             )
         deduped = _dedup(accumulated)

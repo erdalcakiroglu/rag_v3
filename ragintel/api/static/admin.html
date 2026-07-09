@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ragintel — Admin</title>
+<style>
+  :root{--bg:#0d1117;--card:#161b22;--bd:#30363d;--fg:#e6edf3;--mut:#8b949e;--acc:#2f81f7;--ok:#3fb950;--err:#f85149;--warn:#d29922}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,Segoe UI,sans-serif}
+  header{padding:14px 20px;border-bottom:1px solid var(--bd);display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  h1{font-size:18px;margin:0} .sp{flex:1}
+  input,select,textarea,button{font:inherit;background:#0d1117;color:var(--fg);border:1px solid var(--bd);border-radius:6px;padding:6px 10px}
+  textarea{width:100%;min-height:90px;font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
+  button{cursor:pointer;background:#21262d} button:hover{border-color:var(--acc)}
+  button.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+  .tabs{display:flex;gap:6px;padding:12px 20px 0} .tab{padding:8px 14px;border:1px solid var(--bd);border-bottom:none;border-radius:8px 8px 0 0;background:#0d1117;cursor:pointer}
+  .tab.on{background:var(--card);color:var(--acc)}
+  main{padding:20px;max-width:1150px} .card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:14px;margin-bottom:14px}
+  .card h3{margin:0 0 10px;font-size:15px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--bd);vertical-align:top}
+  th{color:var(--mut);font-weight:600} .mut{color:var(--mut)} .mono{font-family:ui-monospace,Consolas,monospace;font-size:12px}
+  .pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px;border:1px solid var(--bd)}
+  .s-COMPLETED{color:var(--ok)} .s-FAILED{color:var(--err)} .s-PROCESSING,.s-RETRY,.s-REPROCESS{color:var(--warn)}
+  .msg{padding:8px 12px;border-radius:8px;margin:8px 0;font-size:13px}
+  .msg.ok{background:rgba(63,185,80,.12);color:var(--ok)} .msg.err{background:rgba(248,81,73,.12);color:var(--err);white-space:pre-wrap}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap} .hidden{display:none}
+  .tok{background:rgba(210,153,34,.14);color:var(--warn);padding:10px;border-radius:8px;font-family:ui-monospace,monospace;word-break:break-all}
+</style></head>
+<body>
+<header>
+  <h1>ragintel · Admin</h1><span class="pill" id="who">—</span><span class="sp"></span>
+  <input id="tok" type="password" placeholder="Admin token (Bearer)" style="width:260px">
+  <button onclick="saveTok()">Bağlan</button>
+</header>
+<div class="tabs">
+  <div class="tab on" data-t="config" onclick="tab('config')">Config</div>
+  <div class="tab" data-t="users" onclick="tab('users')">Kullanıcılar</div>
+  <div class="tab" data-t="docs" onclick="tab('docs')">Doküman & QC</div>
+</div>
+<main>
+  <div id="gate" class="msg err hidden"></div>
+  <section id="config"></section>
+  <section id="users" class="hidden"></section>
+  <section id="docs" class="hidden"></section>
+</main>
+<script>
+const $=s=>document.querySelector(s), el=(h)=>{const d=document.createElement('div');d.innerHTML=h;return d.firstElementChild;};
+function tokv(){return localStorage.getItem('ragintel_token')||'';}
+function H(){const h={'Content-Type':'application/json'};const t=tokv();if(t)h['Authorization']='Bearer '+t;return h;}
+function saveTok(){localStorage.setItem('ragintel_token',$('#tok').value.trim());$('#gate').classList.add('hidden');load();}
+async function api(path,opt={}){const r=await fetch(path,{headers:H(),...opt});
+  if(r.status===401||r.status===403){gate(r.status);throw new Error(r.status);}
+  const j=await r.json().catch(()=>({})); if(!r.ok)throw {status:r.status,body:j}; return j;}
+function gate(code){const g=$('#gate');g.textContent=code===403?'Yetkisiz: bu sayfa yalnızca admin kullanıcılar içindir (403).':'Kimlik doğrulama gerekli — geçerli admin token girin (401).';g.classList.remove('hidden');}
+function tab(t){['config','users','docs'].forEach(x=>{$('#'+x).classList.toggle('hidden',x!==t);document.querySelector('.tab[data-t='+x+']').classList.toggle('on',x===t);});}
+$('#tok').value=tokv();
+
+async function load(){ $('#gate').classList.add('hidden'); try{ await Promise.all([loadConfig(),loadUsers(),loadDocs()]); $('#who').textContent='admin ✓'; }catch(e){} }
+
+// --- 1) CONFIG ---
+async function loadConfig(){
+  const {groups}=await api('/api/admin/config'); const c=$('#config'); c.innerHTML='';
+  groups.forEach(g=>{
+    const card=el(`<div class="card"><h3>${g.group} <span class="mut" style="font-weight:400">· ${g.updated_by||'—'} · ${(g.updated_at||'').slice(0,19)}</span></h3></div>`);
+    if(g.group==='prompts' && g.value.agent_system){
+      const vers=Object.keys(g.value.agent_system);
+      const sel=el(`<div class="row" style="margin-bottom:8px">Aktif prompt: <select>${vers.map(v=>`<option ${v===g.value.agent_system_active?'selected':''}>${v}</option>`).join('')}</select> <button class="pri">Aktifi kaydet</button></div>`);
+      sel.querySelector('button').onclick=async()=>{const v={...g.value,agent_system_active:sel.querySelector('select').value};await save('prompts',v,card);};
+      card.appendChild(sel);
+    }
+    const ta=el(`<textarea>${JSON.stringify(g.value,null,2)}</textarea>`);
+    const btn=el(`<div class="row" style="margin-top:8px"><button class="pri">Kaydet (doğrula)</button></div>`);
+    btn.querySelector('button').onclick=async()=>{let v;try{v=JSON.parse(ta.value);}catch(e){return msg(card,'Geçersiz JSON: '+e.message,false);}await save(g.group,v,card);};
+    card.append(ta,btn); c.appendChild(card);
+  });
+}
+async function save(group,value,card){
+  try{const r=await api('/api/admin/config/'+group,{method:'POST',body:JSON.stringify(value)});msg(card,'Kaydedildi ('+r.updated_by+').',true);loadConfig();}
+  catch(e){const d=e.body&&e.body.detail; msg(card,'Reddedildi ('+(e.status||'')+'): '+(d?JSON.stringify(d.detail||d,null,1):(e.body&&e.body.detail)||'doğrulama hatası'),false);}
+}
+function msg(card,text,ok){const m=el(`<div class="msg ${ok?'ok':'err'}">${text}</div>`);card.appendChild(m);setTimeout(()=>m.remove(),8000);}
+
+// --- 2) USERS ---
+async function loadUsers(){
+  const {users}=await api('/api/admin/users'); const c=$('#users');
+  c.innerHTML=`<div class="card"><h3>Yeni kullanıcı</h3>
+    <div class="row"><input id="nu_id" placeholder="user_id"><input id="nu_name" placeholder="ad">
+    <input id="nu_sc" placeholder="scope'lar (virgül)" value="default"><label class="row"><input type="checkbox" id="nu_adm"> admin</label>
+    <button class="pri" onclick="createUser()">Oluştur</button></div><div id="nu_out"></div></div>`;
+  const t=el('<div class="card"><h3>Kullanıcılar</h3><table><thead><tr><th>user_id</th><th>ad</th><th>scope</th><th>admin</th><th>durum</th><th></th></tr></thead><tbody></tbody></table></div>');
+  const tb=t.querySelector('tbody');
+  users.forEach(u=>{
+    const tr=el(`<tr><td class="mono">${u.user_id}</td><td>${u.display_name||''}</td>
+      <td><input class="mono" style="width:130px" value="${u.allowed_doc_scopes.join(',')}"><button>set</button></td>
+      <td>${u.is_admin?'✓':''}</td><td>${u.active?'<span class="pill s-COMPLETED">aktif</span>':'<span class="pill s-FAILED">pasif</span>'}</td>
+      <td><button>${u.active?'deaktive':'aktive'}</button></td></tr>`);
+    const [scIn,scBtn]=tr.querySelectorAll('td:nth-child(3) input, td:nth-child(3) button');
+    scBtn.onclick=async()=>{await api(`/api/admin/users/${u.user_id}/scopes`,{method:'POST',body:JSON.stringify({scopes:scIn.value.split(',').map(s=>s.trim()).filter(Boolean)})});loadUsers();};
+    tr.querySelector('td:last-child button').onclick=async()=>{try{await api(`/api/admin/users/${u.user_id}/active`,{method:'POST',body:JSON.stringify({active:!u.active})});loadUsers();}catch(e){alert((e.body&&e.body.detail)||'hata');}};
+    tb.appendChild(tr);
+  });
+  c.appendChild(t);
+}
+async function createUser(){
+  const id=$('#nu_id').value.trim(); if(!id)return;
+  try{const r=await api('/api/admin/users',{method:'POST',body:JSON.stringify({user_id:id,display_name:$('#nu_name').value.trim()||null,allowed_doc_scopes:$('#nu_sc').value.split(',').map(s=>s.trim()).filter(Boolean),is_admin:$('#nu_adm').checked})});
+    $('#nu_out').innerHTML=`<div class="msg ok">Oluşturuldu. Token (TEK KEZ gösterilir):</div><div class="tok">${r.token}</div>`;loadUsers();}
+  catch(e){$('#nu_out').innerHTML=`<div class="msg err">Hata: ${(e.body&&e.body.detail)||e.status}</div>`;}
+}
+
+// --- 3) DOKÜMAN & QC ---
+async function loadDocs(){
+  const {files}=await api('/api/admin/files'); const c=$('#docs');
+  c.innerHTML='';
+  const ft=el('<div class="card"><h3>Dokümanlar ('+files.length+')</h3><table><thead><tr><th>dosya</th><th>tip</th><th>scope</th><th>durum</th><th>kalite</th><th>güncelleme</th></tr></thead><tbody></tbody></table></div>');
+  const ftb=ft.querySelector('tbody');
+  files.forEach(f=>ftb.appendChild(el(`<tr><td>${f.file_name}</td><td>${f.file_type}</td><td class="mono">${f.doc_scope}</td>
+    <td class="s-${f.status}">${f.status}${f.fail_reason?' <span class="mut">('+f.fail_reason.slice(0,30)+')</span>':''}</td>
+    <td>${f.quality_score??'—'}</td><td class="mut">${(f.updated_at||'').slice(0,19)}</td></tr>`)));
+  c.appendChild(ft);
+  const qc=el('<div class="card"><h3>QC bulguları</h3><div class="row" style="margin-bottom:8px">Tip: <select id="qc_ft"><option value="">hepsi</option></select> <label class="row"><input type="checkbox" id="qc_open"> yalnız açık</label> <span id="qc_cnt" class="mut"></span></div><table><thead><tr><th>dosya</th><th>bulgu</th><th>detay</th><th>durum</th><th></th></tr></thead><tbody></tbody></table></div>');
+  c.appendChild(qc);
+  ['empty_chunk','duplicate_chunk','too_short','too_long','parse_failed','embed_failed','injection_suspect','low_coverage','low_retention','no_cleaning_effect','chunk_truncation_high','embed_anomaly'].forEach(t=>qc.querySelector('#qc_ft').appendChild(el(`<option>${t}</option>`)));
+  qc.querySelector('#qc_ft').onchange=loadQc; qc.querySelector('#qc_open').onchange=loadQc;
+  await loadQc();
+}
+async function loadQc(){
+  const ft=$('#qc_ft').value, open=$('#qc_open').checked;
+  const {findings,counts}=await api(`/api/admin/qc?only_open=${open}${ft?'&finding_type='+ft:''}`);
+  $('#qc_cnt').textContent=`açık ${counts.open} · çözüldü ${counts.resolved} · toplam ${counts.total}`;
+  const tb=$('#docs').querySelector('.card:last-child tbody'); tb.innerHTML='';
+  findings.forEach(f=>{
+    const tr=el(`<tr><td>${f.file_name}</td><td class="pill">${f.finding}</td><td class="mut">${(f.detail||'').slice(0,60)}</td>
+      <td>${f.resolved?'<span class="s-COMPLETED">çözüldü</span>':'<span class="s-FAILED">açık</span>'}</td>
+      <td><button>${f.resolved?'aç':'çözüldü işaretle'}</button></td></tr>`);
+    tr.querySelector('button').onclick=async()=>{await api(`/api/admin/qc/${f.finding_id}/resolve`,{method:'POST',body:JSON.stringify({resolved:!f.resolved})});loadQc();};
+    tb.appendChild(tr);
+  });
+}
+if(tokv())load(); else gate(401);
+</script>
+</body></html>

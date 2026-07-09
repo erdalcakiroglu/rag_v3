@@ -122,4 +122,7 @@ def test_fallback_response_is_low_confidence():
     }
     res = fallback_response(state, config=_cfg())
     assert res["confidence"] == "low"
-    assert "Güvenilir yanıt üretilemedi" in res["answer"]
+    assert "Cevap bulunamadı" in res["answer"]
+    # FAZ 5: reddetme yolu → sources BOŞ (uydurma yok); incelenen chunk meta'ya taşınır.
+    assert res["sources"] == []
+    assert [s["chunk_id"] for s in res["meta"]["reviewed_sources"]] == [10]

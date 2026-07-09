@@ -320,6 +320,10 @@ class RetrievalService:
                 fail_closed=False,
                 rank_detail=self._hybrid_rank_detail(chunks),
             )
+            self.log.info(
+                "retrieval_timing", method="hybrid", query_embed_ms=embed_ms,
+                db_ms=db_ms, result_count=len(chunks),
+            )
             return chunks
 
     def search_vector(
@@ -358,6 +362,10 @@ class RetrievalService:
                 db_ms=db_ms,
                 result_count=len(chunks),
                 fail_closed=False,
+            )
+            self.log.info(
+                "retrieval_timing", method="vector", query_embed_ms=embed_ms,
+                db_ms=db_ms, result_count=len(chunks),
             )
             return chunks
 
@@ -418,12 +426,17 @@ class RetrievalService:
             if not allowed:
                 set_span_attributes(result_count=0, fail_closed=True)
                 return []
+            t0 = time.perf_counter()
             if backend == "tei":
                 ordered = self._tei_rerank(query, chunk_ids, allowed)
-                set_span_attributes(result_count=len(ordered), fail_closed=False)
-                return ordered
-            if backend != "passthrough":
+            elif backend == "passthrough":
+                ordered = self._passthrough_rerank(chunk_ids)
+            else:
                 raise ValueError(f"Desteklenmeyen rerank backend: {backend}")
-            ordered = self._passthrough_rerank(chunk_ids)
-            set_span_attributes(result_count=len(ordered), fail_closed=False)
+            rerank_ms = int((time.perf_counter() - t0) * 1000)
+            set_span_attributes(result_count=len(ordered), fail_closed=False, rerank_ms=rerank_ms)
+            self.log.info(
+                "rerank_timing", backend=backend, rerank_ms=rerank_ms,
+                chunk_count=len(chunk_ids),
+            )
             return ordered

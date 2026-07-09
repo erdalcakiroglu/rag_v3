@@ -157,6 +157,37 @@ Kontroller (v1 — deterministik, hızlı):
 
 v2 (FAZ 8): NLI tabanlı entailment / LLM-as-judge — yalnızca v1'in kaçırdığı örnekler birikirse (bkz. 7c ajan planı).
 
+**İP-2.3 bulgusu (v1 kör noktası — 7c tetiği ATEŞLENDİ):** v1 quote'un bağlamda BİREBİR
+geçtiğini (✓) + coverage'ı (✓) denetler ama quote'un iddiayı ANLAMSAL olarak destekleyip
+desteklemediğini (entailment) denetlemez. gs-v0-034: GERÇEK ama HİPOTETİK bir quote
+("under different tax rates (2014 estimations) ... 3.62% and 0.54%") desteklemediği bir iddiaya
+(Türkiye'nin gerçek bütçe payı) dayanak yapıldı → v1 geçirdi, conf=high.
+
+### 4-v2 — Toplu entailment (FAZ 5, UYGULANDI)
+
+**Akış:** v1 deterministik kontroller **GEÇTİKTEN sonra** (ve citation varken), TÜM citation'lar
+**TEK judge çağrısında** denetlenir (`guardrails/entailment.py`):
+- (a) `supported`: alıntı iddiayı ANLAMSAL olarak destekliyor mu? Değilse → `unsupported_claim:{chunk_id}`.
+- (b) `hypothetical_as_fact`: hipotetik/koşullu/tahmini ya da başka ülke/dönem içeriği kesin olgu
+  gibi mi sunulmuş? Öyleyse → `overconfident_hypothetical:{chunk_id}`.
+
+**Bu issue'lar validation.issues'a eklenir → passed=False → mevcut retry/fallback akışı** (aynı
+`VALIDATION_FAILED` formatı; §feedback'e hedefli düzeltme talimatı eklendi). Sonuç: entailment
+başarısız bir yanıt compose'a ulaşamaz → **conf=high İMKÂNSIZ** (gs-v0-034 → declined/fallback).
+
+**Config:** `agent.validate_entailment` (on/off, varsayılan KAPALI) + `agent.validate_entailment_model`
+(boşsa `LiteLLMSettings.model`). Judge bağlantısı `RAGINTEL_LLM_*`. **DEV-MODE:** bulut judge
+(deepseek-v4-flash, `deepseek/dev-mode` etiketi span'e). **PROD: lokal judge ZORUNLU** (veri
+egemenliği — runbook).
+
+**Fail-OPEN (bilinçli, rerank'tan FARKLI felsefe):** judge erişilemezse FAIL-CLOSED DEĞİL —
+v1 sonucuyla devam edilir (sorgu ölmez), AMA güvenlik katmanı eksilmesi GÖRÜNÜR olur:
+`span.entailment_skipped=true` + WARNING log + metrik. (rerank fail-open kalite; bu güvenlik →
+görünürlük şart.)
+
+**Latency/maliyet:** yanıt başına +1 judge çağrısı (yalnızca v1 PASS + citation varken).
+İP-2.3 §5b'nin bıraktığı karar bu tasarımla kapatıldı; İP-2.3 raporu delta'sıyla ölçülür.
+
 FAIL feedback formatı (ajana dönen mesaj):
 ```
 VALIDATION_FAILED:
@@ -175,17 +206,26 @@ Talimat: Yalnızca sağlanan bağlamdaki bilgiyle yanıtla; desteklenmeyen iddia
   ],
   "confidence": "high | medium | low",
   "followups": ["...", "..."],
-  "meta": {"iterations": 2, "tokens": 8400, "latency_ms": 9200, "model": "qwen3-...", "trace_id": "..."}
+  "meta": {"iterations": 2, "tokens": 8400, "latency_ms": 9200, "model": "qwen3-...",
+           "trace_id": "...", "reviewed_sources": []}
 }
 ```
 
 `confidence` türetme (deterministik): coverage ≥0.9 ve rerank top skoru yüksek → high; validation retry yaşandıysa → en fazla medium; fallback → low.
 
+**§5-v2 revizyonu (FAZ 5, İP-2.3 §3a bulgusu):** `sources` YALNIZCA cevabı DESTEKLEYEN
+kanıttır. **Reddedilen/fallback yolunda** (`confidence=low` ya da fallback node) `sources = []`
+olur; incelenen-ama-cevabı-desteklemeyen chunk'lar `meta.reviewed_sources`'a taşınır (citation
+DEĞİL — UI "İncelenen kaynaklar" olarak AYRI etiketler, alıntı görünümü dışında). Gerekçe:
+cevapsız/reddedilen bir soruda kaynak göstermek "kaynak uydurma" olarak ölçülür (dürüstlük).
+`reviewed_sources` additive alandır (Meta `extra=forbid`'e bilinçli eklendi; varsayılan boş,
+geriye-uyumlu). Fallback yanıt metni: "Cevap bulunamadı. İncelenen kaynaklar aşağıdadır."
+
 ## 6. Bütçe ve Limitler (config-first, DB'den)
 
 | Limit | Varsayılan | Aşılınca |
 |---|---|---|
-| max_iterations (ajan-tool turu) | 4 | Eldeki bağlamla yanıt zorla → validate |
+| max_iterations (ajan-tool turu) | ~~4~~ **3** (FAZ 5) | Eldeki bağlamla yanıt zorla → validate |
 | max_tokens (toplam) | 16k | Aynı |
 | Wall-clock timeout | 60 sn | Fallback |
 | Per-tool timeout | 10 sn | tool_error mesajı, ajan devam eder |
@@ -230,6 +270,14 @@ ragintel/
 - Her iddiaya citation; bağlamda olmayan bilgi için "dokümanlarda bulunamadı" de.
 - Türkçe yanıtla (sorgu dili farklıysa sorgu dilinde).
 - Bütçe farkındalığı: kalan iterasyon state'ten prompt'a enjekte edilir.
+
+**§8-v2 (FAZ 5):** Sistem prompt'ları artık **DB-versiyonlu** — `app_config('prompts')`
+grubu: `agent_system = {v1, v2, ...}` + `agent_system_active` (kod: `PromptsConfig`,
+`prompts.py`). Öncelik: `prompts.agent_system[active]` > `agent.system_prompt` override >
+kod varsayılanı (`DEFAULT_SYSTEM_PROMPT` = v1). Aktif = **v2** (İP-2.3 §5a sertleştirmesi):
+v1'e ek GROUNDING (yalnızca AÇIKÇA yazan bilgi; hipotetik/tahmini/koşullu/başka-bağlam
+ifadesini kesin cevap gibi sunma) + REDDETME (bağlam açıkça cevaplamıyorsa "bulunamadı" +
+BOŞ citations). Tool/quote kuralları v1 ile AYNI (tek değişken oynatıldı — delta okunabilirliği).
 
 ## 9. FAZ 1-3'e Geri Beslenen Gereksinimler
 

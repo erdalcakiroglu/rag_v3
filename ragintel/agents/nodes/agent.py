@@ -88,12 +88,21 @@ def _feedback_message(state: dict) -> list[dict]:
     validation = state.get("validation")
     if not validation or validation.get("passed"):
         return []
-    issues = "\n".join(f"- {issue}" for issue in validation.get("issues", []))
-    content = (
-        f"{_FEEDBACK_HEADER}\n{issues}\n"
+    issue_list = validation.get("issues", [])
+    issues = "\n".join(f"- {issue}" for issue in issue_list)
+    hint = (
         "Talimat: Yalnızca sağlanan bağlamdaki bilgiyle yanıtla; desteklenmeyen "
         "iddiaları çıkar veya ek arama yap."
     )
+    # FAZ 5 validate v2: entailment issue'larına hedefli düzeltme talimatı.
+    if any(str(i).startswith("unsupported_claim") for i in issue_list):
+        hint += (" Bir iddiayı YALNIZCA alıntı o iddiayı DOĞRUDAN kanıtlıyorsa öne sür; "
+                 "alıntı iddiayı kanıtlamıyorsa o cümleyi ve citation'ı ÇIKAR.")
+    if any(str(i).startswith("overconfident_hypothetical") for i in issue_list):
+        hint += (" Hipotetik/tahmini/koşullu ya da başka ülke/döneme ait bir bilgiyi KESİN olgu "
+                 "gibi sunma; ya 'tahmin/projeksiyon' olduğunu açıkça belirt ya da bu soruyu "
+                 "'bulunamadı' diye yanıtla (kaynak GÖSTERME).")
+    content = f"{_FEEDBACK_HEADER}\n{issues}\n{hint}"
     return [{"role": "user", "content": content}]
 
 

@@ -7,10 +7,7 @@ from .compose import compose_response
 
 
 def fallback_response(state: dict, *, config: EffectiveConfig | None = None, trace_id: str | None = None) -> dict:
-    updated = {
-        **state,
-        "draft_answer": "Güvenilir yanıt üretilemedi. Bulunan kaynaklar aşağıdadır.",
-    }
-    resp = compose_response(updated, config=config, trace_id=trace_id)
-    resp["confidence"] = "low"
-    return resp
+    # FAZ 5: reddetme yolu → cevap bulunamadı. sources=[] (uydurma yok); incelenen chunk'lar
+    # meta.reviewed_sources'a gider (compose declined=True ile ayırır).
+    updated = {**state, "draft_answer": "Cevap bulunamadı. İncelenen kaynaklar aşağıdadır."}
+    return compose_response(updated, config=config, trace_id=trace_id, declined=True)

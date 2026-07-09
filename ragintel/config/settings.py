@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 # Öncelik zincirinden yönetilen pipeline config grupları.
-PIPELINE_GROUPS = ("chunking", "embedding", "ingestion", "quality", "injection", "retrieval", "agent")
+PIPELINE_GROUPS = ("chunking", "embedding", "ingestion", "quality", "injection", "retrieval", "agent", "prompts", "pii")
 
 
 # --------------------------------------------------------------------------
@@ -360,6 +360,12 @@ class AgentConfig(BaseModel):
     # §4 faithful-paraphrase: quote birebir değilse, içerik-token'larının bu oranı
     # bağlamda geçmeli (halüsinasyonu eler, parafrazı kabul eder).
     validation_quote_overlap_threshold: float = 0.70
+    # FAZ 5 validate v2: v1 PASS sonrası toplu LLM entailment (unsupported_claim /
+    # overconfident_hypothetical). Varsayılan KAPALI (opt-in guardrail). Judge modeli
+    # boşsa LiteLLMSettings.model (dev=deepseek-v4-flash) kullanılır; bağlantı
+    # RAGINTEL_LLM_* (.env). PROD'da lokal judge ZORUNLU (veri egemenliği — runbook).
+    validate_entailment: bool = False
+    validate_entailment_model: str = ""
     compose_followup_count: int = 2
     # FAZ 4: agent LLM'i (config-first). Dev'de CPU Ollama'daki küçük model;
     # H200 gelince ör. "qwen3.5:35b" — DB/ENV (RAGINTEL_AGENT_MODEL) ile değişir,
@@ -368,6 +374,26 @@ class AgentConfig(BaseModel):
     system_prompt: str = ""
     # FAZ 7: API girdi uzunluk sınırı (soru karakter üst sınırı).
     max_question_chars: int = 2000
+
+
+class PiiConfig(BaseModel):
+    """FAZ 6 P2: output PII maskeleme (KVKK temel seti). TCKN+tarih deterministik;
+    custom_patterns ile genişletilebilir (app_config('pii'))."""
+
+    enabled: bool = True
+    mask_tckn: bool = True
+    mask_dates: bool = True
+    custom_patterns: list[str] = Field(default_factory=list)
+
+
+class PromptsConfig(BaseModel):
+    """FAZ 5: DB-versiyonlu sistem prompt'ları. `agent_system` = {versiyon: gövde};
+    `agent_system_active` aktif versiyonu seçer. Boş/eksikse kod varsayılanı (prompts.py)
+    nihai fallback'tir. En küçük DB-versiyonlu mekanizma (yeni tablo/DDL yok — app_config
+    grubu; bkz. IP23 §5b tasarım kararı)."""
+
+    agent_system_active: str = ""
+    agent_system: dict[str, str] = Field(default_factory=dict)
 
 
 # group adı -> (model sınıfı)
@@ -379,6 +405,8 @@ GROUP_MODELS: dict[str, type[BaseModel]] = {
     "injection": InjectionConfig,
     "retrieval": RetrievalConfig,
     "agent": AgentConfig,
+    "prompts": PromptsConfig,
+    "pii": PiiConfig,
 }
 
 
