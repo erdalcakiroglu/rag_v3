@@ -10,6 +10,15 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class TableRef(BaseModel):
+    """M-2: chunk tablo-kökenliyse kaynağın işaret ettiği tablo (+ M-1 alt-chunk'ında
+    satır aralığı). Aralık gövde satırlarına göre 1-tabanlı ve kapsayıcıdır."""
+    model_config = ConfigDict(extra="forbid")
+    table_id: int
+    row_start: int | None = None
+    row_end: int | None = None
+
+
 class Source(BaseModel):
     model_config = ConfigDict(extra="forbid")
     n: int
@@ -18,6 +27,9 @@ class Source(BaseModel):
     section: str | None = None
     chunk_id: int
     quote: str
+    # M-2: tablo-kökenli kaynaklarda dolu; diğerlerinde None (davranış değişmez).
+    # Additive — extra='forbid' şemaya bilinçli eklendi (reviewed_sources ile aynı gerekçe).
+    table_ref: TableRef | None = None
 
 
 class Meta(BaseModel):

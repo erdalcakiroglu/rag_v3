@@ -18,6 +18,7 @@ import httpx
 from ..agents.graph import build_agent_graph, run_agent
 from ..config.loader import EffectiveConfig
 from ..config.settings import LangfuseSettings, LiteLLMSettings, OllamaSettings, TeiSettings
+from ..database import table_repo
 from ..ingestion.injection.scanner import InjectionScanner
 from ..observability.logging import get_logger
 from ..observability.tracing import set_span_attributes, start_span
@@ -141,8 +142,37 @@ class RagRuntime:
                 set_span_attributes(error=type(exc).__name__)
                 self.log.error("api_ask_failed", session_id=session_id, error=str(exc)[:200])
                 final = self._error_response(trace_id, t0, type(exc).__name__)
+        self._enrich_table_refs(final)
         return AskResult(session_id=session_id, final_response=final,
                          injection_flagged=inj.flagged, trace_id=trace_id)
+
+    # -- M-2: kaynak zenginleştirme (additive) ---------------------------------
+    def _enrich_table_refs(self, final: dict) -> None:
+        """Tablo-kökenli kaynaklara `table_ref` ekler. Tablo-kökenli OLMAYAN kaynaklara
+        dokunmaz. Çözümleme hatası /api/ask'i ÇÖKERTMEZ — kaynaklar zenginleştirilmeden
+        döner (tablo düğmesi çıkmaz, cevap+alıntı aynen çalışır)."""
+        srcs = list(final.get("sources") or [])
+        srcs += list((final.get("meta") or {}).get("reviewed_sources") or [])
+        chunk_ids = [int(s["chunk_id"]) for s in srcs if s.get("chunk_id") is not None]
+        if not chunk_ids:
+            return
+        try:
+            with self.db.connection() as conn:
+                refs = table_repo.resolve_table_refs(conn, chunk_ids)
+        except Exception as exc:
+            self.log.warning("table_ref_resolve_failed", error=str(exc)[:200])
+            return
+        for src in srcs:
+            ref = refs.get(int(src["chunk_id"]))
+            if ref is not None:
+                src["table_ref"] = ref
+
+    # -- M-2: GET /api/table/{table_id} (scope fail-closed) ---------------------
+    def table(self, table_id: int, user_ctx: dict) -> dict | None:
+        """Scope'a uygunsa tablo payload'ı, değilse/yoksa None (çağıran 404'e çevirir)."""
+        with self.db.connection() as conn:
+            return table_repo.get_table_for_scopes(
+                conn, table_id, list(user_ctx.get("allowed_doc_scopes") or []))
 
     @staticmethod
     def _error_response(trace_id: str, t0: float, reason: str) -> dict:

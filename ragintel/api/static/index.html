@@ -40,6 +40,19 @@
   .meta{color:var(--mut);font-size:12px;margin-top:12px;border-top:1px solid var(--line);padding-top:8px}
   .warn{background:rgba(210,153,34,.14);border:1px solid var(--me);color:var(--me);padding:8px 12px;border-radius:8px;margin-top:12px;font-size:13px}
   .err{color:var(--lo)}
+  /* M-2 — yapısal tablo gösterimi */
+  .tbtn{margin-top:8px;background:transparent;border:1px solid var(--acc);color:var(--acc);
+        border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer}
+  .tbtn:hover{background:rgba(74,158,255,.12)}
+  .twrap{overflow:auto;border:1px solid var(--line);border-radius:6px;margin:6px 0;max-height:420px}
+  /* width:max-content + hücre sarması: TEK bir uzun hücre ilk kolonu şişirip
+     alıntının geldiği sağdaki kolonları ekran dışına itmesin. */
+  table.dt{border-collapse:collapse;width:max-content;min-width:100%;font-size:12.5px}
+  table.dt th,table.dt td{border:1px solid var(--line);padding:5px 7px;text-align:left;
+        max-width:180px;white-space:normal;overflow-wrap:anywhere;vertical-align:top}
+  table.dt th{background:#0d1117;color:var(--mut);font-weight:600;position:sticky;top:0}
+  table.dt tr.hl td{background:rgba(74,158,255,.16);border-color:rgba(74,158,255,.5)}
+  .tmut{color:var(--mut);font-size:11.5px;margin:4px 0}
 </style>
 </head>
 <body>
@@ -103,8 +116,12 @@ function render(resp, injected){
     h += `<h3>Kaynaklar</h3>`;
     resp.sources.forEach(s=>{
       const loc = s.page!=null ? `s.${s.page}` : '';
+      // M-2: yalnızca tablo-kökenli kaynakta düğme + tablo kabı. Diğerleri AYNEN eski görünüm.
+      const tr = s.table_ref;
+      const btn = tr ? `<button class="tbtn" onclick="showTable(${s.n},${tr.table_id},${num(tr.row_start)},${num(tr.row_end)},event)">Tabloyu görüntüle</button>` : '';
+      const box = tr ? `<div id="tbl-${s.n}"></div>` : '';
       h += `<div class="src" onclick="this.classList.toggle('open')"><b>[${s.n}]</b> ${esc(s.file_name)} ${loc}
-             ${s.section?('· '+esc(s.section)):''}<div class="q">“${esc(s.quote)}”</div></div>`;
+             ${s.section?('· '+esc(s.section)):''}<div class="q">“${esc(s.quote)}”</div>${btn}${box}</div>`;
     });
   } else {
     // FAZ 5: reddedilen yanıtta kaynak GÖSTERİLMEZ (citation değil). İncelenen ama cevabı
@@ -133,6 +150,55 @@ function render(resp, injected){
   const m = resp.meta||{};
   h += `<div class="meta">tur: ${m.iterations} · token: ${m.tokens} · model: ${esc(m.model||'')} · trace: ${esc((tid||'').slice(0,12))}</div></div>`;
   out.innerHTML = h;
+}
+
+// ---- M-2: yapısal tablo gösterimi -----------------------------------------
+function num(v){ return (v===null||v===undefined) ? 'null' : Number(v); }
+
+// Tabloyu jsonb'den HTML olarak kurar. rowStart/rowEnd doluysa (M-1 alt-chunk'ı)
+// ilgili GÖVDE satırları vurgulanır; boşsa tablonun tamamı sade gösterilir.
+function tableHtml(t, rowStart, rowEnd){
+  const loc = t.sheet ? ('sayfa: '+esc(t.sheet)) : (t.page!=null ? ('s.'+t.page) : '');
+  let h = `<div class="tmut">${esc(t.file_name)} ${loc} · tablo ${t.table_index}`
+        + `${t.headerless ? ' · başlıksız (jenerik kolonlar)' : ''} · ${t.row_count} satır</div>`;
+  h += `<div class="twrap"><table class="dt"><thead><tr>`;
+  t.columns.forEach(c => h += `<th>${esc(c)}</th>`);
+  h += `</tr></thead><tbody>`;
+  t.rows.forEach((row, i) => {
+    const no = i + 1;  // gövde satırı, 1-tabanlı (M-1 satır aralığı ile aynı sayım)
+    const hl = (rowStart != null && no >= rowStart && no <= rowEnd) ? ' class="hl"' : '';
+    h += `<tr${hl}>` + row.map(c => `<td>${esc(c)}</td>`).join('') + `</tr>`;
+  });
+  h += `</tbody></table></div>`;
+  if(rowStart != null){
+    const span = (rowEnd !== rowStart) ? `${rowStart}–${rowEnd}` : `${rowStart}`;
+    h += `<div class="tmut">Alıntının geldiği satırlar vurgulandı: gövde satırı ${span}</div>`;
+  }
+  return h;
+}
+
+async function showTable(n, tableId, rowStart, rowEnd, ev){
+  ev.stopPropagation();                       // kaynak kartının aç/kapa toggle'ını tetikleme
+  const box = document.getElementById('tbl-'+n);
+  if(box.dataset.open === '1'){ box.innerHTML=''; box.dataset.open='0'; return; }
+  box.dataset.open = '1';
+  box.innerHTML = '<div class="tmut">Tablo yükleniyor…</div>';
+  try{
+    const r = await fetch('/api/table/'+tableId, {headers: authHeaders()});
+    if(!r.ok){
+      // 404 = yok VEYA scope dışı (fail-closed, ayırt edilemez). Alıntı metni geçerli kalır.
+      box.innerHTML = `<div class="tmut">Tablo görüntülenemedi (${r.status}) — yukarıdaki alıntı geçerlidir.</div>`;
+      return;
+    }
+    const t = await r.json();
+    if(!t.renderable){
+      box.innerHTML = '<div class="tmut">Tablo verisi okunamadı — yukarıdaki alıntı metni geçerlidir.</div>';
+      return;
+    }
+    box.innerHTML = tableHtml(t, rowStart, rowEnd);
+  }catch(e){
+    box.innerHTML = '<div class="tmut">Tablo yüklenemedi — yukarıdaki alıntı metni geçerlidir.</div>';
+  }
 }
 
 async function feedback(rating, traceId, el){

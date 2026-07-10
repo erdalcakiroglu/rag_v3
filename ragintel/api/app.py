@@ -94,6 +94,23 @@ def create_app(runtime: RagRuntime | None = None) -> FastAPI:
             "X-Injection-Flagged": "1" if res.injection_flagged else "0",
         })
 
+    @app.get("/api/table/{table_id}")
+    def table(table_id: int, authorization: str | None = Header(default=None)):
+        """M-2: kaynak panelindeki tablo-kökenli citation'ın yapısal gösterimi.
+
+        GÜVENLİK (fail-closed): tablonun dosyası kullanıcının doc_scope'larında
+        değilse 404 döner — 403 DEĞİL, çünkü 403 tablonun VAR OLDUĞUNU sızdırır.
+        Var olmayan table_id ile ayırt edilemez yanıt.
+        """
+        try:
+            user_ctx = rt().resolver.resolve(bearer_token(authorization))
+        except Unauthorized as exc:
+            raise HTTPException(401, str(exc), headers={"WWW-Authenticate": "Bearer"})
+        payload = rt().table(table_id, user_ctx)
+        if payload is None:
+            raise HTTPException(404, "Tablo bulunamadı")
+        return payload
+
     @app.post("/api/feedback")
     def feedback(req: FeedbackRequest):
         return rt().feedback(session_id=req.session_id, trace_id=req.trace_id,
