@@ -40,7 +40,7 @@ from .persistence import StorageWriteError, StorageWriter
 from .qc import QCConsolidator
 from .scanner import FolderScanner
 
-MAX_RETRY = 3
+# M-4: eskiden `MAX_RETRY = 3` sabitiydi → artık `ingestion.max_retry` (DB > ENV > default).
 
 
 def _scan_text(doc) -> str:
@@ -85,9 +85,10 @@ class Orchestrator:
         return results
 
     def retry(self) -> dict:
-        """retry_count<3 FAILED'leri PENDING'e çeker (retry_count++) ve işler."""
+        """retry_count < `ingestion.max_retry` FAILED'leri PENDING'e çeker (retry_count++)."""
+        max_retry = int(self.cfg.group("ingestion").max_retry)
         with self.db.connection() as conn:
-            retryable = list_failed_retryable(conn, MAX_RETRY)
+            retryable = list_failed_retryable(conn, max_retry)
             for f in retryable:
                 increment_retry_and_pending(conn, f["file_id"])
         self.log.info("retry_scheduled", count=len(retryable))

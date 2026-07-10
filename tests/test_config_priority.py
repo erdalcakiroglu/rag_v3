@@ -65,7 +65,8 @@ def test_db_overrides_env_and_default(clean_env):
 
 def test_partial_db_override_keeps_lower_layers(clean_env):
     """DB yalnızca bir alanı ezerse, aynı grubun diğer alanları alt katmandan gelir."""
-    environ = {"RAGINTEL_EMBEDDING_NORMALIZE": "false"}  # env katmanı
+    # M-4: `embedding.normalize` KALDIRILDI (hiç okunmayan yalan alandı) → env örneği `dim`.
+    environ = {"RAGINTEL_EMBEDDING_DIM": "768"}  # env katmanı
 
     def fake_db_reader():
         return {"embedding": {"batch_size": 16}}  # yalnızca batch_size
@@ -74,8 +75,8 @@ def test_partial_db_override_keeps_lower_layers(clean_env):
 
     assert cfg.value("embedding", "batch_size") == 16          # db
     assert cfg.source_of("embedding", "batch_size") == "db"
-    assert cfg.value("embedding", "normalize") is False        # env
-    assert cfg.source_of("embedding", "normalize") == "env"
+    assert cfg.value("embedding", "dim") == 768                # env
+    assert cfg.source_of("embedding", "dim") == "env"
     assert cfg.value("embedding", "model") == "BAAI/bge-m3"    # default
     assert cfg.source_of("embedding", "model") == "default"
 

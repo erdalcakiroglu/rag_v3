@@ -50,6 +50,7 @@ _NOTFOUND_MARKERS = (
     "yer almamaktadır", "güvenilir yanıt üretilemedi", "dokümanlarda bulunm",
     "belgelerde bulunm", "bilgi bulunm", "yanıt üretilemedi",
 )
+# M-4: efektif değer `eval.ctx_cap` (DB > ENV > default); bu yalnızca fallback.
 _CTX_CAP = 10  # judge maliyeti: en fazla bu kadar bağlam parçası değerlendirilir
 
 
@@ -103,7 +104,8 @@ def build_eval_app(agent_model: str | None = None):
     Ajan modeli: CLI --agent-model > .env RAGINTEL_LLM_MODEL > DEFAULT_AGENT_MODEL."""
     db = Database(DbSettings()).open()
     cfg = load_config(db_reader=make_db_reader(db))
-    model = agent_model or LiteLLMSettings().model or DEFAULT_AGENT_MODEL
+    # M-4: model önceliği CLI > .env RAGINTEL_LLM_MODEL > DB `eval.agent_model` > kod default.
+    model = agent_model or LiteLLMSettings().model or cfg.group("eval").agent_model or DEFAULT_AGENT_MODEL
     gateway = LiteLLMGateway(model=model, settings=LiteLLMSettings())
     service = RetrievalService(db=db, config=cfg)
     context_builder = ContextBuilder(db=db, config=cfg)
@@ -114,17 +116,17 @@ def build_eval_app(agent_model: str | None = None):
     return db, cfg, model, app
 
 
-def _contexts_from_out(out: dict) -> list[str]:
+def _contexts_from_out(out: dict, cap: int = _CTX_CAP) -> list[str]:
     ctx = out.get("context") or {}
     blocks = ctx.get("blocks") or []
     if blocks:
         texts = [str(b.get("text", "")) for b in blocks]
     else:
         texts = [str(c.get("text", "")) for c in (out.get("retrieved") or [])]
-    return [t for t in texts if t.strip()][:_CTX_CAP]
+    return [t for t in texts if t.strip()][:cap]
 
 
-def run_question(app, rec: dict) -> dict:
+def run_question(app, rec: dict, *, ctx_cap: int = _CTX_CAP) -> dict:
     """Bir golden kaydı agent graph'ından geçirir; eval satırı döndürür."""
     initial = {
         "query": rec["question"],
@@ -144,7 +146,7 @@ def run_question(app, rec: dict) -> dict:
         "question": rec["question"],
         "ground_truth": rec["ideal_answer"],
         "answer": str(final.get("answer") or ""),
-        "contexts": _contexts_from_out(out),
+        "contexts": _contexts_from_out(out, ctx_cap),
         "confidence": final.get("confidence", ""),
         "sources": final.get("sources") or [],
         "iterations": int((final.get("meta") or {}).get("iterations", 0)),
@@ -244,7 +246,8 @@ def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
             answerable = answerable[:limit]
             unanswerable = unanswerable[: min(2, limit)]
 
-        judge = Judge(model=judge_model or LiteLLMSettings().model or DEFAULT_JUDGE_MODEL)
+        judge = Judge(model=judge_model or LiteLLMSettings().model
+                      or cfg.group("eval").judge_model or DEFAULT_JUDGE_MODEL)
         embedder = JudgeEmbedder()
         t0 = time.perf_counter()
         ck = _load_ck(out_path)
@@ -259,7 +262,7 @@ def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
             if rec["id"] in ck["answers"] or rec["id"] in ck["errors"]:
                 continue
             try:
-                row = run_question(app, rec)
+                row = run_question(app, rec, ctx_cap=int(cfg.group("eval").ctx_cap))
                 ck["answers"][rec["id"]] = row
                 _save_ck(out_path, ck)
                 _LOG.info("eval_answered", id=rec["id"], iterations=row["iterations"],

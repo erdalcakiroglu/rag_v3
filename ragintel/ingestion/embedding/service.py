@@ -26,7 +26,7 @@ from ...database.ingestion_repo import insert_metric, insert_qc_finding
 from ...observability.logging import bind_context, clear_context, get_logger
 from ...observability.tracing import add_event, set_span_attributes, start_span
 from ..chunking.chunk import Chunk
-from .embedder import EmbeddingBackendError, OllamaEmbedder
+from .embedder import EmbeddingBackendError, OllamaEmbedder, model_stamp
 from .quality import compute_embed_metrics, is_bad_vector, mean_pairwise_cosine
 
 EMBED_STEP = "embed"
@@ -69,12 +69,15 @@ class EmbeddingService:
 
         from ...config.settings import OllamaSettings
         s = OllamaSettings()
+        # M-4 PARÇA 1: model TEK OTORİTE = `embedding.model` (DB). `OllamaSettings.model`
+        # yalnızca bootstrap-fallback (DB/config erişilemezse).
+        model = emb.model or s.model
         self.embedder = embedder or OllamaEmbedder(
-            s.base_url, model=s.model, timeout=s.timeout)
+            s.require_base_url(), model=model, timeout=s.timeout)
         self.retries = s.retries if retries is None else retries
         self.backoff_base = s.backoff_base if backoff_base is None else backoff_base
         self.sleep = sleep
-        self.model_name = getattr(self.embedder, "model_name", "bge-m3@ollama")
+        self.model_name = getattr(self.embedder, "model_name", model_stamp(model))
         self.log = logger or get_logger("ingestion.embed")
 
     # -- public ---------------------------------------------------------------

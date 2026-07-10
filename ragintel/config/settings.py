@@ -17,7 +17,19 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 # Öncelik zincirinden yönetilen pipeline config grupları.
-PIPELINE_GROUPS = ("chunking", "embedding", "ingestion", "quality", "injection", "retrieval", "agent", "prompts", "pii", "eval_gates")
+PIPELINE_GROUPS = ("chunking", "embedding", "ingestion", "quality", "injection", "retrieval",
+                   "agent", "prompts", "pii", "eval_gates", "storage", "api", "eval")
+
+
+class MissingBootstrapSetting(RuntimeError):
+    """Zorunlu bootstrap ayarı (.env) tanımsız — fail-fast, sessiz varsayılan YOK."""
+
+
+def _require(value: str, env_name: str) -> str:
+    """M-4 PARÇA 3: iç altyapı bilgisi koda gömülmez. Boşsa AÇIK hata."""
+    if not value:
+        raise MissingBootstrapSetting(f"{env_name} tanımsız (.env'de tanımlayın)")
+    return value
 
 
 # --------------------------------------------------------------------------
@@ -61,12 +73,14 @@ class DbSettings(DotenvOnlySettings):
         extra="ignore",
     )
 
-    host: str = "192.168.36.15"
+    # M-4 PARÇA 3: gerçek host/kullanıcı/parola KOD DEFAULT'U DEĞİL — yalnızca .env.
+    # (Dünkü push'un dersi: iç altyapı bilgisi repoya gömülmez.)
+    host: str = ""
     port: int = 5432
     name: str = "ragintel"
     schema_name: str = Field(default="ragintel", alias="RAGINTEL_DB_SCHEMA")
-    user: str = "ragintel_app"
-    password: str = "ragintel_app"
+    user: str = ""
+    password: str = ""
     pool_min_size: int = 1
     pool_max_size: int = 8
     connect_timeout: int = 10
@@ -74,7 +88,10 @@ class DbSettings(DotenvOnlySettings):
     connect_backoff_base: float = 0.5  # İP-0: exponential backoff taban (sn)
 
     def conninfo(self) -> str:
-        """psycopg conninfo string (search_path şemayı hedefler)."""
+        """psycopg conninfo string (search_path şemayı hedefler). Eksik ayarda AÇIK hata."""
+        _require(self.host, "RAGINTEL_DB_HOST")
+        _require(self.user, "RAGINTEL_DB_USER")
+        _require(self.password, "RAGINTEL_DB_PASSWORD")
         return (
             f"host={self.host} port={self.port} dbname={self.name} "
             f"user={self.user} password={self.password} "
@@ -152,11 +169,16 @@ class OllamaSettings(DotenvOnlySettings):
         extra="ignore",
     )
 
-    base_url: str = "http://banasor.goldenglobalbank.com.tr:11434"
-    model: str = "bge-m3"
+    base_url: str = ""          # M-4: iç host koda gömülmez → .env zorunlu
+    # M-4 PARÇA 1: model artık `embedding.model` (DB) otoritesinde. Bu alan yalnızca
+    # bootstrap-fallback (DB/config erişilemezse). Boş bırakılması normaldir.
+    model: str = ""
     timeout: float = 30.0
     retries: int = 3            # timeout/5xx için retry sayısı
     backoff_base: float = 0.5   # exponential backoff taban (sn)
+
+    def require_base_url(self) -> str:
+        return _require(self.base_url, "RAGINTEL_OLLAMA_BASE_URL")
 
 
 class TeiSettings(DotenvOnlySettings):
@@ -169,7 +191,12 @@ class TeiSettings(DotenvOnlySettings):
         extra="ignore",
     )
 
-    rerank_url: str = Field(default="http://192.168.36.15:8085", alias="RAGINTEL_TEI_RERANK_URL")
+    # M-4: iç host koda gömülmez. TEI OPSİYONEL (rerank_backend=passthrough varsayılan) —
+    # boşsa health "disabled" der, hata fırlatmaz; `rerank_backend='tei'` ise kullanan taraf zorunlu kılar.
+    rerank_url: str = Field(default="", alias="RAGINTEL_TEI_RERANK_URL")
+
+    def require_rerank_url(self) -> str:
+        return _require(self.rerank_url, "RAGINTEL_TEI_RERANK_URL")
 
 
 class LiteLLMSettings(DotenvOnlySettings):
@@ -185,7 +212,7 @@ class LiteLLMSettings(DotenvOnlySettings):
     )
 
     provider: str = "ollama_chat"   # litellm sağlayıcı öneki (auth'lu OpenAI-compat için 'openai')
-    api_base: str = "http://banasor.goldenglobalbank.com.tr:11434"
+    api_base: str = ""              # M-4: iç host koda gömülmez → .env zorunlu
     api_key: str = ""               # OpenAI-compat uç (ör. Open WebUI /ollama/v1) Bearer token'ı
     request_timeout: float = 120.0
     # Rate-limit/geçici hata için Retry-After'a uyan backoff'lu retry sayısı
@@ -236,10 +263,21 @@ class ChunkingConfig(BaseModel):
 
 
 class EmbeddingConfig(BaseModel):
+    """M-4 PARÇA 1: `normalize` alanı KALDIRILDI (bkz. embedder.l2_normalize).
+
+    L2-normalize DAİMA uygulanır ve kapatılamaz — bu bir düğme değil, değişmezdir.
+    Gerekçe: normalize'lı ve normalize'sız vektörlerin aynı korpusta karışması
+    kosinüs benzerliğini bozar ve geri dönüşü reprocess'tir. Var olmayan düğme,
+    yanlış çevrilemeyen düğmedir. (Eskiden alan vardı ama hiçbir yerde OKUNMUYORDU —
+    config yalan söylüyordu.)
+
+    `model` TEK OTORİTEDİR: HF repo id (tokenizer için zorunlu). Ollama etiketi ve
+    `core_vectors.model_name` damgası bundan türer (embedder.ollama_tag/model_stamp).
+    """
+
     model: str = "BAAI/bge-m3"
     dim: int = 1024
     batch_size: int = 32          # İstek başına chunk sayısı (ADR-012: Ollama)
-    normalize: bool = True
 
 
 class IngestionConfig(BaseModel):
@@ -252,6 +290,8 @@ class IngestionConfig(BaseModel):
     stuck_processing_minutes: int = 30
     # İP-10: eşzamanlı işleme (MVP sıralı; config'te hazır).
     ingest_parallelism: int = 1
+    # M-4: FAILED dosya için azami yeniden deneme (eskiden orchestrator.MAX_RETRY sabiti).
+    max_retry: int = 3
 
 
 # --- Kalite skorlama (ADR-011 / Ek1). Defaultlar FAZ1_Sema_Ek1_Kalite.sql
@@ -299,6 +339,8 @@ class QualityConfig(BaseModel):
     chunk: ChunkThresholds = Field(default_factory=ChunkThresholds)
     embed: EmbedThresholds = Field(default_factory=EmbedThresholds)
     ocr_fallback: OcrFallback = Field(default_factory=OcrFallback)
+    # M-4: ingest raporunun parse başarı hedefi (eskiden report.PARSE_SUCCESS_TARGET sabiti).
+    parse_success_target: float = 0.95
 
 
 # --- İP-4 injection taraması (kural tabanlı; llm-guard/torch YOK). Kalıplar
@@ -389,14 +431,59 @@ class EvalGatesConfig(BaseModel):
     context_precision_min: float = 0.75
 
 
+# M-3(c) tarih desenleri: sürüm dizesi FP'sine karşı sınır koruması içerir
+# (soldaki/sağdaki nokta+rakam → daha uzun bir nokta ayraçlı dizinin parçası).
+# Gruplar: dmy → (gün, ayraç, ay, yıl); iso → (yıl, ay, gün).
+_DEFAULT_PII_DATE_DMY = r"(?<![\d.])(\d{1,2})([./])(\d{1,2})\2(\d{4})(?!\d)(?!\.\d)"
+_DEFAULT_PII_DATE_ISO = r"(?<![\d.])(\d{4})-(\d{2})-(\d{2})(?!\d)(?!\.\d)"
+
+
 class PiiConfig(BaseModel):
     """FAZ 6 P2: output PII maskeleme (KVKK temel seti). TCKN+tarih deterministik;
-    custom_patterns ile genişletilebilir (app_config('pii'))."""
+    custom_patterns ile genişletilebilir (app_config('pii')).
+
+    M-4: tarih desenleri ve yıl aralığı artık config'ten (M-3 korumaları varsayılan).
+    `date_dmy_pattern` 4 grup (gün, ayraç, ay, yıl), `date_iso_pattern` 3 grup
+    (yıl, ay, gün) üretmelidir — grup sayısı bozulursa desen sessizce atlanır.
+    """
 
     enabled: bool = True
     mask_tckn: bool = True
     mask_dates: bool = True
     custom_patterns: list[str] = Field(default_factory=list)
+    date_dmy_pattern: str = _DEFAULT_PII_DATE_DMY
+    date_iso_pattern: str = _DEFAULT_PII_DATE_ISO
+    year_min: int = 1900
+    year_max: int = 2099
+
+
+class StorageConfig(BaseModel):
+    """M-4: HNSW index BUILD parametreleri (arama-zamanı `retrieval.vector_ef_search` ayrı).
+
+    DİKKAT: bu değerleri değiştirmek mevcut index'i etkilemez — yeniden index gerektirir
+    (DROP INDEX + create_vector_index). Aksi halde config ile gerçeklik ayrışır.
+    """
+
+    hnsw_m: int = 16
+    hnsw_ef_construction: int = 64
+
+
+class ApiConfig(BaseModel):
+    """M-4: API dış çağrı zaman aşımları (eskiden runtime.py'de gömülü `timeout=8`)."""
+
+    health_timeout: float = 8.0
+    feedback_timeout: float = 8.0
+
+
+class EvalConfig(BaseModel):
+    """M-4: eval harness çalışma ayarları (eşikler ayrı grupta: `eval_gates`).
+
+    Dev/prod judge ayrımı artık DB'den yönetilir; kod default'u DEV değerleridir.
+    """
+
+    ctx_cap: int = 10                                # judge maliyeti: azami bağlam parçası
+    agent_model: str = "qwen/qwen3-32b"
+    judge_model: str = "llama-3.3-70b-versatile"
 
 
 class PromptsConfig(BaseModel):
@@ -421,6 +508,9 @@ GROUP_MODELS: dict[str, type[BaseModel]] = {
     "prompts": PromptsConfig,
     "pii": PiiConfig,
     "eval_gates": EvalGatesConfig,
+    "storage": StorageConfig,
+    "api": ApiConfig,
+    "eval": EvalConfig,
 }
 
 

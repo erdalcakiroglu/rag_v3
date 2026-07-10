@@ -117,6 +117,8 @@ class StorageWriter:
         try:
             yield
         finally:
+            # M-4: HNSW build parametreleri config'ten (`storage` grubu).
+            st = self.cfg.group("storage")
             with self.db.connection() as conn:
-                repo.create_vector_index(conn)
-            self.log.info("hnsw_recreated")
+                repo.create_vector_index(conn, m=st.hnsw_m, ef_construction=st.hnsw_ef_construction)
+            self.log.info("hnsw_recreated", hnsw_m=st.hnsw_m, ef_construction=st.hnsw_ef_construction)

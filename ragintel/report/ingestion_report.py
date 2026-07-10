@@ -8,6 +8,8 @@ CLI'da None = tüm korpus.
 from __future__ import annotations
 
 # FAZ 1 çıkış kriteri: ≥ %95 parse başarısı.
+# M-4: efektif değer `quality.parse_success_target` (DB > ENV > default). Bu sabit
+# yalnızca config verilmediğinde (CLI/test) kullanılan fallback'tir.
 PARSE_SUCCESS_TARGET = 0.95
 
 # Parse başarı oranı YALNIZCA terminal durumdaki dosyalar üzerinden hesaplanır.
@@ -23,7 +25,13 @@ def _scope(where_col: str, doc_scope):
     return f" AND {where_col} = %s", (doc_scope,)
 
 
-def build_report(db, doc_scope: str | None = None) -> dict:
+def build_report(db, doc_scope: str | None = None, *, config=None) -> dict:
+    """M-4: parse hedefi `quality.parse_success_target`'ten; `config=None` ise DB'den yüklenir."""
+    if config is None:
+        from ..config.loader import load_config
+        from ..database.config_store import make_db_reader
+        config = load_config(db_reader=make_db_reader(db))
+    target = float(getattr(config.group("quality"), "parse_success_target", PARSE_SUCCESS_TARGET))
     with db.connection() as conn:
         cur = conn.cursor()
         s_and, s_p = _scope("doc_scope", doc_scope)
@@ -121,8 +129,8 @@ def build_report(db, doc_scope: str | None = None) -> dict:
         "pending_files": pending_files,         # terminal olmayan (beklemede)
         "run_complete": pending_files == 0,
         "parse_success_rate": round(parse_rate, 4),
-        "parse_success_target": PARSE_SUCCESS_TARGET,
-        "parse_success_met": parse_rate >= PARSE_SUCCESS_TARGET if terminal_total else False,
+        "parse_success_target": target,
+        "parse_success_met": parse_rate >= target if terminal_total else False,
         "step_avg_ms": step_avg_ms,
         "chunks": chunks,
         "quality_distribution": quality,

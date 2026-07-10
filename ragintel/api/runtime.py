@@ -32,10 +32,14 @@ class InputRejected(ValueError):
 
 
 def derive_health_status(checks: dict) -> str:
-    """Ollama/DB down → unhealthy (pipeline çalışmaz); TEI down → degraded (akış çalışır)."""
+    """Ollama/DB down → unhealthy (pipeline çalışmaz); TEI down → degraded (akış çalışır).
+
+    M-4: TEI "disabled" (URL tanımsız + rerank_backend=passthrough) degrade ETMEZ —
+    yapılandırılmamış opsiyonel bileşen, arızalı bileşen değildir.
+    """
     if checks.get("ollama") != "ok" or checks.get("db") != "ok":
         return "unhealthy"
-    if checks.get("tei") != "ok":
+    if checks.get("tei") not in ("ok", "disabled"):
         return "degraded"
     return "healthy"
 
@@ -201,7 +205,8 @@ class RagRuntime:
         try:
             r = httpx.post(
                 f"{self.langfuse.host.rstrip('/')}/api/public/scores",
-                json=payload, auth=(self.langfuse.public_key, self.langfuse.secret_key), timeout=8)
+                json=payload, auth=(self.langfuse.public_key, self.langfuse.secret_key),
+                timeout=self.cfg.group("api").feedback_timeout)
             r.raise_for_status()
             return {"status": "ok", "recorded": True}
         except Exception as exc:
@@ -210,8 +215,14 @@ class RagRuntime:
 
     # -- /api/health -----------------------------------------------------------
     def health(self) -> dict:
-        checks = {"db": self._check_db(), "ollama": self._check_http(OllamaSettings().base_url + "/api/tags"),
-                  "tei": self._check_http(TeiSettings().rerank_url.rstrip("/") + "/health"),
+        api_cfg = self.cfg.group("api")
+        tei_url = TeiSettings().rerank_url
+        checks = {"db": self._check_db(),
+                  "ollama": self._check_http(OllamaSettings().base_url + "/api/tags",
+                                             api_cfg.health_timeout),
+                  # M-4: TEI OPSİYONEL — URL tanımsızsa "down" değil "disabled".
+                  "tei": (self._check_http(tei_url.rstrip("/") + "/health", api_cfg.health_timeout)
+                          if tei_url else "disabled"),
                   "langfuse": "enabled" if self.langfuse.enabled else "disabled"}
         warm = self.is_warm
         checks["warmup"] = "ok" if warm else "warming"
@@ -230,9 +241,9 @@ class RagRuntime:
             return f"down:{str(exc)[:40]}"
 
     @staticmethod
-    def _check_http(url: str) -> str:
+    def _check_http(url: str, timeout: float = 8.0) -> str:
         try:
-            httpx.get(url, timeout=8).raise_for_status()   # yavaş-ama-ayakta backend'e tolerans
+            httpx.get(url, timeout=timeout).raise_for_status()   # yavaş-ama-ayakta backend'e tolerans
             return "ok"
         except Exception:
             return "down"

@@ -13,7 +13,22 @@ from __future__ import annotations
 import math
 from typing import Protocol
 
-MODEL_STAMP = "bge-m3@ollama"
+def ollama_tag(model: str) -> str:
+    """HF repo id → Ollama model etiketi (`BAAI/bge-m3` → `bge-m3`).
+
+    Tek otorite `embedding.model` HF repo id'sidir (tokenizer `AutoTokenizer`
+    için ZORUNLU). Ollama `/api/embed` ise etiket ister; ikisi tek alandan türer.
+    """
+    return model.rsplit("/", 1)[-1]
+
+
+def model_stamp(model: str) -> str:
+    """`core_vectors.model_name` köken damgası: `bge-m3@ollama`.
+
+    Damga ETİKETTEN türer (repo id'den değil) — böylece M-4 öncesi yazılmış korpusla
+    birebir uyumludur ve backfill gerekmez.
+    """
+    return f"{ollama_tag(model)}@ollama"
 
 
 class EmbeddingBackendError(RuntimeError):
@@ -40,14 +55,21 @@ class Embedder(Protocol):
 
 class OllamaEmbedder:
     """Ollama /api/embed backend'i. Ham HTTP çağrısı; retry/batch-halving
-    SERVİS katmanındadır (bu sınıf tek isteği yapar)."""
+    SERVİS katmanındadır (bu sınıf tek isteği yapar).
 
-    model_name = MODEL_STAMP
+    `model` = `embedding.model` (HF repo id, TEK OTORİTE). Ollama etiketi ve
+    köken damgası buradan türer — sınıf sabiti YOK, yani model değişince damga da
+    değişir (eskiden `model_name` sabitti ve köken bilgisi yanlış olabiliyordu).
+    """
 
-    def __init__(self, base_url: str, *, model: str = "bge-m3",
+    def __init__(self, base_url: str, *, model: str = "BAAI/bge-m3",
                  timeout: float = 30.0, client=None):
+        if not base_url:
+            raise EmbeddingBackendError("Ollama base_url tanımsız (RAGINTEL_OLLAMA_BASE_URL)")
         self.base_url = base_url.rstrip("/")
-        self.model = model
+        self.hf_model = model
+        self.model = ollama_tag(model)        # /api/embed'e giden etiket
+        self.model_name = model_stamp(model)  # core_vectors.model_name damgası
         self.timeout = timeout
         self._client = client
 

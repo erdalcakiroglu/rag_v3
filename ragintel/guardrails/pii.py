@@ -25,17 +25,20 @@ _TCKN_RE = re.compile(r"(?<!\d)[1-9]\d{10}(?!\d)")
 #      nokta ayraçlı dizinin PARÇASIYSA) eşleşme kurulmaz — "14.0.3456.9", "1.14.0.3456".
 #   2) Aralık doğrulaması (_is_plausible_date): gün 1-31, ay 1-12, yıl 1900-2099.
 #      "14.0.3456" → ay=0, yıl=3456 → tarih DEĞİL (TCKN'deki checksum mantığının eşi).
-_DMY_RE = re.compile(r"(?<![\d.])(\d{1,2})([./])(\d{1,2})\2(\d{4})(?!\d)(?!\.\d)")   # 12.05.1980, 1/1/1990
-_ISO_RE = re.compile(r"(?<![\d.])(\d{4})-(\d{2})-(\d{2})(?!\d)(?!\.\d)")             # 1980-05-12
+# M-4: desenler ve yıl aralığı artık `app_config('pii')`'den gelir. Kod varsayılanı
+# TEK YERDE (settings) tanımlıdır — iki kopya birbirinden kayamaz.
+from ..config.settings import _DEFAULT_PII_DATE_DMY as _DEFAULT_DMY
+from ..config.settings import _DEFAULT_PII_DATE_ISO as _DEFAULT_ISO
+
 _TCKN_MASK = "[TCKN]"
 _DATE_MASK = "[TARİH]"
-_YEAR_MIN, _YEAR_MAX = 1900, 2099
 
 
-def _is_plausible_date(day: int, month: int, year: int) -> bool:
+def _is_plausible_date(day: int, month: int, year: int, *,
+                       year_min: int = 1900, year_max: int = 2099) -> bool:
     """Gün/ay/yıl aralık kontrolü. dd.mm.yyyy VEYA mm/dd/yyyy sırasını kabul eder;
     ikisi de olamıyorsa tarih değildir (sürüm/derleme numarası vb.)."""
-    if not (_YEAR_MIN <= year <= _YEAR_MAX):
+    if not (year_min <= year <= year_max):
         return False
     dmy = 1 <= day <= 31 and 1 <= month <= 12
     mdy = 1 <= month <= 31 and 1 <= day <= 12
@@ -58,6 +61,11 @@ class PiiPolicy:
     mask_tckn: bool = True
     mask_dates: bool = True
     custom_patterns: tuple[str, ...] = ()   # app_config('pii')'den ek regex'ler
+    # M-4: tarih deseni + yıl aralığı config'ten (M-3 sınır korumaları varsayılan).
+    date_dmy_pattern: str = _DEFAULT_DMY
+    date_iso_pattern: str = _DEFAULT_ISO
+    year_min: int = 1900
+    year_max: int = 2099
 
 
 def mask_pii(text: str | None, policy: PiiPolicy | None = None) -> tuple[str, int]:
@@ -81,21 +89,30 @@ def mask_pii(text: str | None, policy: PiiPolicy | None = None) -> tuple[str, in
         out = _TCKN_RE.sub(_tckn_sub, out)
 
     if policy.mask_dates:
-        def _dmy_sub(m: re.Match) -> str:
-            nonlocal count
-            if not _is_plausible_date(int(m.group(1)), int(m.group(3)), int(m.group(4))):
-                return m.group(0)   # sürüm/derleme numarası → maskeleme YOK (FP önlenir)
-            count += 1
-            return _DATE_MASK
-        out = _DMY_RE.sub(_dmy_sub, out)
+        def _sub_dates(pattern: str, order: tuple[int, int, int]) -> None:
+            """`order` = (gün_grubu, ay_grubu, yıl_grubu). Desen derlenemezse veya
+            grupları eksikse ATLANIR (maskeleme yapılmaz) — asla ham istisna atmaz."""
+            nonlocal out, count
+            try:
+                rx = re.compile(pattern)
+            except re.error:
+                return
+            if rx.groups < max(order):
+                return
 
-        def _iso_sub(m: re.Match) -> str:
-            nonlocal count
-            if not _is_plausible_date(int(m.group(3)), int(m.group(2)), int(m.group(1))):
-                return m.group(0)
-            count += 1
-            return _DATE_MASK
-        out = _ISO_RE.sub(_iso_sub, out)
+            def _sub(m: re.Match) -> str:
+                nonlocal count
+                d, mo, y = (int(m.group(g)) for g in order)
+                if not _is_plausible_date(d, mo, y, year_min=policy.year_min,
+                                          year_max=policy.year_max):
+                    return m.group(0)   # sürüm/derleme numarası → maskeleme YOK (FP önlenir)
+                count += 1
+                return _DATE_MASK
+
+            out = rx.sub(_sub, out)
+
+        _sub_dates(policy.date_dmy_pattern, (1, 3, 4))   # (gün, ay, yıl)
+        _sub_dates(policy.date_iso_pattern, (3, 2, 1))   # (gün, ay, yıl)
 
     for pat in policy.custom_patterns:
         try:
@@ -122,4 +139,8 @@ def policy_from_config(cfg) -> PiiPolicy:
         mask_tckn=bool(getattr(p, "mask_tckn", True)),
         mask_dates=bool(getattr(p, "mask_dates", True)),
         custom_patterns=tuple(getattr(p, "custom_patterns", ()) or ()),
+        date_dmy_pattern=getattr(p, "date_dmy_pattern", _DEFAULT_DMY),
+        date_iso_pattern=getattr(p, "date_iso_pattern", _DEFAULT_ISO),
+        year_min=int(getattr(p, "year_min", 1900)),
+        year_max=int(getattr(p, "year_max", 2099)),
     )

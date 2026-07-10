@@ -73,10 +73,35 @@ def chunk_id_map(conn: psycopg.Connection, file_id: int) -> dict[int, int]:
     return {idx: cid for idx, cid in rows}
 
 
+class CorpusModelMismatch(RuntimeError):
+    """Yazılmak istenen embedding damgası mevcut korpusunkiyle uyuşmuyor.
+
+    ADR-012 "tek korpus tek backend" kuralı artık DİSİPLİNLE değil MEKANİK olarak
+    zorlanır: farklı modelle üretilmiş vektörler aynı uzayda karşılaştırılamaz.
+    """
+
+
+def assert_corpus_model(conn: psycopg.Connection, model_name: str) -> None:
+    """Korpusta başka bir damga varsa AÇIK hata. Boş korpus her damgayı kabul eder."""
+    existing = [r[0] for r in conn.execute(
+        "SELECT DISTINCT model_name FROM core_vectors LIMIT 5;").fetchall()]
+    other = [m for m in existing if m != model_name]
+    if other:
+        raise CorpusModelMismatch(
+            f"Korpus '{', '.join(sorted(other))}' damgalı vektörler içeriyor; "
+            f"'{model_name}' yazılamaz. Model değiştiyse korpus yeniden embed edilmeli "
+            "(ADR-012: tek korpus tek backend)."
+        )
+
+
 def copy_vectors(conn: psycopg.Connection, rows: list[tuple[int, list, str]]) -> None:
-    """core_vectors'a COPY BINARY ile toplu yazar. rows: (chunk_id, vector, model_name)."""
+    """core_vectors'a COPY BINARY ile toplu yazar. rows: (chunk_id, vector, model_name).
+
+    M-4: yazımdan ÖNCE korpus damgası doğrulanır (karışık-model korpusu önlenir).
+    """
     if not rows:
         return
+    assert_corpus_model(conn, rows[0][2])
     from pgvector import Vector
     with conn.cursor() as cur:
         with cur.copy(
@@ -127,10 +152,16 @@ def drop_vector_index(conn: psycopg.Connection) -> None:
     conn.execute(f"DROP INDEX IF EXISTS {_HNSW_NAME};")
 
 
-def create_vector_index(conn: psycopg.Connection) -> None:
+def create_vector_index(conn: psycopg.Connection, *, m: int = 16, ef_construction: int = 64) -> None:
+    """HNSW index'i BUILD parametreleriyle kurar (M-4: `storage` config grubundan).
+
+    `IF NOT EXISTS` nedeniyle parametre değişikliği MEVCUT index'i değiştirmez —
+    etkili olması için önce `drop_vector_index` (yeniden index) gerekir.
+    """
     conn.execute(
         f"CREATE INDEX IF NOT EXISTS {_HNSW_NAME} ON core_vectors "
-        "USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);"
+        f"USING hnsw (embedding vector_cosine_ops) "
+        f"WITH (m = {int(m)}, ef_construction = {int(ef_construction)});"
     )
 
 

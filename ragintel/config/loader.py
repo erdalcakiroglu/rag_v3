@@ -67,17 +67,24 @@ def _collect_env_overrides(environ: Mapping[str, str]) -> dict[str, dict]:
     grupları dikkate alınır. Değer önce JSON olarak çözülmeye çalışılır
     (liste/sayı/bool), başarısızsa ham string bırakılır; tip zorlaması nihai
     doğrulamada pydantic tarafından yapılır.
+
+    M-4: grup önekleri iç içe geçebilir (`eval` ⊂ `eval_gates`). Bir env anahtarı
+    birden çok önekle eşleşirse EN UZUN önek kazanır; aksi halde
+    `RAGINTEL_EVAL_GATES_FAITHFULNESS_MIN` hem `eval_gates.faithfulness_min` hem
+    `eval.gates_faithfulness_min` olarak okunurdu.
     """
+    # Uzun önek önce denensin (en spesifik grup kazanır).
+    groups = sorted(PIPELINE_GROUPS, key=len, reverse=True)
     out: dict[str, dict] = {}
-    for group in PIPELINE_GROUPS:
-        prefix = f"RAGINTEL_{group.upper()}_"
-        for env_key, raw in environ.items():
+    for env_key, raw in environ.items():
+        for group in groups:
+            prefix = f"RAGINTEL_{group.upper()}_"
             if not env_key.startswith(prefix):
                 continue
             field_name = env_key[len(prefix):].lower()
-            if not field_name:
-                continue
-            out.setdefault(group, {})[field_name] = _parse_env_value(raw)
+            if field_name:
+                out.setdefault(group, {})[field_name] = _parse_env_value(raw)
+            break   # ilk (en uzun) eşleşme bağlayıcıdır
     return out
 
 
