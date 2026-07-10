@@ -14,7 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ...text.normalize import normalize_for_quote
-from ..parsing.parsed_document import ParsedDocument
+from ..parsing.parsed_document import ParsedDocument, Table
+from ..parsing.text_utils import flatten_table
 from .chunk import Chunk
 from .tokenizer import TokenCounter
 
@@ -154,9 +155,64 @@ def _min_merge(chunks: list[Chunk], counter: TokenCounter,
     return result
 
 
+def _table_chunk(text: str, t: Table, counter: TokenCounter,
+                 section_title: str | None) -> Chunk:
+    """Bir tablo (alt-)chunk'ı üretir — sheet/sayfa kimliği korunur, is_table=True."""
+    return Chunk(
+        chunk_index=-1,
+        chunk_text=text,
+        chunk_text_norm=normalize_for_quote(text),
+        token_count=counter.count(text),
+        page_number=t.page_no,
+        sheet_name=t.sheet_name,
+        section_title=section_title,
+        char_start=None,
+        char_end=None,
+        is_table=True,
+    )
+
+
+def _table_chunks(t: Table, counter: TokenCounter, subchunk_max: int) -> list[Chunk]:
+    """M-1: Tablo eşik-altıysa AYNEN tek chunk (mevcut davranış). Eşiği aşarsa
+    satır-gruplarına böl; her alt-chunk BAŞLIK satırını tekrar taşır (bağlamsız
+    satır anlamsızdır) ve section_title'da tablo-indeks + satır aralığı tutulur."""
+    text = t.flattened_text or ""
+    if not text.strip():
+        return []
+    # Eşik-altı VEYA bölünecek gövde yok (yalnız başlık) → tek chunk, eskisi gibi.
+    rows = t.data or []
+    if counter.count(text) <= subchunk_max or len(rows) < 2:
+        return [_table_chunk(text, t, counter, section_title=None)]
+
+    header, body = rows[0], rows[1:]
+    out: list[Chunk] = []
+    group: list = []
+    grp_start = 1  # gövde satırı numarası (başlık hariç, 1-tabanlı)
+
+    def flush(g: list, start: int) -> None:
+        gtext = flatten_table([header] + g)
+        end = start + len(g) - 1
+        span = f"satır {start}" if start == end else f"satır {start}-{end}"
+        out.append(_table_chunk(gtext, t, counter,
+                                section_title=f"tablo{t.index} · {span}"))
+
+    for i, row in enumerate(body):
+        cand_text = flatten_table([header] + group + [row])
+        if group and counter.count(cand_text) > subchunk_max:
+            flush(group, grp_start)
+            group = [row]
+            grp_start = i + 1  # gövde 0-indeks i → 1-tabanlı satır i+1
+        else:
+            group.append(row)
+    if group:
+        flush(group, grp_start)
+    return out
+
+
 def chunk_document(doc: ParsedDocument, *, counter: TokenCounter,
                    strategy: str = "section", max_tokens: int = 512,
-                   overlap_tokens: int = 64, min_tokens: int = 30) -> list[Chunk]:
+                   overlap_tokens: int = 64, min_tokens: int = 30,
+                   table_subchunk_max_tokens: int = 512) -> list[Chunk]:
     units, full_text = _build_units(doc)
 
     # Strateji zinciri: section yoksa paragraph, tek blok/none ise sliding.
@@ -198,23 +254,9 @@ def chunk_document(doc: ParsedDocument, *, counter: TokenCounter,
                 char_end=g_end,
             ))
 
-    # Tablolar: her biri kendi chunk'ı, bölünmez.
+    # Tablolar: eşik-altı tek chunk; büyük tablolar satır-gruplarına bölünür (M-1).
     for t in doc.tables:
-        text = t.flattened_text or ""
-        if not text.strip():
-            continue
-        chunks.append(Chunk(
-            chunk_index=-1,
-            chunk_text=text,
-            chunk_text_norm=normalize_for_quote(text),
-            token_count=counter.count(text),
-            page_number=t.page_no,
-            sheet_name=t.sheet_name,
-            section_title=None,
-            char_start=None,
-            char_end=None,
-            is_table=True,
-        ))
+        chunks.extend(_table_chunks(t, counter, table_subchunk_max_tokens))
 
     chunks = _min_merge(chunks, counter, min_tokens, max_tokens)
     for i, c in enumerate(chunks):

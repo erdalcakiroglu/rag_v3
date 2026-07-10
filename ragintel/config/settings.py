@@ -229,6 +229,10 @@ class ChunkingConfig(BaseModel):
     max_tokens: int = 512
     overlap_tokens: int = 64
     min_tokens: int = 30
+    # M-1: tablo chunk'ı bu token'ı aşarsa satır-gruplarına bölünür (her alt-chunk
+    # başlık satırını tekrar taşır). Eşik-altı tablolar AYNEN tek chunk (çoğunluk).
+    # Devre dışı bırakmak için çok büyük bir değere çekin (davranış eski hâline döner).
+    table_subchunk_max_tokens: int = 512
 
 
 class EmbeddingConfig(BaseModel):

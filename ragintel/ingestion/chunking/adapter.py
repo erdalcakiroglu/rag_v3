@@ -55,6 +55,7 @@ class ChunkAdapter:
             doc, counter=self.counter, strategy=c.strategy,
             max_tokens=c.max_tokens, overlap_tokens=c.overlap_tokens,
             min_tokens=c.min_tokens,
+            table_subchunk_max_tokens=getattr(c, "table_subchunk_max_tokens", c.max_tokens),
         )
 
     def chunk_file(self, file_id: int, doc: ParsedDocument) -> ChunkOutcome:
