@@ -75,6 +75,7 @@ def test_sectionless_plain_text_sliding():
 # --- Genel garantiler --------------------------------------------------------
 def test_no_chunk_exceeds_max():
     chunks = chunk_document(_long_section_doc(), counter=WC, strategy="section", **CFG)
+    assert chunks, "ön-koşul: chunk üretilmeli (boş listede all() vacuously geçer)"
     assert all(c.token_count <= CFG["max_tokens"] for c in chunks)
 
 

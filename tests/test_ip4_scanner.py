@@ -150,8 +150,14 @@ def test_overhead_under_10_percent(capsys):
 
 def test_approved_config_reduces_real_corpus_false_positives():
     sc = _scanner(_approved_injection_cfg())
+    # ÖN-KOŞUL: fixture boşalırsa "FP yok" iddiası boş kümeyle geçerdi.
+    assert REAL_CORPUS_FPS, "FP fixture'ı boş — 'false-positive yok' iddiası kanıt değil"
     flagged = [text for text in REAL_CORPUS_FPS if sc.scan(text).flagged]
     assert flagged == []
+    # POZİTİF KONTROL: onaylı config GERÇEK injection'ı hâlâ yakalıyor. Aksi halde sıfır-FP
+    # sonucu "tarayıcı hiçbir şeyi flag'lemiyor"dan kaynaklanıyor olabilirdi.
+    assert sc.scan(INJECTIONS["tr_yoksay"]).flagged, "onaylı config gerçek injection'ı kaçırıyor"
+    assert sc.scan(INJECTIONS["en_ignore"]).flagged, "onaylı config gerçek injection'ı kaçırıyor"
 
 
 def test_approved_config_still_flags_real_prompt_pattern():

@@ -166,5 +166,9 @@ def test_scope_isolation_bidirectional(live_db):
 
     cross_default = svc.search_hybrid("SQL Server instance performance", top_k=10, user_ctx=default_ctx)
     cross_env = svc.search_hybrid("Karbon vergisi nedir?", top_k=10, user_ctx=env_ctx)
+    # ÖN-KOŞUL: karşı-sorgular boş dönerse aşağıdaki "sızıntı yok" iddiaları vacuously
+    # geçerdi. Her iki arama da SONUÇ ÜRETMELİ (yalnız kendi scope'undan).
+    assert cross_default, "karşı-sorgu boş döndü → sızıntı iddiası boş kümeyle geçerdi"
+    assert cross_env, "karşı-sorgu boş döndü → sızıntı iddiası boş kümeyle geçerdi"
     assert not (names(cross_default) & env_files), "default kullanıcıya envanter belgesi sızdı"
     assert not (names(cross_env) & def_files), "envanter kullanıcısına default belgesi sızdı"

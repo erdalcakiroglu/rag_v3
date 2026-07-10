@@ -92,6 +92,38 @@ birim testlerde gerçek tarihler hâlâ `[TARİH]`.
 
 ---
 
+## (d) Vacuous-test denetimi (backlog kalemi)
+
+M-3(a)'da ortaya çıkan desen — *yokluk iddiası, boş kümede bedava geçer* — tüm süitte tarandı.
+Tarama: `assert not …`, `assert all(…)`, `== []`, `== 0`, `is None`, `isdisjoint`, küme kesişimi
+şekilleri (~130 iddia). Bunların çoğu **literal girdili birim testler** (ör. PII maskelemede
+sabit metin) — girdi bilinerek dolu olduğundan vacuous değil.
+
+**Zaten doğru olanlar** (desenin örneği): `test_ip31…zero_leakage` ve `test_ip32…zero_leakage`
+boş-scope `[]` iddiasının ardından pozitif kontrol yapıyor (`== {"allowed.pdf"}`);
+`test_faz7_api` sızıntı testi `assert files` + `assert xlsx` ön-koşullarını koyuyor.
+
+**Eksik ön-koşul bulunan 6 yer düzeltildi:**
+
+| Test | Vacuous olma yolu | Eklenen |
+|---|---|---|
+| `test_faz6_auth::test_scope_isolation_bidirectional` | karşı-sorgular boş dönerse "sızıntı yok" bedava | `assert cross_default` / `cross_env` |
+| `test_ip4_scanner::…real_corpus_false_positives` | tarayıcı hiçbir şeyi flag'lemese sıfır-FP yine geçer | FP fixture dolu + **gerçek injection hâlâ yakalanıyor** |
+| `test_faz4_no_tiktoken_import` | rglob hiç dosya bulmazsa "ihlal yok" bedava | `scanned > 10` + desenin yakaladığını kanıtlayan ayrı test |
+| `test_faz7_admin::…db_untouched` | fake DB insert kaydetmiyorsa "yazım yok" bedava | aynı fake'e geçerli yazım → insert görünmeli |
+| `test_ip5_chunker::test_no_chunk_exceeds_max` | `chunks` boşsa `all()` bedava | `assert chunks` |
+| `test_ip2_docling_smoke` | `pd.pages` boşsa `all()` bedava | `assert pd.pages` |
+
+**Mutasyon doğrulaması** (denetimin kendisi vacuous olmasın diye): injection tarayıcısı
+`enabled=False` ile tamamen kapatıldığında **eski test yine geçiyor** (0 FP), yeni pozitif
+kontrol ise kırmızı yanıyor. Yani eklenen kontrol gerçek bir ayrım yapıyor.
+
+> Genel kural (bundan sonrası için): bir test "X yok / 0 / boş" diyorsa, aynı testte
+> **X'i bulabildiğini kanıtlayan** bir pozitif kontrol ya da koleksiyonun dolu olduğunu
+> gösteren bir ön-koşul bulunmalı.
+
+---
+
 ## Testler
 
 - `tests/test_faz_m3_fixes.py` — 20 test: (b) 6 test (askıda referans, mükerrer chunk

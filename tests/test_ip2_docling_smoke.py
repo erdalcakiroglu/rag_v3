@@ -33,4 +33,5 @@ def test_docling_parses_real_pdf():
     assert m["coverage"] > 0.0            # metin katmanı çıkarıldı
     assert pd.body_text.strip()          # gövde metni var
     # sayfa numaraları korunur (citation zinciri)
+    assert pd.pages, "ön-koşul: sayfa listesi dolu olmalı (boşsa all() vacuously geçer)"
     assert all(p.page_no >= 1 for p in pd.pages)

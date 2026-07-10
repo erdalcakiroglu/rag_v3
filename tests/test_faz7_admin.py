@@ -124,6 +124,14 @@ def test_config_invalid_rejected_db_untouched():
     # DB'ye HİÇBİR yazım yapılmadı (doğrulama önce).
     assert all("insert into app_config" not in s.lower() for s, _ in db.conn.executed)
 
+    # POZİTİF KONTROL: yukarıdaki iddia ancak _FakeDb GERÇEKTEN insert kaydediyorsa
+    # kanıt değeri taşır. Aynı fake'e geçerli bir yazım gönderilince insert görünmeli;
+    # görünmezse "yazım yapılmadı" iddiası kör kayıt yüzünden vacuously geçiyordu.
+    ok = client.post("/api/admin/config/agent", headers=_A, json={"max_iterations": 3})
+    assert ok.status_code == 200
+    assert any("insert into app_config" in s.lower() for s, _ in db.conn.executed), \
+        "fake DB insert kaydetmiyor → 'DB'ye yazılmadı' iddiası kanıtlanamaz"
+
 
 def test_config_unknown_group_400():
     client, _ = _client(is_admin=True)
