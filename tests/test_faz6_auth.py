@@ -138,13 +138,33 @@ def test_scope_isolation_bidirectional(live_db):
 
     cfg = load_config(db_reader=None)
     svc = RetrievalService(db=live_db, config=cfg)
-    q = "Karbon vergisi nedir?"
     default_ctx = {"user_id": "u_def", "tenant_id": "t", "roles": ["user"], "allowed_doc_scopes": ["default"]}
-    inv_ctx = {"user_id": "u_inv", "tenant_id": "t", "roles": ["user"], "allowed_doc_scopes": ["inventory"]}
+    # M-3(a): scope adı 'envanter' (dokümanların doc_scope'u ile aynı taksonomi).
+    # Eskiden 'inventory' yazıyordu; o scope'ta HİÇ doküman olmadığı için test boş
+    # kümeyle geçiyordu — sızıntıyı gerçekten kanıtlamıyordu.
+    env_ctx = {"user_id": "u_env", "tenant_id": "t", "roles": ["user"], "allowed_doc_scopes": ["envanter"]}
 
-    default_hits = svc.search_hybrid(q, top_k=5, user_ctx=default_ctx)
-    inv_hits = svc.search_hybrid(q, top_k=5, user_ctx=inv_ctx)
-    # default-scope kullanıcı karbon içeriğini görür; inventory-scope kullanıcı GÖRMEZ (sızıntı yok).
-    assert len(default_hits) > 0
-    assert all(h["source"].get("file_name") not in {s["source"]["file_name"] for s in default_hits}
-               for h in inv_hits) or len(inv_hits) == 0
+    def names(hits):
+        return {h["source"]["file_name"] for h in hits}
+
+    # Her iki taraf da KENDİ belgelerini görüyor (test boş kümeyle geçemez).
+    default_hits = svc.search_hybrid("Karbon vergisi nedir?", top_k=5, user_ctx=default_ctx)
+    env_hits = svc.search_hybrid("SQL Server instance performance", top_k=5, user_ctx=env_ctx)
+    assert default_hits, "default kullanıcı kendi belgelerini görmeli"
+    assert env_hits, "envanter kullanıcısı KENDİ belgelerini görmeli (M-3(a) scope hizalaması)"
+
+    # Çift yönlü sızıntı = 0: kesişim boş olmalı.
+    assert not (names(default_hits) & names(env_hits))
+
+    # Karşı-sorgu: her kullanıcı DİĞERİNİN içeriğini arasa bile kendi scope'u dışına çıkamaz.
+    with live_db.connection() as conn:
+        env_files = {r[0] for r in conn.execute(
+            "SELECT file_name FROM core_files WHERE doc_scope='envanter';").fetchall()}
+        def_files = {r[0] for r in conn.execute(
+            "SELECT file_name FROM core_files WHERE doc_scope='default';").fetchall()}
+    assert env_files and def_files
+
+    cross_default = svc.search_hybrid("SQL Server instance performance", top_k=10, user_ctx=default_ctx)
+    cross_env = svc.search_hybrid("Karbon vergisi nedir?", top_k=10, user_ctx=env_ctx)
+    assert not (names(cross_default) & env_files), "default kullanıcıya envanter belgesi sızdı"
+    assert not (names(cross_env) & def_files), "envanter kullanıcısına default belgesi sızdı"

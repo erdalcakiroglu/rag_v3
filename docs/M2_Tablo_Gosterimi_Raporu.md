@@ -180,13 +180,16 @@ kaynak paneli davranışı **değişmedi**. `table_ref` anahtarı her kaynakta m
 
 ---
 
-## 5. Kapsam dışı gözlemler (bu commit'te düzeltilmedi)
+## 5. Kapsam dışı gözlemler → **M-3'te düzeltildi** ([M3_Duzeltmeler_Raporu.md](M3_Duzeltmeler_Raporu.md))
 
-1. **`envanter` kullanıcısının scope'u `['inventory']`**, oysa dokümanların `doc_scope`'u
-   `'envanter'`. Bu kullanıcı envanter belgelerini **hiç göremiyor**. Veri/config uyumsuzluğu.
-2. Cevap metnindeki citation numaraları (`[2]`, `[1][3]`) ile kaynak listesi numaralandırması
-   (`[1]..[n]`) örtüşmüyor — `compose._sources` citation'ları 1'den yeniden numaralandırıyor.
-3. FAZ 6 PII maskeleme, SQL Server ürün sürümünü tarih sanıp `[TARİH].9`'a maskeliyor.
+1. ~~**`envanter` kullanıcısının scope'u `['inventory']`**, oysa dokümanların `doc_scope`'u
+   `'envanter'`. Bu kullanıcı envanter belgelerini **hiç göremiyor**.~~ → M-3(a): tek `UPDATE`
+   ile `'envanter'`e hizalandı; sızıntı testi boş-küme halinden çıkarıldı.
+2. ~~Cevap metnindeki citation numaraları (`[2]`, `[1][3]`) ile kaynak listesi numaralandırması
+   örtüşmüyor.~~ → M-3(b): kök neden `[n]` için prompt sözleşmesinin olmaması; compose artık
+   işaretleri deterministik yeniden üretiyor + mükerrer chunk'ları tekilleştiriyor.
+3. ~~FAZ 6 PII maskeleme, SQL Server ürün sürümünü tarih sanıp `[TARİH].9`'a maskeliyor.~~
+   → M-3(c): sınır koruması + gün/ay/yıl aralık doğrulaması.
 
 ---
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 
 from ...agents.state import Citation
@@ -20,25 +21,84 @@ def _confidence(state: dict, *, high_threshold: float) -> str:
     return "low"
 
 
-def _sources(citations: list[Citation], retrieved: list[dict]) -> list[dict]:
+# M-3(b): LLM'in yanıt metnine serpiştirdiği `[k]` işaretleri hiçbir sözleşmeye bağlı
+# DEĞİL (prompt `[n]` biçimini hiç tanımlamıyor) — model 1 citation verip metinde "[2]"
+# yazabiliyor. Bu yüzden model işaretlerine GÜVENMİYORUZ: hepsini söküp, kaynak listesinden
+# deterministik olarak yeniden üretiyoruz. Sonuç değişmezi: metindeki her [n], sources
+# listesindeki n'inci girdiye denk gelir.
+_MARKER_RE = re.compile(r"[ \t]*\[\s*\d+(?:\s*[,;]\s*\d+)*\s*\]")
+
+
+def _sources(citations: list[Citation], retrieved: list[dict]) -> tuple[list[dict], dict[int, int]]:
+    """Citation'ları kaynak listesine çevirir. Aynı chunk birden çok kez alıntılanmışsa
+    TEK kaynak olur (ilk görülme sırası n'i belirler) — eskiden aynı chunk için mükerrer
+    [1]/[3] girdileri üretiliyordu. Dönüş: (sources, chunk_id → n)."""
     chunk_map = {int(chunk["chunk_id"]): chunk for chunk in retrieved}
-    sources = []
-    for n, citation in enumerate(citations, start=1):
-        chunk = chunk_map.get(int(citation["chunk_id"]))
-        if chunk is None:
+    sources: list[dict] = []
+    numbering: dict[int, int] = {}
+    for citation in citations:
+        cid = int(citation["chunk_id"])
+        chunk = chunk_map.get(cid)
+        if chunk is None or cid in numbering:
             continue
         source = chunk["source"]
+        numbering[cid] = len(sources) + 1
         sources.append(
             {
-                "n": n,
+                "n": numbering[cid],
                 "file_name": source["file_name"],
                 "page": source.get("page"),
                 "section": source.get("section"),
-                "chunk_id": citation["chunk_id"],
+                "chunk_id": cid,
                 "quote": citation["quote"],
             }
         )
-    return sources
+    return sources, numbering
+
+
+def _renumber_answer(answer: str, citations: list[Citation], numbering: dict[int, int]) -> str:
+    """Modelin `[k]`'lerini söker; her citation'ın `claim`'ini metinde bulup arkasına doğru
+    `[n]`'i yerleştirir. Claim metinde bulunamazsa (parafraz) işaret cümle içine
+    zorlanmaz — yanıtın sonuna eklenir. Kaynak yoksa metin işaretsiz kalır.
+
+    Model HİÇ işaret koymadıysa biz de UYDURMAYIZ: yanıt metni aynen kalır. (Değişmez
+    tek yönlüdür — "metindeki her [n] geçerli bir kaynağa denk gelir"; her kaynağın
+    metinde işareti olması gerekmez.)"""
+    if not _MARKER_RE.search(answer or ""):
+        return (answer or "").strip()
+    text = _MARKER_RE.sub("", answer or "").strip()
+    if not text or not numbering:
+        return text
+
+    inserts: list[tuple[int, int]] = []   # (pozisyon, n)
+    trailing: list[int] = []
+    for citation in citations:
+        n = numbering.get(int(citation["chunk_id"]))
+        if n is None:
+            continue
+        end = _find_claim_end(text, citation.get("claim") or "")
+        if end is None:
+            if n not in trailing:
+                trailing.append(n)
+        elif (end, n) not in inserts:
+            inserts.append((end, n))
+
+    for pos, n in sorted(inserts, key=lambda p: p[0], reverse=True):
+        text = f"{text[:pos]} [{n}]{text[pos:]}"
+    if trailing:
+        text = text.rstrip() + " " + "".join(f"[{n}]" for n in trailing)
+    return text
+
+
+def _find_claim_end(text: str, claim: str) -> int | None:
+    """Claim'in metindeki bitiş indeksi (yoksa None). Önce birebir, sonra harf-duyarsız."""
+    claim = _MARKER_RE.sub("", claim or "").strip().rstrip(".")
+    if not claim:
+        return None
+    idx = text.find(claim)
+    if idx < 0:
+        idx = text.casefold().find(claim.casefold())
+    return idx + len(claim) if idx >= 0 else None
 
 
 def compose_response(
@@ -56,7 +116,7 @@ def compose_response(
     agent_cfg = cfg.group("agent")
     citations = state.get("citations", [])
     retrieved = state.get("retrieved", [])
-    examined = _sources(citations, retrieved)
+    examined, numbering = _sources(citations, retrieved)
 
     confidence = _confidence(state, high_threshold=float(agent_cfg.confidence_high_coverage_threshold))
     is_declined = declined if declined is not None else (confidence == "low")
@@ -66,9 +126,13 @@ def compose_response(
     sources = [] if is_declined else examined
     reviewed = examined if is_declined else []
 
+    # M-3(b): reddedilen yolda sources=[] → metinde askıda [n] KALMASIN (numbering={}).
+    draft = _renumber_answer(state.get("draft_answer") or "", citations,
+                             {} if is_declined else numbering)
+
     # FAZ 6 P2: output PII maskeleme — yanıt VE citation/reviewed quote'ları. İzlenebilir sayaç.
     policy = policy_from_config(cfg)
-    answer, pii_count = mask_pii(state.get("draft_answer") or "", policy)
+    answer, pii_count = mask_pii(draft, policy)
     for src in sources + reviewed:
         if src.get("quote"):
             src["quote"], c = mask_pii(src["quote"], policy)

@@ -16,13 +16,30 @@ from dataclasses import dataclass
 
 # 11 hane, ilk hane 0 değil (aday TCKN; checksum ayrıca doğrulanır).
 _TCKN_RE = re.compile(r"(?<!\d)[1-9]\d{10}(?!\d)")
+
 # Tam tarih desenleri (gün+ay+yıl). Tek yıl kasıtlı olarak HARİÇ.
-_DATE_RES = (
-    re.compile(r"(?<!\d)\d{1,2}[./]\d{1,2}[./]\d{4}(?!\d)"),   # 12.05.1980, 1/1/1990
-    re.compile(r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)"),             # 1980-05-12
-)
+#
+# M-3(c) SINIR KORUMASI: nokta ayraçlı sürüm dizeleri (ör. SQL Server "14.0.3456.9")
+# eski desende tarih sanılıp "[TARİH].9" olarak maskeleniyordu. İki katman:
+#   1) Lookaround: match'in solunda/sağında nokta+rakam varsa (yani daha uzun bir
+#      nokta ayraçlı dizinin PARÇASIYSA) eşleşme kurulmaz — "14.0.3456.9", "1.14.0.3456".
+#   2) Aralık doğrulaması (_is_plausible_date): gün 1-31, ay 1-12, yıl 1900-2099.
+#      "14.0.3456" → ay=0, yıl=3456 → tarih DEĞİL (TCKN'deki checksum mantığının eşi).
+_DMY_RE = re.compile(r"(?<![\d.])(\d{1,2})([./])(\d{1,2})\2(\d{4})(?!\d)(?!\.\d)")   # 12.05.1980, 1/1/1990
+_ISO_RE = re.compile(r"(?<![\d.])(\d{4})-(\d{2})-(\d{2})(?!\d)(?!\.\d)")             # 1980-05-12
 _TCKN_MASK = "[TCKN]"
 _DATE_MASK = "[TARİH]"
+_YEAR_MIN, _YEAR_MAX = 1900, 2099
+
+
+def _is_plausible_date(day: int, month: int, year: int) -> bool:
+    """Gün/ay/yıl aralık kontrolü. dd.mm.yyyy VEYA mm/dd/yyyy sırasını kabul eder;
+    ikisi de olamıyorsa tarih değildir (sürüm/derleme numarası vb.)."""
+    if not (_YEAR_MIN <= year <= _YEAR_MAX):
+        return False
+    dmy = 1 <= day <= 31 and 1 <= month <= 12
+    mdy = 1 <= month <= 31 and 1 <= day <= 12
+    return dmy or mdy
 
 
 def is_valid_tckn(value: str) -> bool:
@@ -64,12 +81,21 @@ def mask_pii(text: str | None, policy: PiiPolicy | None = None) -> tuple[str, in
         out = _TCKN_RE.sub(_tckn_sub, out)
 
     if policy.mask_dates:
-        for rx in _DATE_RES:
-            def _date_sub(m: re.Match) -> str:
-                nonlocal count
-                count += 1
-                return _DATE_MASK
-            out = rx.sub(_date_sub, out)
+        def _dmy_sub(m: re.Match) -> str:
+            nonlocal count
+            if not _is_plausible_date(int(m.group(1)), int(m.group(3)), int(m.group(4))):
+                return m.group(0)   # sürüm/derleme numarası → maskeleme YOK (FP önlenir)
+            count += 1
+            return _DATE_MASK
+        out = _DMY_RE.sub(_dmy_sub, out)
+
+        def _iso_sub(m: re.Match) -> str:
+            nonlocal count
+            if not _is_plausible_date(int(m.group(3)), int(m.group(2)), int(m.group(1))):
+                return m.group(0)
+            count += 1
+            return _DATE_MASK
+        out = _ISO_RE.sub(_iso_sub, out)
 
     for pat in policy.custom_patterns:
         try:
