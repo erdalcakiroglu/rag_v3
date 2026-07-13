@@ -25,11 +25,32 @@ import ragintel.eval.gates as gates_mod
 import ragintel.eval.harness as harness_mod
 
 
-def _args(golden="v0.1", smoke=True, runs=1, agent_model=None, judge_model=None, as_json=False):
+def _args(golden="v0.1", smoke=True, runs=1, agent_model=None, judge_model=None,
+          as_json=False, allow_model_drift=False):
     return argparse.Namespace(
         golden=golden, smoke=smoke, runs=runs,
         agent_model=agent_model, judge_model=judge_model, json=as_json,
+        allow_model_drift=allow_model_drift,
     )
+
+
+class _FakeCfg:
+    """EffectiveConfig ikamesi: `group()` DESTEKLER.
+
+    (M-7: gate artık model-zemini ön-koşulunu da koşuyor ve `cfg.group("eval")` /
+    `cfg.group("retrieval")` okuyor. Düz SimpleNamespace burada patlar ve gate,
+    evidence testinin ölçmek istediği yola HİÇ giremezdi.)
+    Modeller karneyle AYNI verilir → bu dosyanın testleri yalnızca EVIDENCE yolunu ölçer,
+    model-zemini yolu (ayrı dosyada test edilir) araya karışmaz.
+    """
+
+    def group(self, name):
+        if name == "eval":
+            return SimpleNamespace(agent_model="deepseek-v4-pro",
+                                   judge_model="llama-3.3-70b-versatile")
+        if name == "retrieval":
+            return SimpleNamespace(hnsw_iterative_scan="relaxed_order")
+        return SimpleNamespace()
 
 
 class _NullCtx:
@@ -58,7 +79,7 @@ def _patch_infra(monkeypatch):
     import ragintel.config.loader as loader_mod
 
     monkeypatch.setattr(db_mod, "Database", lambda settings: _FakeDb())
-    monkeypatch.setattr(loader_mod, "load_config", lambda **kw: SimpleNamespace())
+    monkeypatch.setattr(loader_mod, "load_config", lambda **kw: _FakeCfg())
 
 
 def _fake_complete_result():

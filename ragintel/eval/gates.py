@@ -79,6 +79,61 @@ def evidence_precondition(conn, version: str) -> GateOutcome | None:
     return None
 
 
+def effective_models(cfg, *, agent_model: str | None = None,
+                     judge_model: str | None = None) -> dict[str, str]:
+    """Gate'in GERÇEKTEN koşacağı agent/judge modeli + ölçüm zemini ayarları.
+
+    Öncelik harness.build_eval_app ile BİREBİR aynı olmalı (CLI > DB > .env > kod);
+    burada ayrışırsa rapor yalan söyler.
+    """
+    from ..config.settings import LiteLLMSettings
+    from .harness import DEFAULT_AGENT_MODEL, DEFAULT_JUDGE_MODEL
+
+    ev = cfg.group("eval")
+    return {
+        "agent": (agent_model or ev.agent_model or LiteLLMSettings().model
+                  or DEFAULT_AGENT_MODEL),
+        "judge": judge_model or ev.judge_model or DEFAULT_JUDGE_MODEL,
+        # Ölçüm zemininin parçası: filtreli-ANN semantiği retrieval'ı değiştirir.
+        "iterative_scan": str(cfg.group("retrieval").hnsw_iterative_scan),
+    }
+
+
+def model_ground_precondition(cfg, *, agent_model: str | None = None,
+                              judge_model: str | None = None,
+                              allow_drift: bool = False) -> GateOutcome | None:
+    """Judge ÇAĞRILMADAN ÖNCE: gate, KARNENİN modelleriyle mi koşuyor? (M-7)
+
+    Karnenin zemini DB'dedir (`eval.agent_model` / `eval.judge_model`). CLI ya da `.env`
+    ile başka bir model devreye girerse ölçüm KARNEYLE KIYASLANAMAZ hâle gelir — ama
+    sayılar yine de üretilir ve "regresyon" sanılır. Bu tam olarak yaşandı: `.env`'de
+    kalmış `RAGINTEL_LLM_MODEL=deepseek-v4-pro`, karnenin agent'ını (qwen/qwen3-32b)
+    sessizce ezdi; context_precision 0.775 → 0.630 "düşüş" gibi göründü, oysa başka bir
+    agent ölçülüyordu.
+
+    Evidence ön-koşuluyla aynı sınıf: KALİTE REGRESYONU DEĞİL, ÖLÇÜM ZEMİNİNİN KAYMASI
+    → exit 2 (altyapı), exit 1 değil. Bilinçli sapma için `--allow-model-drift`.
+    """
+    eff = effective_models(cfg, agent_model=agent_model, judge_model=judge_model)
+    ev = cfg.group("eval")
+    sapan = []
+    if ev.agent_model and eff["agent"] != ev.agent_model:
+        sapan.append(f"agent: karne='{ev.agent_model}' ≠ koşum='{eff['agent']}'")
+    if ev.judge_model and eff["judge"] != ev.judge_model:
+        sapan.append(f"judge: karne='{ev.judge_model}' ≠ koşum='{eff['judge']}'")
+    if not sapan or allow_drift:
+        return None
+    return GateOutcome(2, (
+        "MODEL ZEMİNİ KAYDI — gate, karnenin modelleriyle koşmuyor: " + " · ".join(sapan)
+        + ". Bu bir kalite regresyonu DEĞİL; üretilecek sayılar mühürlü karneyle "
+        "KIYASLANAMAZ. Judge ÇAĞRILMADI (token harcanmadı). Aksiyon: ya modeli karneye "
+        "döndürün (DB `eval.agent_model`/`eval.judge_model` config-first otoritedir; "
+        "`.env RAGINTEL_LLM_MODEL` artık onu EZEMEZ), ya da bilinçli bir zemin değişikliği "
+        "ise YENİ KARNE mühürleyip eşikleri kalibre edin. Yalnızca ölçüm amaçlı geçici "
+        "sapma için: --allow-model-drift."
+    ))
+
+
 def gate_decision(result: dict, thr: GateThresholds) -> GateOutcome:
     """Eval sonucunu eşiklerle kıyaslar. ÖNCE altyapı sağlığı (exit 2), sonra eşik (0/1)."""
     # --- altyapı hataları (exit 2): eval güvenilir çalışmadı ---
@@ -112,7 +167,13 @@ def gate_decision(result: dict, thr: GateThresholds) -> GateOutcome:
 
 def format_gate(outcome: GateOutcome, result: dict, thr: GateThresholds, *, smoke: bool) -> str:
     verdict = {0: "PASS ✓", 1: "FAIL ✗ (eşik altı)", 2: "ERROR ⚠ (altyapı)"}[outcome.code]
+    m = result.get("models") or {}
     L = [f"=== EVAL GATE — {verdict} (exit {outcome.code}) ===",
+         # ÖLÇÜM ZEMİNİ her koşumda görünür: hangi agent/judge/ANN semantiğiyle ölçüldü.
+         # (Bu satır olmadığı için `.env`'de kalmış bir model override'ı sessizce
+         #  karneyle kıyaslanamaz sayılar üretmişti — M-7.)
+         f"zemin: agent={m.get('agent','-')} · judge={m.get('judge','-')} · "
+         f"iterative_scan={m.get('iterative_scan','-')}",
          f"mod={'smoke(5)' if smoke else 'full(36)'} · judge={result.get('judge','-')} · {outcome.reason}"]
     if outcome.checks:
         L.append("metrik              değer    eşik    sonuç")

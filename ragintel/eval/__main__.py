@@ -104,7 +104,8 @@ def _cmd_gate(args) -> int:
     from ..config.settings import DbSettings
     from ..database import Database
     from ..database.config_store import make_db_reader
-    from .gates import evidence_precondition, format_gate, gate_decision, thresholds_from_config
+    from .gates import (effective_models, evidence_precondition, format_gate, gate_decision,
+                    model_ground_precondition, thresholds_from_config)
     from .harness import evaluate
 
     try:
@@ -113,6 +114,14 @@ def _cmd_gate(args) -> int:
             cfg = load_config(db_reader=make_db_reader(db))
             with db.connection() as conn:
                 pre = evidence_precondition(conn, args.golden)
+            # M-7: model-zemini ön-koşulu — gate KARNENİN modelleriyle mi koşuyor?
+            # (evidence ile aynı sınıf: kalite değil, ÖLÇÜM ZEMİNİ kontrolü)
+            if pre is None:
+                pre = model_ground_precondition(
+                    cfg, agent_model=args.agent_model, judge_model=args.judge_model,
+                    allow_drift=args.allow_model_drift)
+            models = effective_models(cfg, agent_model=args.agent_model,
+                                      judge_model=args.judge_model)
         finally:
             db.close()
     except Exception as exc:  # DB/ön-koşul kurulum hatası → altyapı (exit 2)
@@ -120,13 +129,16 @@ def _cmd_gate(args) -> int:
         return 2
 
     if pre is not None:
-        # Evidence çözülemedi: judge'a HİÇ gidilmeden burada dur.
+        # Ön-koşul düştü: judge'a HİÇ gidilmeden burada dur (token harcanmaz).
         if args.json:
             print(json.dumps({"code": pre.code, "reason": pre.reason, "checks": [],
-                              "thresholds": None, "phase": "evidence_precondition"},
+                              "thresholds": None, "models": models,
+                              "phase": "precondition"},
                              ensure_ascii=False, indent=2))
         else:
-            print(f"=== EVAL GATE — ERROR ⚠ (altyapı: evidence ön-koşulu, exit {pre.code}) ===\n{pre.reason}")
+            print(f"=== EVAL GATE — ERROR ⚠ (altyapı: ön-koşul, exit {pre.code}) ===\n"
+                  f"efektif modeller: agent={models['agent']} · judge={models['judge']} · "
+                  f"iterative_scan={models['iterative_scan']}\n{pre.reason}")
         return pre.code
 
     try:
@@ -137,11 +149,14 @@ def _cmd_gate(args) -> int:
         print(f"=== EVAL GATE — ERROR ⚠ (altyapı, exit 2) ===\nharness çalıştırılamadı: {str(exc)[:200]}")
         return 2
 
+    result["models"] = models          # M-7: ölçüm zemini HER koşumda raporlanır
     outcome = gate_decision(result, thr)
     if args.json:
         print(json.dumps({"code": outcome.code, "reason": outcome.reason,
                           "checks": [{"name": n, "value": v, "threshold": t, "ok": ok} for n, v, t, ok in outcome.checks],
-                          "thresholds": vars(thr)}, ensure_ascii=False, indent=2))
+                          "thresholds": vars(thr),
+                          "models": models},   # ölçüm zemini: sayılar hangi agent/judge/ANN ile üretildi
+                         ensure_ascii=False, indent=2))
     else:
         print(format_gate(outcome, result, thr, smoke=args.smoke))
     return outcome.code
@@ -181,6 +196,9 @@ def main(argv: list[str] | None = None) -> int:
     gt.add_argument("--agent-model", default=None)
     gt.add_argument("--judge-model", default=None)
     gt.add_argument("--json", action="store_true", help="Tam JSON sonuç")
+    gt.add_argument("--allow-model-drift", action="store_true",
+                    help="Karnenin modelinden BİLİNÇLİ sapmaya izin ver (sayılar mühürle "
+                         "kıyaslanamaz; yalnızca keşif amaçlı)")
 
     args = parser.parse_args(argv)
     if args.cmd == "load":

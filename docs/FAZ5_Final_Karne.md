@@ -1,5 +1,25 @@
 # FAZ 5 — FİNAL KARNE ve Ortam Matrisi (KAPANIŞ)
 
+> ## ⚠ ARŞİV — BU KARNE ARTIK GEÇERLİ ZEMİN DEĞİLDİR (M-7, 2026-07-13)
+>
+> Bu karnenin ölçüm zemini **yeniden üretilemez**; aşağıdaki sayılar bugünkü sistemle
+> **KIYASLANAMAZ**. Tarihsel kayıt olarak durur, gate'in referansı DEĞİLDİR.
+>
+> Zeminin üç bileşeni de değişti:
+> 1. **Agent modeli:** karne `qwen/qwen3-32b` (Groq) ile alındı. LLM ucu artık DeepSeek
+>    (`api.deepseek.com`) ve yalnızca `deepseek-v4-pro`/`-flash` servis ediyor — eski agent
+>    bu ortamda **çalıştırılamıyor** (gate denendi: 36/36 `BadRequestError`).
+> 2. **Korpus:** M-7 REPROCESS'i pinli `docling==2.108.0` ile koştu. Karne dönemindeki
+>    chunk'lar pin ÖNCESİ bir docling'le üretilmişti (1266 → 1478 chunk).
+> 3. **Retrieval:** `hnsw.iterative_scan` (filtreli-ANN aday tükenmesi düzeltmesi) eklendi.
+>
+> **Güncel zemin:** `docs/M7_Karne_v1.md` (agent=deepseek-v4-pro · judge=llama-3.3-70b-versatile
+> · golden=v0.1 · iterative_scan=relaxed_order). `eval_gates` eşikleri O karneye kalibrelidir.
+>
+> **Ders (kalıcı koruma):** bu sapma aylarca sessiz kaldı çünkü gate koştuğu modeli hiçbir
+> yere yazmıyordu ve `.env` DB'yi ezebiliyordu. İkisi de düzeltildi — bkz.
+> `gates.model_ground_precondition` (zemin sapması → exit 2, judge çağrılmadan).
+
 **Tarih:** 2026-07-09 · **judge=deepseek/dev-mode** (DEV-MODE; resmi karar prod lokal-judge
 çapraz doğrulaması sonrası — runbook şartı). Bitiş kuralı uyarınca FAZ 5 bu koşuyla KAPANIR.
 

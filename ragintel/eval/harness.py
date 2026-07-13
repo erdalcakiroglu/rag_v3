@@ -101,11 +101,20 @@ DEFAULT_JUDGE_MODEL = "llama-3.3-70b-versatile"
 
 def build_eval_app(agent_model: str | None = None):
     """Eval için graph + çevre nesneleri (bulut gateway + gerçek retrieval, checkpoint yok).
-    Ajan modeli: CLI --agent-model > .env RAGINTEL_LLM_MODEL > DEFAULT_AGENT_MODEL."""
+
+    M-7: ajan modeli önceliği CLI > **DB `eval.agent_model`** > .env > kod default.
+
+    NEDEN DB-OTORİTER (öncelik değişti): eskiden `.env RAGINTEL_LLM_MODEL` DB'yi EZİYORDU.
+    Sonuç: `.env`'de kalmış bir provider-swap override'ı (deepseek-v4-pro) yüzünden gate,
+    KARNENİN AGENT'INDAN BAŞKA bir modelle koşuyor ve bunu hiçbir yere yazmıyordu —
+    ölçüm zemini sessizce kayıyordu (karneyle kıyaslanamaz sayılar "regresyon" sanıldı).
+    Karnenin agent'ı DAVRANIŞSAL bir karardır; yeri DB'dir (config-first), makinede
+    kalmış bir .env satırı değil. `.env` yalnızca DB boşsa devreye girer.
+    """
     db = Database(DbSettings()).open()
     cfg = load_config(db_reader=make_db_reader(db))
-    # M-4: model önceliği CLI > .env RAGINTEL_LLM_MODEL > DB `eval.agent_model` > kod default.
-    model = agent_model or LiteLLMSettings().model or cfg.group("eval").agent_model or DEFAULT_AGENT_MODEL
+    model = (agent_model or cfg.group("eval").agent_model
+             or LiteLLMSettings().model or DEFAULT_AGENT_MODEL)
     gateway = LiteLLMGateway(model=model, settings=LiteLLMSettings())
     service = RetrievalService(db=db, config=cfg)
     context_builder = ContextBuilder(db=db, config=cfg)
