@@ -3,11 +3,11 @@
 Kapsam:
   (a) scope ön-koşulu: run()/recover_stuck()/list_pending_files scope'lu; None = global
       (production davranışı bit-bit aynı).
-  (b) M-2b: chunker tablo bağını KOLONA taşıyor; table_repo ÇİFT YOL (kolon → türetme).
+  (b) M-2b: chunker tablo bağını KOLONA yazar; table_repo bunu TEK yoldan (kolon) okur.
+      DDL uygulanıp 41/41 dosya reprocess edildikten sonra (M-7 Aşama 2) eski
+      section_title-regex/eşitlik-join türetme yolu ölü kod olarak SÖKÜLDÜ — bkz.
+      ragintel/database/table_repo.py modül docstring'i.
   (c) M-7: Docling görsel çıkarma, dosya deposu, /api/figure 404-sızdırmazlığı.
-
-DDL (FAZ7_Sema_Ek2) HENÜZ UYGULANMADI — bu testler kolonların YOKLUĞUNDA da geçer;
-kolon-yolu, kolonların varlığını taklit eden sahte bağlantı/geçici şema ile sınanır.
 """
 
 from __future__ import annotations
@@ -92,24 +92,19 @@ def test_non_table_chunk_has_no_table_ref():
 
 
 # =============================================================================
-# (b) table_repo ÇİFT YOL — sahte bağlantı ile (DDL'den bağımsız)
+# (b) table_repo — TEK yol (kolon), sahte bağlantı ile
 # =============================================================================
 class _FakeConn:
-    """resolve_table_refs'in iki sorgusunu ayırt eden minimal sahte bağlantı."""
+    """resolve_table_refs'in kolon sorgusunu simüle eden minimal sahte bağlantı."""
 
-    def __init__(self, *, columns_present: bool, column_rows=(), derived_rows=()):
-        self.columns_present = columns_present
+    def __init__(self, *, column_rows=()):
         self.column_rows = list(column_rows)
-        self.derived_rows = list(derived_rows)
-        self.derived_asked_for: list[int] | None = None
+        self.asked_ids: list[int] | None = None
 
     def execute(self, sql, params=None):
-        if "information_schema.columns" in sql:
-            return _Res([(1 if self.columns_present else 0,)])
-        if "table_id IS NOT NULL" in sql:          # kolon yolu
-            return _Res(self.column_rows)
-        self.derived_asked_for = list(params["ids"])  # türetme yolu
-        return _Res(self.derived_rows)
+        assert "table_id IS NOT NULL" in sql, "resolve_table_refs artık TEK sorgu kullanmalı"
+        self.asked_ids = list(params["ids"])
+        return _Res(self.column_rows)
 
 
 class _Res:
@@ -123,33 +118,22 @@ class _Res:
         return self._rows[0] if self._rows else None
 
 
-def test_resolve_prefers_column_path_when_present():
-    conn = _FakeConn(columns_present=True,
-                     column_rows=[(10, 77, 3, 5)],
-                     derived_rows=[(10, 999, None, None)])   # türetme YANLIŞ cevap verse bile
+def test_resolve_reads_only_column_path():
+    """M-2b sonrası TEK yol: kolon okuması. Türetme yolu (section_title-regex /
+    eşitlik-join) ölü kod olarak sökülmüştür — bkz. table_repo.py modül docstring'i."""
+    conn = _FakeConn(column_rows=[(10, 77, 3, 5)])
     refs = table_repo.resolve_table_refs(conn, [10])
     assert refs == {10: {"table_id": 77, "row_start": 3, "row_end": 5}}
-    assert conn.derived_asked_for is None, "kolon dolu olan chunk için türetme yolu ÇALIŞMAMALI"
+    assert conn.asked_ids == [10]
 
 
-def test_resolve_falls_back_to_derived_for_columnless_chunks():
-    """Geçiş dönemi: kolonu NULL olan (REPROCESS öncesi yazılmış) chunk türetme
-    yoluna düşer. Bu olmadan DDL ile REPROCESS arasında tablo gösterimi KIRILIRDI."""
-    conn = _FakeConn(columns_present=True,
-                     column_rows=[(10, 77, 3, 5)],        # 10 kolondan
-                     derived_rows=[(20, 88, 1, 2)])       # 20 türetmeden
+def test_resolve_omits_chunks_without_table_id():
+    """Kolonu NULL olan (tablo-kökenli OLMAYAN) chunk sonuçta yer almaz — SQL zaten
+    `table_id IS NOT NULL` filtresiyle bunları hiç döndürmez."""
+    conn = _FakeConn(column_rows=[(10, 77, 3, 5)])   # 20 için satır YOK
     refs = table_repo.resolve_table_refs(conn, [10, 20])
-    assert refs[10]["table_id"] == 77
-    assert refs[20]["table_id"] == 88
-    assert conn.derived_asked_for == [20], "türetme YALNIZCA kolonu boş olanlar için sorulmalı"
-
-
-def test_resolve_uses_derived_only_when_ddl_not_applied():
-    """DDL uygulanmadan (kolon YOK) eski davranış birebir korunur."""
-    conn = _FakeConn(columns_present=False, derived_rows=[(30, 55, None, None)])
-    refs = table_repo.resolve_table_refs(conn, [30])
-    assert refs == {30: {"table_id": 55, "row_start": None, "row_end": None}}
-    assert conn.derived_asked_for == [30]
+    assert refs == {10: {"table_id": 77, "row_start": 3, "row_end": 5}}
+    assert 20 not in refs
 
 
 def test_copy_chunks_skips_ref_columns_when_ddl_absent():

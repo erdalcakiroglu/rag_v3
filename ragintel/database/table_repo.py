@@ -1,17 +1,15 @@
 """M-2 — tablo gösterimi SQL katmanı: chunk→tablo çözümleme + scope'lu tablo okuma.
 
-Şemada `core_chunks.table_id` YOK ve `is_table` persist EDİLMEZ (bkz. chunking/chunk.py).
-Bağlantı bu yüzden iki yoldan TÜRETİLİR (M-2b: kalıcı kolon sonraki re-ingest turunda):
+M-2b DDL (docs/FAZ7_Sema_Ek2_ChunkTableRef.sql) canlıya UYGULANDI ve M-7 Aşama 2
+reprocess-all ile 41/41 dosya yeniden işlendi: artık her tablo-kökenli chunk'ın
+`table_id`/`table_row_start`/`table_row_end` kolonları KALICI olarak dolu (doğrulandı:
+tablo-kökenli & table_id IS NULL = 0). Eskiden burada yaşayan section_title-regex +
+`chunk_text = table_text` eşitlik-join TÜRETME yolu (geçiş dönemi B-kanaryası) artık
+hiçbir satırda tetiklenmiyor; ölü kod olarak SÖKÜLDÜ. Bağlantı artık TEK yoldan:
+kolon okuması.
 
-  Yol A — M-1 alt-chunk'ı: `section_title = 'tablo{N} · satır A[-B]'` → (file_id, N)
-          → table_id + satır aralığı (UI vurgusu bundan gelir).
-  Yol B — eşik-altı tek-chunk tablo: `chunk_text = table_text` birebir eşitliği
-          → table_id (satır aralığı yok; tablonun tamamı gösterilir).
-
-Yol B metin eşitliğine dayanır: cleaning/flatten davranışı değişirse SESSİZCE kopar.
-`tests/test_faz_m2_table_view.py::test_path_b_equality_join_still_resolves` bunu mühürler.
-
-Mükerrer `table_data` payload'ları için tie-break `min(table_id)` (deterministik).
+Mükerrer `table_data` payload'ları için tie-break `min(table_id)` (deterministik) —
+bu artık `storage_repo.copy_chunks`'ın yazdığı kolon değerine taşındı.
 """
 
 from __future__ import annotations
@@ -24,45 +22,7 @@ import psycopg
 # tamamı bundan ibaret — jsonb olarak geçerli ama anlamsız; jenerik başlığa düşeriz.
 PLACEHOLDER_CELL = "<!-- rich cell -->"
 
-# `tablo{index} · satır {start}[-{end}]` (chunker._table_chunks ile birebir).
-_SECTION_RE = r"^tablo(\d+) · satır (\d+)(?:-(\d+))?$"
-
-_RESOLVE_SQL = f"""
-WITH ch AS (
-    SELECT chunk_id, file_id, chunk_text,
-           regexp_match(section_title, %(rx)s) AS m
-    FROM core_chunks
-    WHERE chunk_id = ANY(%(ids)s)
-),
-path_a AS (
-    SELECT ch.chunk_id,
-           min(t.table_id) AS table_id,
-           (ch.m)[2]::int AS row_start,
-           COALESCE((ch.m)[3]::int, (ch.m)[2]::int) AS row_end
-    FROM ch
-    JOIN core_tables t
-      ON t.file_id = ch.file_id AND t.table_index = (ch.m)[1]::int
-    WHERE ch.m IS NOT NULL
-    GROUP BY ch.chunk_id, (ch.m)[2], (ch.m)[3]
-),
-path_b AS (
-    SELECT ch.chunk_id,
-           min(t.table_id) AS table_id,
-           NULL::int AS row_start,
-           NULL::int AS row_end
-    FROM ch
-    JOIN core_tables t
-      ON t.file_id = ch.file_id AND t.table_text = ch.chunk_text
-    WHERE ch.m IS NULL AND COALESCE(t.table_text, '') <> ''
-    GROUP BY ch.chunk_id
-)
-SELECT chunk_id, table_id, row_start, row_end FROM path_a
-UNION ALL
-SELECT chunk_id, table_id, row_start, row_end FROM path_b;
-"""
-
-
-# M-2b: KALICI bağ — chunk yazılırken doldurulan kolonlar. Türetme YOK.
+# M-2b: KALICI bağ — chunk yazılırken doldurulan kolonlar. Tek yol, türetme YOK.
 _COLUMN_SQL = """
 SELECT chunk_id, table_id, table_row_start, table_row_end
   FROM core_chunks
@@ -70,41 +30,19 @@ SELECT chunk_id, table_id, table_row_start, table_row_end
 """
 
 
-def _table_columns_present(conn: psycopg.Connection) -> bool:
-    row = conn.execute(
-        "SELECT count(*) FROM information_schema.columns "
-        "WHERE table_name = 'core_chunks' AND column_name = 'table_id';"
-    ).fetchone()
-    return bool(row and row[0])
-
-
 def resolve_table_refs(conn: psycopg.Connection, chunk_ids: list[int]) -> dict[int, dict[str, Any]]:
     """chunk_id → {table_id, row_start?, row_end?}. Tablo-kökenli OLMAYAN chunk'lar
     sonuçta YER ALMAZ (çağıran `table_ref` eklemez → mevcut davranış korunur).
 
-    M-2b ÇİFT YOL (geçiş dönemi):
-      1. KOLON yolu — chunk yazılırken doldurulan table_id/satır aralığı. Kesin.
-      2. TÜRETME yolu — kolonu NULL olan (DDL'den ÖNCE yazılmış) chunk'lar için
-         eski section_title-regex + core_tables JOIN mantığı.
-    REPROCESS tamamlanınca her chunk'ın kolonu dolar → türetme yolu hiç çalışmaz
-    ve Aşama 3'te (doğrulama yeşilken) sökülür. Geçişte İKİSİ birden gerekli:
-    yalnız kolona güvenmek, REPROCESS'ten önce tablo gösterimini KIRARDI.
+    M-2b DDL sonrası TEK yol: kolon okuması (`core_chunks.table_id` chunk yazılırken
+    dolduruluyor). Eski section_title-regex/eşitlik-join türetme yolu emekli edildi
+    (bkz. modül docstring'i).
     """
     if not chunk_ids:
         return {}
-    ids = list(chunk_ids)
     out: dict[int, dict[str, Any]] = {}
-
-    if _table_columns_present(conn):
-        for r in conn.execute(_COLUMN_SQL, {"ids": ids}).fetchall():
-            out[int(r[0])] = {"table_id": int(r[1]), "row_start": r[2], "row_end": r[3]}
-
-    # Kolonu dolmayanlar için eski türetilmiş yol (yalnızca KALANLAR sorgulanır).
-    remaining = [i for i in ids if i not in out]
-    if remaining:
-        rows = conn.execute(_RESOLVE_SQL, {"rx": _SECTION_RE, "ids": remaining}).fetchall()
-        for r in rows:
-            out[int(r[0])] = {"table_id": int(r[1]), "row_start": r[2], "row_end": r[3]}
+    for r in conn.execute(_COLUMN_SQL, {"ids": list(chunk_ids)}).fetchall():
+        out[int(r[0])] = {"table_id": int(r[1]), "row_start": r[2], "row_end": r[3]}
     return out
 
 

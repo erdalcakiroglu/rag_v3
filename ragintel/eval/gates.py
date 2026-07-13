@@ -37,6 +37,48 @@ def thresholds_from_config(cfg) -> GateThresholds:
         return GateThresholds()
 
 
+def evidence_precondition(conn, version: str) -> GateOutcome | None:
+    """Judge ÇAĞRILMADAN ÖNCE koşulan ucuz, deterministik ALTYAPI ön-koşulu (M-7 son adım).
+
+    Golden set'in `gold_evidence` alıntıları HÂLÂ geçerli korpusta çözülüyor mu? (loader'ın
+    `_validate_evidence`'ı ile BİREBİR aynı mantık — `retrieval_benchmark.map_gold_chunks`
+    üzerinden.) Bu bir KALİTE REGRESYONU testi DEĞİLDİR: korpus/parse (ör. docling sürüm
+    yükseltmesi) golden set çıpalandığından beri değişmiş olabilir; böyle bir kaymayı kalite
+    düşüşü gibi yorumlayıp pahalı judge çağrısını (token harcayarak) boşa harcamak yanlıştır.
+    Bu yüzden gate'in eşik-kıyas aşamasından ÖNCE, ayrı ve ucuz bir kontrol olarak çalışır.
+
+    Dönüş: None → ön-koşul geçti, gate normal akışına (harness.evaluate → gate_decision)
+           devam edebilir. GateOutcome(2, ...) → evidence çözülemedi; çağıran BURADA
+           durmalı ve judge'ı hiç çağırmamalı.
+    """
+    from . import repository as repo
+    from .retrieval_benchmark import from_db_rows, map_gold_chunks
+
+    records = repo.list_golden_records(conn, version)
+    if not records:
+        return GateOutcome(2, f"'{version}' golden set DB'de yok — önce `eval load` ile yükleyin.")
+
+    eval_records = from_db_rows(records)
+    mapping = map_gold_chunks(conn, eval_records)
+    if mapping.unmapped:
+        detail = "; ".join(
+            f"{u['record_id']} [{u['file_name']}"
+            + (f" s.{u['page']}" if u.get("page") else f" sayfa:{u.get('sheet')}")
+            + f"]: \"{u['quote']}\""
+            for u in mapping.unmapped
+        )
+        reason = (
+            f"evidence çözülemedi ({len(mapping.unmapped)}/{mapping.total_evidence} alıntı) — "
+            "bu bir KALİTE REGRESYONU değil, ÖLÇÜM ZEMİNİNİN KAYMASIDIR (korpus/parse değişti, "
+            "golden çıpaları artık tutmuyor). Judge ÇAĞRILMADI (token harcanmadı). "
+            f"Aksiyon: ilgili kayıt/alıntıyı yeni bir golden sürümüyle (ör. {version}.1) "
+            "yeniden çıpalayıp `python -m ragintel.eval load <dosya> --version <yeni-sürüm>` "
+            f"ile yükleyin, ardından gate'i yeni sürümle koşun. Çözülemeyenler: {detail}"
+        )
+        return GateOutcome(2, reason)
+    return None
+
+
 def gate_decision(result: dict, thr: GateThresholds) -> GateOutcome:
     """Eval sonucunu eşiklerle kıyaslar. ÖNCE altyapı sağlığı (exit 2), sonra eşik (0/1)."""
     # --- altyapı hataları (exit 2): eval güvenilir çalışmadı ---

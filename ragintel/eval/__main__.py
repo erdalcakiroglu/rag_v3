@@ -93,24 +93,47 @@ def _cmd_run(args) -> int:
 
 
 def _cmd_gate(args) -> int:
-    """CI eval gate: golden'ı koşar, eşiklerle kıyaslar. pass=0 / fail=1 / altyapı=2."""
+    """CI eval gate: golden'ı koşar, eşiklerle kıyaslar. pass=0 / fail=1 / altyapı=2.
+
+    ÖN-KOŞUL (M-7 son adım): eşik-kıyas aşamasından ÖNCE, evidence çözünürlüğü ucuz ve
+    deterministik biçimde doğrulanır (bkz. `gates.evidence_precondition`). Çözülemezse
+    exit 2 (altyapı) — Judge (pahalı, token harcayan) HİÇ ÇAĞRILMAZ. Bu bir kalite
+    regresyonu değil, ölçüm zemininin (korpus/parse) kaymasıdır.
+    """
     from ..config.loader import load_config
     from ..config.settings import DbSettings
     from ..database import Database
     from ..database.config_store import make_db_reader
-    from .gates import format_gate, gate_decision, thresholds_from_config
+    from .gates import evidence_precondition, format_gate, gate_decision, thresholds_from_config
     from .harness import evaluate
 
     try:
         db = Database(DbSettings()).open()
         try:
             cfg = load_config(db_reader=make_db_reader(db))
+            with db.connection() as conn:
+                pre = evidence_precondition(conn, args.golden)
         finally:
             db.close()
+    except Exception as exc:  # DB/ön-koşul kurulum hatası → altyapı (exit 2)
+        print(f"=== EVAL GATE — ERROR ⚠ (altyapı, exit 2) ===\nön-koşul kurulamadı: {str(exc)[:200]}")
+        return 2
+
+    if pre is not None:
+        # Evidence çözülemedi: judge'a HİÇ gidilmeden burada dur.
+        if args.json:
+            print(json.dumps({"code": pre.code, "reason": pre.reason, "checks": [],
+                              "thresholds": None, "phase": "evidence_precondition"},
+                             ensure_ascii=False, indent=2))
+        else:
+            print(f"=== EVAL GATE — ERROR ⚠ (altyapı: evidence ön-koşulu, exit {pre.code}) ===\n{pre.reason}")
+        return pre.code
+
+    try:
         thr = thresholds_from_config(cfg)
         result = evaluate(version=args.golden, limit=(5 if args.smoke else None), runs=args.runs,
                           agent_model=args.agent_model, judge_model=args.judge_model)
-    except Exception as exc:  # DB/harness kurulum hatası → altyapı (exit 2)
+    except Exception as exc:  # harness kurulum/koşum hatası → altyapı (exit 2)
         print(f"=== EVAL GATE — ERROR ⚠ (altyapı, exit 2) ===\nharness çalıştırılamadı: {str(exc)[:200]}")
         return 2
 

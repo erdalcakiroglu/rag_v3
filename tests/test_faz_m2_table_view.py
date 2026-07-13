@@ -1,9 +1,11 @@
 """M-2 — yapısal tablo gösterimi: kontrat, normalizasyon, chunk→tablo çözümleme,
 scope fail-closed (404) ve tablo-olmayan kaynakların regresyonu.
 
-`test_path_b_equality_join_still_resolves` KASITLI bir kanaryadır: Yol B, chunk metni ile
-`table_text`'in BİREBİR eşitliğine dayanır (şemada table_id kolonu yok — M-2b). Cleaning /
-flatten davranışı değişirse bu test kırmızı yanar ve sessiz kapsam kaybı fark edilir.
+M-2b DDL uygulanıp M-7 Aşama 2 reprocess-all (41/41 dosya) tamamlandıktan sonra her
+tablo-kökenli chunk'ın `table_id` kolonu KALICI olarak dolu (doğrulandı: NULL=0). Eski
+section_title-regex/eşitlik-join TÜRETME yolu artık hiç tetiklenmediği için ölü kod
+olarak sökülmüştür (bkz. table_repo.py); bu dosyadaki testler de yalnız KOLON yolunu
+sınar.
 """
 
 from __future__ import annotations
@@ -124,13 +126,16 @@ def _one(conn, sql, params=()):
 
 
 @pytest.mark.db
-def test_path_a_subchunk_resolves_table_and_row_range(live_db):
-    """M-1 alt-chunk'ı → table_id + satır aralığı (UI vurgusunun kaynağı)."""
+def test_subchunk_resolves_table_and_row_range_via_column(live_db):
+    """M-1 alt-chunk'ı → table_id + satır aralığı (UI vurgusunun kaynağı).
+
+    section_title yalnız ADAY chunk'ı BULMAK için kullanılıyor; çözümlemenin kendisi
+    (resolve_table_refs) artık TEK yoldan — `core_chunks.table_id` kolonundan — geçer."""
     with live_db.connection() as conn:
         row = _one(conn, """
             SELECT chunk_id, section_title FROM core_chunks
             WHERE section_title ~ '^tablo[0-9]+ · satır' ORDER BY chunk_id LIMIT 1;""")
-        assert row is not None, "M-1 alt-chunk'ı yok — bu kurulumda Yol A test edilemez"
+        assert row is not None, "M-1 alt-chunk'ı yok — aday bulunamadı"
         chunk_id = int(row[0])
         refs = table_repo.resolve_table_refs(conn, [chunk_id])
 
@@ -142,38 +147,11 @@ def test_path_a_subchunk_resolves_table_and_row_range(live_db):
 
 
 @pytest.mark.db
-def test_path_b_equality_join_still_resolves(live_db):
-    """KANARYA: eşik-altı tablo chunk'ı `chunk_text = table_text` ile çözülmeli.
-
-    Cleaning/flatten değişip metin eşitliği bozulursa burası kırmızı yanar; Yol B
-    sessizce kapsam kaybetmez. (M-2b kalıcı table_id kolonu bu kırılganlığı kaldıracak.)
-    """
-    with live_db.connection() as conn:
-        row = _one(conn, """
-            SELECT ch.chunk_id, t.table_id FROM core_tables t
-            JOIN core_chunks ch ON ch.file_id = t.file_id AND ch.chunk_text = t.table_text
-            WHERE COALESCE(t.table_text,'') <> '' AND ch.section_title IS NULL
-            ORDER BY ch.chunk_id LIMIT 1;""")
-        assert row is not None, "Yol B ile eşleşen tablo chunk'ı kalmadı — eşitlik join'i KOPTU"
-        chunk_id, expected_table_id = int(row[0]), int(row[1])
-        refs = table_repo.resolve_table_refs(conn, [chunk_id])
-
-    assert chunk_id in refs, "Yol B çözümlemesi koptu (chunk_text/table_text eşitliği)"
-    assert refs[chunk_id]["table_id"] == expected_table_id
-    assert refs[chunk_id]["row_start"] is None  # tam tablo — satır aralığı yok
-
-
-@pytest.mark.db
 def test_non_table_chunk_has_no_table_ref(live_db):
     """REGRESYON: tablo-kökenli olmayan chunk sonuçta YER ALMAZ → table_ref eklenmez."""
     with live_db.connection() as conn:
         row = _one(conn, """
-            SELECT ch.chunk_id FROM core_chunks ch
-            WHERE ch.section_title IS NOT NULL
-              AND ch.section_title !~ '^tablo[0-9]+ · satır'
-              AND NOT EXISTS (SELECT 1 FROM core_tables t
-                              WHERE t.file_id = ch.file_id AND t.table_text = ch.chunk_text)
-            ORDER BY ch.chunk_id LIMIT 1;""")
+            SELECT chunk_id FROM core_chunks WHERE table_id IS NULL ORDER BY chunk_id LIMIT 1;""")
         assert row is not None
         chunk_id = int(row[0])
         refs = table_repo.resolve_table_refs(conn, [chunk_id])
