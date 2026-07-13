@@ -628,6 +628,16 @@ class RetrievalConfig(BaseModel):
                     "aramayı yavaşlatır. Index'i YENİDEN KURMAZ — anında etkilidir "
                     "(index BUILD parametreleri: Depolama sekmesi).",
     )
+    hnsw_iterative_scan: Literal["off", "relaxed_order", "strict_order"] = Field(
+        default="relaxed_order",
+        description="Filtreli aramada (scope/dosya süzgeci) HNSW aday tükenmesini önler. "
+                    "Kapalıyken index önce ef_search kadar aday bulur, süzgeç SONRA uygulanır — "
+                    "adayların hepsi kullanıcının scope'u DIŞINDAysa sonuç BOŞ döner (belge var "
+                    "ama getirilemez). 'relaxed_order': aday tükenirse index taramaya devam eder "
+                    "(önerilen; ölçülen ek gecikme ~0) · 'strict_order': sıra garantisi daha katı, "
+                    "daha yavaş · 'off': eski davranış — scope'lu sorgularda SONUÇ KAYBINA yol açar. "
+                    "pgvector ≥ 0.8 gerektirir.",
+    )
     lookup_window: int = Field(
         default=2, ge=0, le=20,
         description="Bir chunk'ın kaynağı görüntülenirken çevresinden kaç komşu chunk getirilir "

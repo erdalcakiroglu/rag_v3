@@ -134,6 +134,7 @@ class StoreRetriever:
 
     def __init__(self, store, embed_cache: dict[str, list[float]], *, name: str,
                  method: str = "hybrid", ef_search: int = 100, rrf_k: int = 60,
+                 iterative_scan: str = "relaxed_order",
                  dense_weight: float = 1.0, sparse_weight: float = 1.0,
                  sparse_variant: str = "simple", fusion: str = "rrf",
                  rerank: bool = False, rerank_fn=None, pool: int = 20):
@@ -142,6 +143,8 @@ class StoreRetriever:
         self.name = name
         self.method = method
         self.ef_search = ef_search
+        # M-7: sweep de ÜRETİMLE aynı HNSW semantiğiyle koşmalı (filtreli aday tükenmesi).
+        self.iterative_scan = iterative_scan
         self.rrf_k = rrf_k
         self.dense_weight = dense_weight
         self.sparse_weight = sparse_weight
@@ -156,11 +159,13 @@ class StoreRetriever:
         pool_k = max(top_k, self.pool) if self.rerank else top_k
         if self.method == "vector":
             rows = self.store.search_vector(
-                query_vector=qv, allowed_doc_scopes=[doc_scope], top_k=pool_k, ef_search=self.ef_search)
+                query_vector=qv, allowed_doc_scopes=[doc_scope], top_k=pool_k, ef_search=self.ef_search,
+                iterative_scan=self.iterative_scan)
         else:
             rows = self.store.search_hybrid(
                 query=question, query_vector=qv, normalized_query=normalize_for_search(question),
                 allowed_doc_scopes=[doc_scope], top_k=pool_k, ef_search=self.ef_search,
+                iterative_scan=self.iterative_scan,
                 fusion_strategy=self.fusion, rrf_k=self.rrf_k, dense_weight=self.dense_weight,
                 sparse_weight=self.sparse_weight, sparse_variant=self.sparse_variant)
         ids = [int(r["chunk_id"]) for r in rows]

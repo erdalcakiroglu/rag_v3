@@ -17,6 +17,31 @@ def _coerce_date(value: date | str | None) -> date | None:
     return date.fromisoformat(value)
 
 
+# M-7: HNSW arama-zamanı ayarları — vektörün GEÇTİĞİ HER yola uygulanır
+# (search_vector + search_hybrid'in dense bacağı). İP-2.4 benchmark'ı da bu iki
+# fonksiyonu çağırdığı için ÖLÇÜM ile ÜRETİM aynı ayarla koşar; aksi hâlde mühür
+# üretimi temsil etmez.
+_ITERATIVE_SCAN_VALUES = ("off", "relaxed_order", "strict_order")
+
+
+def _apply_hnsw_settings(conn: psycopg.Connection, ef_search: int, iterative_scan: str) -> None:
+    """`SET LOCAL` (transaction-scope) — pool'a dönen bağlantıya SIZMAZ.
+
+    `iterative_scan` GUC adı/değeri SQL'e string olarak gömülür (parametre olamaz),
+    bu yüzden ALLOWLIST'ten geçer — config'ten gelse bile ham metin SQL'e girmez.
+    """
+    # Doğrulama ÖNCE (SQL'den önce): geçersiz değer hiçbir sorgu çalıştırmadan reddedilir.
+    if iterative_scan not in _ITERATIVE_SCAN_VALUES:
+        raise ValueError(f"Geçersiz hnsw_iterative_scan: {iterative_scan!r}")
+    conn.execute(f"SET LOCAL hnsw.ef_search = {int(ef_search)};")
+    # pgvector < 0.8'de bu GUC yoktur → sessizce eski davranışa düş (arama ÇÖKMESİN).
+    try:
+        conn.execute(f"SET LOCAL hnsw.iterative_scan = '{iterative_scan}';")
+    except psycopg.errors.UndefinedObject:
+        conn.rollback()
+        conn.execute(f"SET LOCAL hnsw.ef_search = {int(ef_search)};")
+
+
 def _where_filters(filters: dict[str, Any] | None, params: list[Any]) -> str:
     filters = filters or {}
     clauses: list[str] = []
@@ -47,12 +72,13 @@ def search_vector(
     allowed_doc_scopes: list[str],
     top_k: int,
     ef_search: int,
+    iterative_scan: str = "relaxed_order",
     filters: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if not allowed_doc_scopes:
         return []
     register_vector(conn)
-    conn.execute(f"SET LOCAL hnsw.ef_search = {int(ef_search)};")
+    _apply_hnsw_settings(conn, ef_search, iterative_scan)
     params: list[Any] = [allowed_doc_scopes]
     where = _where_filters(filters, params)
     rows = conn.execute(
@@ -124,6 +150,7 @@ def search_hybrid(
     allowed_doc_scopes: list[str],
     top_k: int,
     ef_search: int,
+    iterative_scan: str = "relaxed_order",
     filters: dict[str, Any] | None = None,
     fusion_strategy: str,
     rrf_k: int,
@@ -134,7 +161,7 @@ def search_hybrid(
     if not allowed_doc_scopes:
         return []
     register_vector(conn)
-    conn.execute(f"SET LOCAL hnsw.ef_search = {int(ef_search)};")
+    _apply_hnsw_settings(conn, ef_search, iterative_scan)
     if sparse_variant == "trgm":
         # word_similarity eşiği (varsayılan 0.6 fazla eler); aday havuzu için düşür.
         conn.execute("SET LOCAL pg_trgm.word_similarity_threshold = 0.2;")

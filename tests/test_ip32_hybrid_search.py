@@ -305,13 +305,18 @@ def test_single_sql_cte_and_sparse_variant_selection(live_db, monkeypatch):
             sparse_variant="trgm",
         )
     assert out[0]["source"]["file_name"] == "sql.pdf"
-    # trgm: ef_search SET + word_similarity eşik SET + tek ana CTE sorgusu
-    assert len(conn.calls) == 3
-    assert "SET LOCAL hnsw.ef_search" in conn.calls[0]
-    assert "pg_trgm.word_similarity_threshold" in conn.calls[1]
-    assert "WITH sq AS" in conn.calls[2]
-    assert "word_similarity" in conn.calls[2]   # trgm gerçek sparse skoru
-    assert conn.calls[2].count("SELECT") >= 3
+    # ASIL İDDİA: arama TEK ana sorguyla yapılır (N+1 yok). Bunu "toplam çağrı = 3"
+    # diye ölçmek kırılgandı — yeni bir `SET LOCAL` (M-7 hnsw.iterative_scan) eklenince
+    # test, davranış hiç bozulmadığı hâlde kırıldı. İddia artık niyete bağlı:
+    # ana CTE sorgusu TEK, geri kalan her şey oturum ayarı (SET LOCAL).
+    ana = [c for c in conn.calls if "WITH sq AS" in c]
+    ayar = [c for c in conn.calls if c.strip().upper().startswith("SET LOCAL")]
+    assert len(ana) == 1, "arama tek ana CTE sorgusuyla yapılmalı (N+1 yok)"
+    assert len(ana) + len(ayar) == len(conn.calls), "ana sorgu + SET LOCAL dışında çağrı olmamalı"
+    assert any("SET LOCAL hnsw.ef_search" in c for c in ayar)
+    assert any("pg_trgm.word_similarity_threshold" in c for c in ayar)
+    assert "word_similarity" in ana[0]          # trgm gerçek sparse skoru
+    assert ana[0].count("SELECT") >= 3
 
 
 def test_hybrid_span_contains_variant_and_rank_detail(live_db):

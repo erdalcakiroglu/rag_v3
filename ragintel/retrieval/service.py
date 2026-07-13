@@ -29,6 +29,7 @@ class RetrievalStore(Protocol):
         allowed_doc_scopes: list[str],
         top_k: int,
         ef_search: int,
+        iterative_scan: str = "relaxed_order",
         filters: RetrievalFilters | None = None,
     ) -> list[RetrievedChunk]: ...
 
@@ -41,6 +42,7 @@ class RetrievalStore(Protocol):
         allowed_doc_scopes: list[str],
         top_k: int,
         ef_search: int,
+        iterative_scan: str = "relaxed_order",
         filters: RetrievalFilters | None = None,
         fusion_strategy: str,
         rrf_k: int,
@@ -78,6 +80,7 @@ class PgRetrievalStore:
         allowed_doc_scopes: list[str],
         top_k: int,
         ef_search: int,
+        iterative_scan: str = "relaxed_order",
         filters: RetrievalFilters | None = None,
     ) -> list[RetrievedChunk]:
         with self.db.connection() as conn:
@@ -87,6 +90,7 @@ class PgRetrievalStore:
                 allowed_doc_scopes=allowed_doc_scopes,
                 top_k=top_k,
                 ef_search=ef_search,
+                iterative_scan=iterative_scan,
                 filters=filters,
             )
 
@@ -99,6 +103,7 @@ class PgRetrievalStore:
         allowed_doc_scopes: list[str],
         top_k: int,
         ef_search: int,
+        iterative_scan: str = "relaxed_order",
         filters: RetrievalFilters | None = None,
         fusion_strategy: str,
         rrf_k: int,
@@ -114,6 +119,7 @@ class PgRetrievalStore:
                 allowed_doc_scopes=allowed_doc_scopes,
                 top_k=top_k,
                 ef_search=ef_search,
+                iterative_scan=iterative_scan,
                 filters=filters,
                 fusion_strategy=fusion_strategy,
                 rrf_k=rrf_k,
@@ -308,6 +314,7 @@ class RetrievalService:
                 allowed_doc_scopes=allowed,
                 top_k=top_k,
                 ef_search=int(self.retrieval_cfg.vector_ef_search),
+                iterative_scan=str(self.retrieval_cfg.hnsw_iterative_scan),
                 filters=filters,
                 fusion_strategy=fusion_strategy,
                 rrf_k=rrf_k,
@@ -357,6 +364,7 @@ class RetrievalService:
                 allowed_doc_scopes=allowed,
                 top_k=top_k,
                 ef_search=int(self.retrieval_cfg.vector_ef_search),
+                iterative_scan=str(self.retrieval_cfg.hnsw_iterative_scan),
                 filters=filters,
             )
             db_ms = int((time.perf_counter() - t0) * 1000)
