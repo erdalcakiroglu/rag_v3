@@ -32,6 +32,13 @@
 --   Bu yüzden NEW.updated_by tamamen YOK SAYILIR (audit için tek kaynak GUC +
 --   session_user fallback'idir) — audit doğruluğu, uygulamanın updated_by
 --   kolonunu ayrıca doğru yazmasına BAĞIMLI DEĞİLDİR.
+--
+-- --- BİLİNÇLİ SINIRLAMA: DELETE audit'lenmez ---------------------------------
+-- Trigger yalnızca INSERT/UPDATE'i yakalar. Config grupları pratikte SİLİNMEZ
+-- (grup = pydantic GROUP_MODELS'te tanımlı; silinirse kod varsayılanına düşülür),
+-- ayrıca `new_value NOT NULL` kısıtı bir DELETE kaydını zaten kabul etmezdi.
+-- Silme audit'i gerekirse: new_value NOT NULL kaldırılmalı + TG_OP='DELETE' dalı
+-- eklenmelidir (o gün bilinçli bir karar olsun diye burada yazıyor).
 -- =============================================================================
 
 BEGIN;
@@ -84,15 +91,33 @@ CREATE OR REPLACE TRIGGER trg_app_config_audit
 COMMIT;
 
 -- -----------------------------------------------------------------------------
--- Doğrulama (uygulama SONRASI, elle):
---   -- Panel/uygulama yolu (GUC set edilmiş gibi simüle):
---   SELECT set_config('app.changed_by', 'erdal', true);
---   UPDATE ragintel.app_config SET config_value = config_value WHERE config_key = 'chunking';
---   SELECT * FROM ragintel.config_audit WHERE config_key='chunking' ORDER BY audit_id DESC LIMIT 1;
---   -- changed_by = 'erdal' olmalı.
+-- Doğrulama (uygulama SONRASI, elle — psql'de sırayla çalıştırın):
 --
---   -- Doğrudan SQL yolu (GUC YOK — yeni bağlantı/transaction):
---   UPDATE ragintel.app_config SET config_value = config_value WHERE config_key = 'chunking';
---   SELECT * FROM ragintel.config_audit WHERE config_key='chunking' ORDER BY audit_id DESC LIMIT 1;
---   -- changed_by = session_user (ör. 'ragintel_app') olmalı — 'erdal' DEĞİL.
+-- DİKKAT: `SET config_value = config_value` (no-op) İŞE YARAMAZ — trigger'daki
+-- `IS DISTINCT FROM` koruması değeri değişmemiş UPDATE'i günlüğe YAZMAZ ve
+-- "trigger bozuk" izlenimi verir. Aşağıdaki reçete DEĞERİ GERÇEKTEN değiştirir,
+-- sonra ESKİ HÂLİNE geri alır (net etki sıfır; audit'e 2 satır düşer).
+--
+--   -- 1) Uygulama/panel yolu (GUC set edilmiş): changed_by = 'erdal' beklenir.
+--   BEGIN;
+--     SELECT set_config('app.changed_by', 'erdal', true);
+--     UPDATE ragintel.app_config
+--        SET config_value = jsonb_set(config_value, '{lookup_window}', '3'::jsonb, true)
+--      WHERE config_key = 'retrieval';
+--   COMMIT;
+--
+--   -- 2) Doğrudan SQL yolu (GUC YOK — AYRI transaction): changed_by = session_user
+--   --    (ör. 'ragintel_app') beklenir; 'erdal' DEĞİL. Aynı hamlede değeri GERİ ALIR.
+--   UPDATE ragintel.app_config
+--      SET config_value = jsonb_set(config_value, '{lookup_window}', '2'::jsonb, true)
+--    WHERE config_key = 'retrieval';
+--
+--   -- 3) Sonuç: en yeni 2 satır — biri 'erdal', biri session_user.
+--   SELECT audit_id, changed_by, old_value->'lookup_window' AS eski,
+--          new_value->'lookup_window' AS yeni, changed_at
+--     FROM ragintel.config_audit
+--    WHERE config_key = 'retrieval' ORDER BY audit_id DESC LIMIT 2;
+--
+--   -- 4) Config gerçekten eski hâline döndü mü (lookup_window = 2)?
+--   SELECT config_value->'lookup_window' FROM ragintel.app_config WHERE config_key='retrieval';
 -- -----------------------------------------------------------------------------
