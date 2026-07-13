@@ -113,7 +113,29 @@ function groupCard(gs){
   const raw=rawJsonEditor(gs.group,card); raw.classList.add('hidden'); card.appendChild(raw);
   adv.onclick=()=>{const on=raw.classList.toggle('hidden');form.classList.toggle('hidden',!on);adv.textContent=on?'Gelişmiş (ham JSON)':'Forma dön';};
   card._gerr=gerr;
+  card.appendChild(auditPanel(gs.group));
   return card;
+}
+// --- M-6: SALT-OKUNUR "son 10 değişiklik" paneli (panel + doğrudan SQL — trigger yakalar) ---
+function auditPanel(group){
+  const d=el('<details class="sect"><summary>Son 10 değişiklik (config_audit)</summary></details>');
+  const body=el('<div class="mut">yükleniyor…</div>');
+  d.appendChild(body);
+  d.addEventListener('toggle',async function once(){
+    if(!d.open)return; d.removeEventListener('toggle',once);
+    try{
+      const {audit}=await api('/api/admin/config/'+group+'/audit');
+      if(!audit.length){body.outerHTML='<div class="mut">henüz kayıt yok.</div>';return;}
+      const t=el('<table><thead><tr><th>ne zaman</th><th>kim</th><th>eski değer</th><th>yeni değer</th></tr></thead><tbody></tbody></table>');
+      const tb=t.querySelector('tbody');
+      audit.forEach(a=>tb.appendChild(el(`<tr><td class="mut">${esc((a.changed_at||'').slice(0,19))}</td>
+        <td class="mono">${esc(a.changed_by||'—')}</td>
+        <td class="mono" style="max-width:280px;white-space:pre-wrap;word-break:break-all">${esc(JSON.stringify(a.old_value))}</td>
+        <td class="mono" style="max-width:280px;white-space:pre-wrap;word-break:break-all">${esc(JSON.stringify(a.new_value))}</td></tr>`)));
+      body.replaceWith(t);
+    }catch(e){body.outerHTML='<div class="msg err">audit yüklenemedi.</div>';}
+  });
+  return d;
 }
 function rawJsonEditor(group,card){
   const box=el('<div></div>');

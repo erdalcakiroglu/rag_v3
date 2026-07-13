@@ -120,8 +120,14 @@ def test_end_to_end_corpus_completed(live_db, tmp_path):
     scan = orch.scan(str(tmp_path / "corpus"), doc_scope=TEST_SCOPE)
     assert scan.total == n and scan.summary()["created"] == n
 
-    res = orch.run()
-    assert res["COMPLETED"] == n and res.get("FAILED", 0) == 0
+    orch.run()
+    # NOT (izolasyon): orch.run() scope'suz çalışır — PENDING kuyruğunu TÜM
+    # doc_scope'lar için işler. Paylaşılan canlı DB'de aynı anda başka
+    # scope'lardan bekleyen/işlenen kayıtlar varsa run()'ın dönüş sözlüğü
+    # (COMPLETED/FAILED toplamı) bu testten BAĞIMSIZ olarak değişebilir —
+    # bu yüzden dönüş değerine değil, SADECE bu testin ürettiği doc_scope'a
+    # scope'lu DB durumuna güveniyoruz: n dosyanın TÜMÜ COMPLETED, başka
+    # durumda (FAILED/PENDING/PROCESSING) kalan yok.
     assert _status_counts(live_db) == {"COMPLETED": n}
     # chunk + vektör üretildi
     with live_db.connection() as conn:
@@ -267,4 +273,12 @@ def test_status_counts(live_db, tmp_path):
     orch.scan(str(tmp_path / "corpus"), doc_scope=TEST_SCOPE)
     orch.run()
     counts = orch.status()
+    # NOT (vacuous-test denetimi): orch.status() scope'suz TÜM DB'yi sayar;
+    # paylaşılan canlı DB'de başka kayıtlar varsa `>= 5` bu testin KENDİ
+    # işlemesinden bağımsız olarak da doğru çıkabilir (yokluk/rastlantı
+    # riski). Global sayaç en az bizim scope'umuz kadar olmalı diye ZAYIF
+    # bir sağlık kontrolü olarak tutuyoruz; ama asıl (pozitif, scope'lu)
+    # kanıt bir alt satırda: testin ürettiği n=5 dosyanın GERÇEKTEN
+    # COMPLETED olduğu doğrudan doc_scope'a filtrelenmiş sorguyla kanıtlanır.
     assert counts.get("COMPLETED", 0) >= 5
+    assert _status_counts(live_db) == {"COMPLETED": 5}

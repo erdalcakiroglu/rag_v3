@@ -151,6 +151,17 @@ def register_admin_routes(app, rt) -> None:
         return {"status": "ok", "group": group, "path": patch.path,
                 "value": leaf, "updated_by": ctx["user_id"]}
 
+    @app.get("/api/admin/config/{group}/audit")
+    def get_config_audit(group: str, authorization: str | None = Header(default=None)):
+        """M-6: SALT-OKUNUR — grup için son 10 değişiklik (old/new + kim/ne zaman).
+
+        Kayıtlar TRIGGER'la yazılır (panelden VE doğrudan SQL'den yapılan
+        değişiklikler yakalanır) — bu uç yalnızca gösterir, YAZMAZ.
+        """
+        _admin(authorization)
+        with rt().db.connection() as conn:
+            return {"group": group, "audit": admin_repo.list_config_audit(conn, group)}
+
     # -- 2) USERS -------------------------------------------------------------
     @app.get("/api/admin/users")
     def get_users(authorization: str | None = Header(default=None)):

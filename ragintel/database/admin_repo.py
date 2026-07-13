@@ -32,9 +32,23 @@ def get_config_value(conn: psycopg.Connection, group: str) -> dict[str, Any] | N
     return row[0] if row else None
 
 
+def _set_audit_actor(conn: psycopg.Connection, changed_by: str) -> None:
+    """M-6: config_audit trigger'ının okuyacağı session-local GUC'yi ayarlar.
+
+    NEDEN NEW.updated_by DEĞİL: doğrudan SQL (psql'den UPDATE) updated_by
+    kolonuna dokunmazsa, orada BİR ÖNCEKİ admin'in adı kalır — trigger bunu
+    okursa değişikliği yanlış kişiye mal eder (bayat isim). Bu GUC yalnızca
+    UYGULAMA kod yolundan geçen yazımlarda set edilir; trigger set edilmemişse
+    `session_user`'a düşer (dürüst fallback — bkz. docs/FAZ7_Sema_Ek1_ConfigAudit.sql).
+    `is_local=true` → TRANSACTION-scope: pool'a geri dönen bağlantıda SIZMAZ.
+    """
+    conn.execute("SELECT set_config('app.changed_by', %s, true);", (changed_by,))
+
+
 def write_config(conn: psycopg.Connection, *, group: str, value: dict, updated_by: str,
                  description: str | None = None) -> None:
     """DOĞRULANMIŞ config değerini yazar (upsert). Çağıran pydantic ile doğrulamış olmalı."""
+    _set_audit_actor(conn, updated_by)
     conn.execute(
         "INSERT INTO app_config (config_key, config_value, description, updated_by, updated_at) "
         "VALUES (%s, %s, %s, %s, now()) "
@@ -57,6 +71,7 @@ def patch_config_field(conn: psycopg.Connection, *, group: str, path: list[str],
     `path` istemciden gelir; SQL'e PARAMETRE olarak (text[]) geçer — string
     interpolasyonu YOK. Satır yoksa 0 döner (çağıran tam-grup yazımına düşer).
     """
+    _set_audit_actor(conn, updated_by)
     result = conn.execute(
         "UPDATE app_config SET "
         "config_value = jsonb_set(config_value, %s::text[], %s::jsonb, true), "
@@ -65,6 +80,30 @@ def patch_config_field(conn: psycopg.Connection, *, group: str, path: list[str],
         (path, Jsonb(value), updated_by, group),
     )
     return result.rowcount
+
+
+def list_config_audit(conn: psycopg.Connection, group: str, *, limit: int = 10) -> list[dict[str, Any]]:
+    """M-6: SALT-OKUNUR — grup için son `limit` değişiklik (en yeni önce).
+
+    config_audit satırları TRIGGER tarafından yazılır (bkz.
+    docs/FAZ7_Sema_Ek1_ConfigAudit.sql) — bu fonksiyon yalnızca okur, YAZMAZ.
+    Tablo yoksa (DDL henüz uygulanmadıysa) boş liste döner (panel kırılmasın).
+    """
+    try:
+        rows = conn.execute(
+            "SELECT audit_id, config_key, old_value, new_value, changed_by, changed_at "
+            "FROM config_audit WHERE config_key = %s "
+            "ORDER BY changed_at DESC, audit_id DESC LIMIT %s;",
+            (group, limit),
+        ).fetchall()
+    except psycopg.errors.UndefinedTable:
+        conn.rollback()
+        return []
+    return [
+        {"audit_id": r[0], "config_key": r[1], "old_value": r[2], "new_value": r[3],
+         "changed_by": r[4], "changed_at": str(r[5])}
+        for r in rows
+    ]
 
 
 # --- core_files --------------------------------------------------------------
