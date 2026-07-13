@@ -61,7 +61,14 @@
   <section id="docs" class="hidden"></section>
 </main>
 <script>
-const $=s=>document.querySelector(s), el=(h)=>{const d=document.createElement('div');d.innerHTML=h;return d.firstElementChild;};
+const $=s=>document.querySelector(s);
+// el(): HTML metninden DOM düğümü. <template> ŞART, <div> DEĞİL — tarayıcının HTML
+// ayrıştırıcısı <tr>/<td>/<tbody>'yi tablo bağlamı DIŞINDA sessizce ATAR; div.innerHTML
+// ile kurulan bir satır null döner (appendChild(null) → TypeError). <template> içeriği
+// "in template" ayrıştırma kipiyle okunur ve tablo etiketlerini korur.
+// (FAZ 7'den beri gizli hata: liste BOŞKEN forEach hiç dönmediği için görünmüyordu;
+//  Kullanıcılar ve Doküman & QC sekmeleri veri gelince boş kalıyordu.)
+const el=(h)=>{const t=document.createElement('template');t.innerHTML=h.trim();return t.content.firstElementChild;};
 function tokv(){return localStorage.getItem('ragintel_token')||'';}
 function H(){const h={'Content-Type':'application/json'};const t=tokv();if(t)h['Authorization']='Bearer '+t;return h;}
 function saveTok(){localStorage.setItem('ragintel_token',$('#tok').value.trim());$('#gate').classList.add('hidden');load();}
@@ -72,7 +79,21 @@ function gate(code){const g=$('#gate');g.textContent=code===403?'Yetkisiz: bu sa
 function tab(t){['config','users','docs'].forEach(x=>{$('#'+x).classList.toggle('hidden',x!==t);document.querySelector('.tab[data-t='+x+']').classList.toggle('on',x===t);});}
 $('#tok').value=tokv();
 
-async function load(){ $('#gate').classList.add('hidden'); try{ await Promise.all([loadConfig(),loadUsers(),loadDocs()]); $('#who').textContent='admin ✓'; }catch(e){} }
+// Yükleyiciler AYRI AYRI korunur: biri patlarsa ötekiler yine de çizilir ve hata
+// EKRANDA görünür. (Eskiden tek `catch(e){}` hepsini yutuyordu → sessiz boş ekran;
+// gerçek bir böcek tam da böyle gizlenmişti — bkz. el() notu.)
+async function load(){
+  $('#gate').classList.add('hidden');
+  const results=await Promise.allSettled([loadConfig(),loadUsers(),loadDocs()]);
+  const failed=results.map((r,i)=>[['Config','Kullanıcılar','Doküman & QC'][i],r])
+                      .filter(([,r])=>r.status==='rejected');
+  if(!failed.length){ $('#who').textContent='admin ✓'; return; }
+  $('#who').textContent='kısmi hata';
+  const g=$('#gate');
+  g.textContent='Bu bölümler yüklenemedi: '+failed.map(([n,r])=>`${n} (${r.reason&&r.reason.message||r.reason})`).join(' · ');
+  g.classList.remove('hidden');
+  failed.forEach(([n,r])=>console.error('yükleme hatası:',n,r.reason));
+}
 
 // --- 1) CONFIG (M-5: şema-güdümlü, alan-bazlı) ---
 // Form pydantic GROUP_MODELS'ten üretilir; burada tip→widget eşlemesi YOK,
