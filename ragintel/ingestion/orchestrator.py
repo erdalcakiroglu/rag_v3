@@ -122,6 +122,45 @@ class Orchestrator:
                     "WHERE file_id=%s;", (file_id,))
         return self._process_file(file_id)
 
+    def reprocess_all(self, *, scope: str | None = None, dry_run: bool = False) -> dict:
+        """M-7 Aşama 2: korpusun TAMAMINI yeniden işler (chunking/embedding/görsel
+        ayarları değiştiğinde mevcut türevler geçersizdir — reprocess şart).
+
+        KESİNTİ = DEVAM: hedef dosyalar ÖNCE toplu olarak PENDING'e çekilir, sonra
+        tek tek işlenir. Koşum yarıda kalırsa işlenmemiş dosyalar PENDING kalır;
+        `ragintel ingest run` kaldığı yerden devam eder (baştan başlamaz).
+
+        `retry_count` ARTMAZ — bu bir hata kurtarma değil, bilinçli yeniden işlemedir.
+        Eski chunk/vektörler dosya BAŞINA, yeni türevler yazılırken silinir
+        (delete_file_derived) → korpus tur boyunca sorgulanabilir kalır, tek seferde
+        boşalmaz.
+
+        `scope=None` → tüm korpus. Dosya listesi ALINDIĞI ANDA sabitlenir.
+        """
+        with self.db.connection() as conn:
+            rows = conn.execute(
+                "SELECT file_id, file_name FROM core_files "
+                "WHERE (%s::text IS NULL OR doc_scope = %s::text) ORDER BY file_id;",
+                (scope, scope),
+            ).fetchall()
+        targets = [(r[0], r[1]) for r in rows]
+        if dry_run:
+            return {"dry_run": True, "hedef_dosya": len(targets),
+                    "scope": scope or "(tümü)",
+                    "ornek": [n for _, n in targets[:5]]}
+
+        with self.db.connection() as conn:
+            for fid, _ in targets:
+                conn.execute(
+                    "UPDATE core_files SET status='PENDING', fail_reason=NULL "
+                    "WHERE file_id=%s;", (fid,))
+        self.log.warning("reprocess_all_scheduled", count=len(targets),
+                         scope=scope or "(tümü)")
+        # recover=False: az önce KENDİMİZ PENDING yaptık; stuck-recovery'ye gerek yok.
+        result = self.run(recover=False, scope=scope)
+        result["hedef_dosya"] = len(targets)
+        return result
+
     def status(self) -> dict[str, int]:
         with self.db.connection() as conn:
             return status_counts(conn)

@@ -35,6 +35,15 @@ def _build_parser() -> argparse.ArgumentParser:
     rp = sub.add_parser("reprocess", help="Tek dosyayı elle yeniden işle")
     rp.add_argument("file_id", type=int)
 
+    ra = sub.add_parser("reprocess-all",
+                        help="TÜM korpusu yeniden işle (chunking/embedding/görsel ayarı değişti)")
+    ra.add_argument("--scope", default=None,
+                    help="Yalnızca bu doc_scope (varsayılan: tüm korpus)")
+    ra.add_argument("--dry-run", action="store_true",
+                    help="Hiçbir şey yapma; kaç dosyanın etkileneceğini yazdır")
+    ra.add_argument("--yes", action="store_true",
+                    help="Onay: tüm korpusu yeniden işlemeyi KABUL ediyorum (uzun sürer)")
+
     sub.add_parser("status", help="Durum sayımlarını yazdır")
     return p
 
@@ -64,6 +73,18 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(orch.retry(), ensure_ascii=False))
         elif args.cmd == "reprocess":
             print(orch.reprocess(args.file_id))
+        elif args.cmd == "reprocess-all":
+            if not args.dry_run and not args.yes:
+                # Kazara tetiklenmesin: tüm korpusu yeniden işlemek uzun sürer ve
+                # tur boyunca chunk/vektörler dosya dosya yeniden yazılır.
+                plan = orch.reprocess_all(scope=args.scope, dry_run=True)
+                print(f"{plan['hedef_dosya']} dosya yeniden işlenecek (scope: {plan['scope']}).",
+                      file=sys.stderr)
+                print("Onaylamak için --yes ekleyin (kesinti olursa "
+                      "'ragintel ingest run' kaldığı yerden devam eder).", file=sys.stderr)
+                return 3
+            print(json.dumps(orch.reprocess_all(scope=args.scope, dry_run=args.dry_run),
+                             ensure_ascii=False))
         elif args.cmd == "status":
             print(json.dumps(orch.status(), ensure_ascii=False))
         return 0
