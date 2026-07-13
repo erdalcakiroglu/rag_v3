@@ -24,6 +24,14 @@ def list_config(conn: psycopg.Connection) -> list[dict[str, Any]]:
     ]
 
 
+def get_config_value(conn: psycopg.Connection, group: str) -> dict[str, Any] | None:
+    """Grubun ham DB değeri; satır yoksa None (çağıran tam-grup yazımına düşer)."""
+    row = conn.execute(
+        "SELECT config_value FROM app_config WHERE config_key = %s;", (group,)
+    ).fetchone()
+    return row[0] if row else None
+
+
 def write_config(conn: psycopg.Connection, *, group: str, value: dict, updated_by: str,
                  description: str | None = None) -> None:
     """DOĞRULANMIŞ config değerini yazar (upsert). Çağıran pydantic ile doğrulamış olmalı."""
@@ -35,6 +43,28 @@ def write_config(conn: psycopg.Connection, *, group: str, value: dict, updated_b
         "updated_by = EXCLUDED.updated_by, updated_at = now();",
         (group, Jsonb(value), description, updated_by),
     )
+
+
+def patch_config_field(conn: psycopg.Connection, *, group: str, path: list[str], value: Any,
+                       updated_by: str) -> int:
+    """M-5: TEK ALANI yazar (`jsonb_set`) — grubun geri kalanına DOKUNMAZ.
+
+    Neden tam grup değil: iki admin aynı anda farklı alanları düzenlerse tam-grup
+    yazımı birinin değişikliğini sessizce geri alır (son yazan kazanır). Alan-bazlı
+    yazımda yalnızca hedef yol değişir.
+
+    Çağıran, değeri TÜM GRUBU pydantic'ten geçirerek doğrulamış olmalı (çapraz-alan).
+    `path` istemciden gelir; SQL'e PARAMETRE olarak (text[]) geçer — string
+    interpolasyonu YOK. Satır yoksa 0 döner (çağıran tam-grup yazımına düşer).
+    """
+    result = conn.execute(
+        "UPDATE app_config SET "
+        "config_value = jsonb_set(config_value, %s::text[], %s::jsonb, true), "
+        "updated_by = %s, updated_at = now() "
+        "WHERE config_key = %s;",
+        (path, Jsonb(value), updated_by, group),
+    )
+    return result.rowcount
 
 
 # --- core_files --------------------------------------------------------------

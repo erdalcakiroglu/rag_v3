@@ -22,6 +22,26 @@
   .msg.ok{background:rgba(63,185,80,.12);color:var(--ok)} .msg.err{background:rgba(248,81,73,.12);color:var(--err);white-space:pre-wrap}
   .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap} .hidden{display:none}
   .tok{background:rgba(210,153,34,.14);color:var(--warn);padding:10px;border-radius:8px;font-family:ui-monospace,monospace;word-break:break-all}
+  /* --- M-5: şema-güdümlü config formu --- */
+  .subtabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+  .subtab{padding:6px 12px;border:1px solid var(--bd);border-radius:99px;cursor:pointer;font-size:13px}
+  .subtab.on{background:var(--acc);border-color:var(--acc);color:#fff}
+  .fld{padding:12px 0;border-bottom:1px solid var(--bd)} .fld:last-child{border-bottom:none}
+  .fld-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:5px}
+  .fld-name{font-family:ui-monospace,Consolas,monospace;font-size:13px;color:var(--fg)}
+  .fld-help{color:var(--mut);font-size:12.5px;margin-top:6px;max-width:80ch}
+  .fld-err{color:var(--err);font-size:12.5px;margin-top:6px;display:none}
+  .fld.bad .fld-err{display:block} .fld.bad input,.fld.bad select,.fld.bad textarea{border-color:var(--err)}
+  .badge{font-size:11px;padding:1px 8px;border-radius:99px;border:1px solid}
+  .badge.danger{color:var(--warn);border-color:var(--warn);background:rgba(210,153,34,.12)}
+  .badge.diff{color:var(--acc);border-color:var(--acc);background:rgba(47,129,247,.12);cursor:default}
+  .badge.saved{color:var(--ok);border-color:var(--ok);background:rgba(63,185,80,.12)}
+  .lnk{background:none;border:none;color:var(--acc);padding:0;font-size:12px;text-decoration:underline;cursor:pointer}
+  .sect{border:1px solid var(--bd);border-radius:8px;padding:0 12px;margin:10px 0}
+  .sect>summary{cursor:pointer;padding:10px 0;font-weight:600;font-size:13.5px}
+  .grp-err{color:var(--err);font-size:12.5px;margin:6px 0;display:none} .grp-err.on{display:block}
+  input[type=number],input[type=text],select{min-width:220px}
+  .listrow{display:flex;gap:6px;margin-bottom:6px} .listrow input{flex:1;font-family:ui-monospace,monospace;font-size:12px}
 </style></head>
 <body>
 <header>
@@ -54,28 +74,192 @@ $('#tok').value=tokv();
 
 async function load(){ $('#gate').classList.add('hidden'); try{ await Promise.all([loadConfig(),loadUsers(),loadDocs()]); $('#who').textContent='admin ✓'; }catch(e){} }
 
-// --- 1) CONFIG ---
+// --- 1) CONFIG (M-5: şema-güdümlü, alan-bazlı) ---
+// Form pydantic GROUP_MODELS'ten üretilir; burada tip→widget eşlemesi YOK,
+// yalnızca şemanın söylediği widget çizilir. Modele alan eklenince otomatik gelir.
+let CFG={schema:null,meta:{},cur:{},tab:null};
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const eq=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+const getIn=(o,p)=>p.reduce((n,k)=>(n==null?undefined:n[k]),o);
+
 async function loadConfig(){
-  const {groups}=await api('/api/admin/config'); const c=$('#config'); c.innerHTML='';
-  groups.forEach(g=>{
-    const card=el(`<div class="card"><h3>${g.group} <span class="mut" style="font-weight:400">· ${g.updated_by||'—'} · ${(g.updated_at||'').slice(0,19)}</span></h3></div>`);
-    if(g.group==='prompts' && g.value.agent_system){
-      const vers=Object.keys(g.value.agent_system);
-      const sel=el(`<div class="row" style="margin-bottom:8px">Aktif prompt: <select>${vers.map(v=>`<option ${v===g.value.agent_system_active?'selected':''}>${v}</option>`).join('')}</select> <button class="pri">Aktifi kaydet</button></div>`);
-      sel.querySelector('button').onclick=async()=>{const v={...g.value,agent_system_active:sel.querySelector('select').value};await save('prompts',v,card);};
-      card.appendChild(sel);
-    }
-    const ta=el(`<textarea>${JSON.stringify(g.value,null,2)}</textarea>`);
-    const btn=el(`<div class="row" style="margin-top:8px"><button class="pri">Kaydet (doğrula)</button></div>`);
-    btn.querySelector('button').onclick=async()=>{let v;try{v=JSON.parse(ta.value);}catch(e){return msg(card,'Geçersiz JSON: '+e.message,false);}await save(g.group,v,card);};
-    card.append(ta,btn); c.appendChild(card);
+  const [schema,{groups}]=await Promise.all([api('/api/admin/config/schema'),api('/api/admin/config')]);
+  CFG.schema=schema; CFG.meta={}; CFG.cur={};
+  groups.forEach(g=>{CFG.meta[g.group]={updated_by:g.updated_by,updated_at:g.updated_at}; CFG.cur[g.group]=g.value||{};});
+  CFG.tab=CFG.tab||schema.tabs[0].id;
+  renderConfig();
+}
+function renderConfig(){
+  const c=$('#config'); c.innerHTML='';
+  const st=el('<div class="subtabs"></div>');
+  CFG.schema.tabs.forEach(t=>{
+    const b=el(`<div class="subtab ${t.id===CFG.tab?'on':''}">${esc(t.label)}</div>`);
+    b.onclick=()=>{CFG.tab=t.id;renderConfig();}; st.appendChild(b);
   });
+  c.appendChild(st);
+  const tab=CFG.schema.tabs.find(t=>t.id===CFG.tab)||CFG.schema.tabs[0];
+  tab.groups.forEach(gname=>c.appendChild(groupCard(CFG.schema.groups[gname])));
 }
-async function save(group,value,card){
-  try{const r=await api('/api/admin/config/'+group,{method:'POST',body:JSON.stringify(value)});msg(card,'Kaydedildi ('+r.updated_by+').',true);loadConfig();}
-  catch(e){const d=e.body&&e.body.detail; msg(card,'Reddedildi ('+(e.status||'')+'): '+(d?JSON.stringify(d.detail||d,null,1):(e.body&&e.body.detail)||'doğrulama hatası'),false);}
+function groupCard(gs){
+  const m=CFG.meta[gs.group]||{};
+  const card=el(`<div class="card"><h3>${esc(gs.label)}
+      <span class="mut mono" style="font-weight:400;font-size:12px">· ${esc(gs.group)} · ${esc(m.updated_by||'—')} · ${esc((m.updated_at||'').slice(0,19))}</span></h3></div>`);
+  const adv=el('<button class="lnk" style="float:right;margin-top:-28px">Gelişmiş (ham JSON)</button>');
+  card.appendChild(adv);
+  const gerr=el('<div class="grp-err"></div>'); card.appendChild(gerr);
+  const form=el('<div></div>');
+  gs.fields.forEach(f=>form.appendChild(fieldNode(gs.group,f)));
+  card.appendChild(form);
+  const raw=rawJsonEditor(gs.group,card); raw.classList.add('hidden'); card.appendChild(raw);
+  adv.onclick=()=>{const on=raw.classList.toggle('hidden');form.classList.toggle('hidden',!on);adv.textContent=on?'Gelişmiş (ham JSON)':'Forma dön';};
+  card._gerr=gerr;
+  return card;
 }
-function msg(card,text,ok){const m=el(`<div class="msg ${ok?'ok':'err'}">${text}</div>`);card.appendChild(m);setTimeout(()=>m.remove(),8000);}
+function rawJsonEditor(group,card){
+  const box=el('<div></div>');
+  const ta=el(`<textarea spellcheck="false">${esc(JSON.stringify(CFG.cur[group]||{},null,2))}</textarea>`);
+  const btn=el('<div class="row" style="margin-top:8px"><button class="pri">Tüm grubu kaydet (doğrula)</button></div>');
+  btn.querySelector('button').onclick=async()=>{
+    let v; try{v=JSON.parse(ta.value);}catch(e){return msg(card,'Geçersiz JSON: '+e.message,false);}
+    try{
+      const r=await api('/api/admin/config/'+group,{method:'POST',body:JSON.stringify(v)});
+      msg(card,'Kaydedildi ('+r.updated_by+').',true); await loadConfig();
+    }catch(e){ showErrors(card,e); }
+  };
+  box.append(ta,btn); return box;
+}
+
+// --- alan düğümü: etiket + rozetler + widget + TR yardım + hata yuvası ---
+function fieldNode(group,f){
+  if(f.widget==='section'){
+    const d=el(`<details class="sect" open><summary>${esc(f.name)}</summary></details>`);
+    if(f.description)d.appendChild(el(`<div class="fld-help" style="margin:0 0 6px">${esc(f.description)}</div>`));
+    f.fields.forEach(sub=>d.appendChild(fieldNode(group,sub)));
+    return d;
+  }
+  const key=f.path.join('.');
+  const node=el(`<div class="fld" data-f="${esc(key)}"></div>`);
+  const head=el(`<div class="fld-head"><span class="fld-name">${esc(f.name)}</span></div>`);
+  if(f.danger)head.appendChild(el(`<span class="badge danger" title="Bu alanı değiştirmek mevcut veriyi geçersizleştirir">⚠ ${esc(f.danger)}</span>`));
+  const diff=el('<span class="badge diff hidden">varsayılandan farklı</span>');
+  const reset=el('<button class="lnk hidden">varsayılana dön</button>');
+  head.append(diff,reset); node.appendChild(head);
+
+  const val=getIn(CFG.cur[group],f.path);
+  const cur=(val===undefined?f.default:val);
+  const ctl=widget(f,cur,v=>patch(group,f,v,node),group);
+  node.appendChild(ctl.node);
+  if(f.description)node.appendChild(el(`<div class="fld-help">${esc(f.description)}</div>`));
+  node.appendChild(el('<div class="fld-err"></div>'));
+
+  const mark=()=>{const d=!eq(getIn(CFG.cur[group],f.path)??f.default,f.default);
+    diff.classList.toggle('hidden',!d); reset.classList.toggle('hidden',!d);};
+  mark(); node._mark=mark;
+  reset.onclick=()=>patch(group,f,f.default,node);
+  return node;
+}
+function widget(f,cur,onSave,group){
+  // Anlık widget'lar (toggle/select/number/text) değişince KAYDEDER; çok satırlı
+  // ve liste/sözlük editörleri açık "Kaydet" düğmesiyle kaydeder (her tuşta yazmasın).
+  if(f.widget==='toggle'){
+    const i=el(`<label class="row"><input type="checkbox" ${cur?'checked':''}> <span class="mut">${cur?'açık':'kapalı'}</span></label>`);
+    const cb=i.querySelector('input'); cb.onchange=()=>{i.querySelector('span').textContent=cb.checked?'açık':'kapalı';onSave(cb.checked);};
+    return {node:i};
+  }
+  if(f.widget==='select'){
+    // options_from: seçenekler KARDEŞ bir dict alanın anahtarlarından gelir
+    // (prompts.agent_system_active ← agent_system sürümleri). Şema söyler, UI uydurmaz.
+    let opts=f.options||[];
+    if(f.options_from)opts=Object.keys(getIn(CFG.cur[group],[f.options_from])||{});
+    const s=el(`<select>${opts.map(o=>`<option ${String(o)===String(cur)?'selected':''}>${esc(o)}</option>`).join('')}</select>`);
+    s.onchange=()=>onSave(s.value); return {node:s};
+  }
+  if(f.widget==='number'){
+    const a=[f.min!=null?`min="${f.min}"`:'',f.max!=null?`max="${f.max}"`:'',f.step?`step="${f.step}"`:''].join(' ');
+    const i=el(`<input type="number" ${a} value="${esc(cur)}">`);
+    // Sunucu sınırı doğrular; tarayıcı sınırı yalnızca kolaylıktır (novalidate akış).
+    i.onchange=()=>onSave(i.value===''?null:Number(i.value)); return {node:i};
+  }
+  if(f.widget==='text'){
+    const i=el(`<input type="text" value="${esc(cur)}">`); i.onchange=()=>onSave(i.value); return {node:i};
+  }
+  if(f.widget==='textarea'||f.widget==='json'){
+    const box=el('<div></div>');
+    const isJson=f.widget==='json';
+    const ta=el(`<textarea spellcheck="false">${esc(isJson?JSON.stringify(cur,null,2):cur)}</textarea>`);
+    const b=el('<div class="row" style="margin-top:6px"><button>Kaydet</button></div>');
+    b.querySelector('button').onclick=()=>{
+      if(!isJson)return onSave(ta.value);
+      try{onSave(JSON.parse(ta.value));}catch(e){alert('Geçersiz JSON: '+e.message);}
+    };
+    box.append(ta,b); return {node:box};
+  }
+  if(f.widget==='string_list'){
+    const box=el('<div></div>'); const rows=el('<div></div>');
+    const add=v=>{const r=el('<div class="listrow"><input spellcheck="false"><button title="sil">✕</button></div>');
+      r.querySelector('input').value=v??''; r.querySelector('button').onclick=()=>r.remove(); rows.appendChild(r);};
+    (Array.isArray(cur)?cur:[]).forEach(add);
+    const b=el('<div class="row" style="margin-top:6px"><button>+ satır ekle</button><button class="pri">Kaydet</button></div>');
+    const [addBtn,saveBtn]=b.querySelectorAll('button');
+    addBtn.onclick=()=>add('');
+    saveBtn.onclick=()=>onSave([...rows.querySelectorAll('input')].map(i=>i.value).filter(v=>v!==''));
+    box.append(rows,b); return {node:box};
+  }
+  if(f.widget==='key_text'){   // dict[str,str] → anahtar başına çok satırlı metin
+    const box=el('<div></div>'); const rows=el('<div></div>');
+    const add=(k,v)=>{
+      const r=el(`<div class="sect" style="padding:10px 12px"><div class="row" style="margin-bottom:6px">
+        <input class="k mono" style="width:180px" placeholder="sürüm adı"><button class="lnk">sil</button></div></div>`);
+      r.querySelector('.k').value=k??''; const ta=el('<textarea spellcheck="false"></textarea>'); ta.value=v??'';
+      r.querySelector('button').onclick=()=>r.remove(); r.appendChild(ta); rows.appendChild(r);};
+    Object.entries(cur&&typeof cur==='object'?cur:{}).forEach(([k,v])=>add(k,v));
+    const b=el('<div class="row" style="margin-top:6px"><button>+ anahtar ekle</button><button class="pri">Kaydet</button></div>');
+    const [addBtn,saveBtn]=b.querySelectorAll('button');
+    addBtn.onclick=()=>add('','');
+    saveBtn.onclick=()=>{const o={};rows.querySelectorAll('.sect').forEach(r=>{
+      const k=r.querySelector('.k').value.trim(); if(k)o[k]=r.querySelector('textarea').value;}); onSave(o);};
+    box.append(rows,b); return {node:box};
+  }
+  return {node:el(`<div class="mut">desteklenmeyen widget: ${esc(f.widget)}</div>`)};
+}
+
+// --- ALAN-BAZLI kayıt: tek parametre = tek PATCH (jsonb_set) ---
+async function patch(group,f,value,node){
+  clearErrors(node.closest('.card'));
+  try{
+    const r=await api('/api/admin/config/'+group,{method:'PATCH',body:JSON.stringify({path:f.path,value})});
+    // Sunucunun DÖNDÜĞÜ (doğrulanmış/dönüştürülmüş) değeri yerele yaz — "16" değil 16.
+    setIn(CFG.cur[group],f.path,r.value);
+    flash(node,'kaydedildi · '+r.updated_by);
+    // prompts.agent_system değişince aktif-sürüm dropdown'ının seçenekleri de değişir.
+    if(f.widget==='key_text'||f.widget==='string_list'||f.widget==='textarea')renderConfig();
+    else node._mark&&node._mark();
+  }catch(e){ showErrors(node.closest('.card'),e); }
+}
+function setIn(o,p,v){let n=o;for(const k of p.slice(0,-1)){if(typeof n[k]!=='object'||n[k]==null)n[k]={};n=n[k];}n[p[p.length-1]]=v;}
+function flash(node,text){
+  const head=node.querySelector('.fld-head'); const b=el(`<span class="badge saved">✓ ${esc(text)}</span>`);
+  head.appendChild(b); setTimeout(()=>b.remove(),3000);
+}
+function clearErrors(card){
+  if(!card)return;
+  card.querySelectorAll('.fld.bad').forEach(n=>{n.classList.remove('bad');n.querySelector('.fld-err').textContent='';});
+  if(card._gerr){card._gerr.classList.remove('on');card._gerr.textContent='';}
+}
+// Hata ALANA iliştirilir (sunucu 'fields[].path' döner). Alan bulunamazsa grup başına.
+function showErrors(card,e){
+  clearErrors(card);
+  const d=(e.body&&e.body.detail)||{}; const fields=d.fields||[];
+  const rest=[];
+  fields.forEach(fe=>{
+    const n=card.querySelector(`.fld[data-f="${CSS.escape(fe.field)}"]`);
+    if(n){n.classList.add('bad');n.querySelector('.fld-err').textContent='✕ '+fe.message;}
+    else rest.push((fe.field?fe.field+': ':'')+fe.message);
+  });
+  if(!fields.length)rest.push(typeof d==='string'?d:(d.error||'doğrulama hatası'));
+  if(rest.length&&card._gerr){card._gerr.textContent='✕ '+rest.join(' · ');card._gerr.classList.add('on');}
+}
+function msg(card,text,ok){const m=el(`<div class="msg ${ok?'ok':'err'}">${esc(text)}</div>`);card.appendChild(m);setTimeout(()=>m.remove(),8000);}
 
 // --- 2) USERS ---
 async function loadUsers(){

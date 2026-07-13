@@ -16,6 +16,9 @@ authors = [{ name = "RAG v2" }]
 dependencies = [
     "pydantic==2.12.5",
     "pydantic-settings==2.14.2",   # docling ile hizalandı
+    # M-5: pydantic'in dolaylı bağımlılığı, ama config/ui_schema.py Ge/Le kısıtlarını
+    # DOĞRUDAN buradan okuyor → açıkça bildirilir (dolaylı pakete bel bağlanmaz).
+    "annotated-types==0.7.0",
     "psycopg[binary]==3.3.2",
     "psycopg-pool==3.3.0",
     "pgvector==0.4.2",             # İP-8: vector tipi adaptörü + COPY binary

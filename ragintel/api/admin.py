@@ -7,6 +7,7 @@ KAYDETMEDEN ÖNCE ilgili pydantic modeliyle doğrulanır (bozuk config DB'ye yaz
 from __future__ import annotations
 
 import secrets
+from copy import deepcopy
 from pathlib import Path
 
 from fastapi import Body, Header, HTTPException
@@ -14,8 +15,10 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from ..config.settings import GROUP_MODELS
+from ..config.ui_schema import UnknownField, build_ui_schema, resolve_field
 from ..database import admin_repo, user_repo
 from .auth import Forbidden, Unauthorized, bearer_token, hash_token, require_admin
+from .config_errors import field_errors, safe_details
 
 _STATIC = Path(__file__).parent / "static"
 
@@ -25,6 +28,34 @@ class UserCreate(BaseModel):
     display_name: str | None = None
     allowed_doc_scopes: list[str] = Field(default_factory=lambda: ["default"])
     is_admin: bool = False
+
+
+class ConfigFieldPatch(BaseModel):
+    """M-5 alan-bazlı düzenleme: tek parametre değişimi = tek kayıt."""
+
+    path: list[str] = Field(min_length=1)   # ör. ["weights", "parse"]
+    value: object = None
+
+
+def _deep_set(data: dict, path: list[str], value: object) -> dict:
+    """`path` boyunca (kopya üzerinde) tek yaprağı yazar; ara düğümler dict olmalı."""
+    out = deepcopy(data)
+    node = out
+    for part in path[:-1]:
+        child = node.get(part)
+        if not isinstance(child, dict):
+            child = {}
+        node[part] = child
+        node = child
+    node[path[-1]] = value
+    return out
+
+
+def _deep_get(data: dict, path: list[str]):
+    node: object = data
+    for part in path:
+        node = node[part]           # type: ignore[index]
+    return node
 
 
 def register_admin_routes(app, rt) -> None:
@@ -47,6 +78,13 @@ def register_admin_routes(app, rt) -> None:
         return (_STATIC / "admin.html").read_text(encoding="utf-8")
 
     # -- 1) CONFIG ------------------------------------------------------------
+    # M-5: form ŞEMASI pydantic'ten türer (GROUP_MODELS tek doğruluk kaynağı).
+    # Statik yol — /api/admin/config/{group} ile çakışmaması için ondan ÖNCE tanımlı.
+    @app.get("/api/admin/config/schema")
+    def get_config_schema(authorization: str | None = Header(default=None)):
+        _admin(authorization)
+        return build_ui_schema()
+
     @app.get("/api/admin/config")
     def get_config(authorization: str | None = Header(default=None)):
         _admin(authorization)
@@ -56,6 +94,7 @@ def register_admin_routes(app, rt) -> None:
 
     @app.post("/api/admin/config/{group}")
     def save_config(group: str, value: dict = Body(...), authorization: str | None = Header(default=None)):
+        """Ham JSON modu: TÜM grubu yazar (gelişmiş/fallback ekran)."""
         ctx = _admin(authorization)
         model = GROUP_MODELS.get(group)
         if model is None:
@@ -64,10 +103,53 @@ def register_admin_routes(app, rt) -> None:
         try:
             validated = model(**value).model_dump()
         except ValidationError as exc:
-            raise HTTPException(400, {"error": "config doğrulama hatası", "detail": exc.errors()})
+            raise HTTPException(400, {"error": "config doğrulama hatası",
+                                      "fields": field_errors(exc), "detail": safe_details(exc)})
         with rt().db.connection() as conn:
             admin_repo.write_config(conn, group=group, value=validated, updated_by=ctx["user_id"])
         return {"status": "ok", "group": group, "updated_by": ctx["user_id"], "value": validated}
+
+    @app.patch("/api/admin/config/{group}")
+    def patch_config(group: str, patch: ConfigFieldPatch,
+                     authorization: str | None = Header(default=None)):
+        """M-5: ALAN-BAZLI kayıt — tek parametre değişimi = tek `jsonb_set` yazımı.
+
+        Doğrulama TÜM GRUP üzerinde yapılır (çapraz-alan koruması: ör. quality
+        ağırlık toplamı, max_top_k ≥ default_top_k). Hata varsa DB'ye HİÇBİR ŞEY
+        yazılmaz; mesaj alana iliştirilmiş TR olarak döner.
+        """
+        ctx = _admin(authorization)
+        model = GROUP_MODELS.get(group)
+        if model is None:
+            raise HTTPException(400, f"Bilinmeyen config grubu: {group}")
+        # 1) Yol modelde var mı? (uydurma anahtar jsonb_set ile YARATILMASIN)
+        try:
+            resolve_field(model, patch.path)
+        except UnknownField as exc:
+            raise HTTPException(400, {"error": f"Bilinmeyen alan: {exc.args[0]}",
+                                      "fields": [{"field": ".".join(patch.path),
+                                                  "path": patch.path,
+                                                  "message": "Bu alan modelde tanımlı değil."}]})
+
+        with rt().db.connection() as conn:
+            current = admin_repo.get_config_value(conn, group)
+            # 2) Mevcut grup + tek alan değişimi → TÜM grubu yeniden doğrula.
+            candidate = _deep_set(current or {}, patch.path, patch.value)
+            try:
+                validated = model(**candidate).model_dump()
+            except ValidationError as exc:
+                raise HTTPException(400, {"error": "config doğrulama hatası",
+                                          "fields": field_errors(exc), "detail": safe_details(exc)})
+            # 3) Yazılan değer, istemcinin ham girdisi değil DOĞRULANMIŞ/dönüştürülmüş
+            #    olandır ("16" → 16). Tek yaprak yazılır; grubun geri kalanına dokunulmaz.
+            leaf = _deep_get(validated, patch.path)
+            if current is None:      # grup DB'de hiç yok → tam grup yazımına düş
+                admin_repo.write_config(conn, group=group, value=validated, updated_by=ctx["user_id"])
+            else:
+                admin_repo.patch_config_field(conn, group=group, path=patch.path,
+                                              value=leaf, updated_by=ctx["user_id"])
+        return {"status": "ok", "group": group, "path": patch.path,
+                "value": leaf, "updated_by": ctx["user_id"]}
 
     # -- 2) USERS -------------------------------------------------------------
     @app.get("/api/admin/users")
