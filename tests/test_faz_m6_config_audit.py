@@ -304,30 +304,65 @@ def test_yalnizca_description_degisirse_audit_yazilmaz():
     assert "IS DISTINCT FROM" in text, "trigger yalnızca gerçek değişiklikte yazmalı"
 
 
-@pytest.mark.db
-def test_canli_ragintel_semasi_degismedi(live_db, probe_schema):
-    """M-6 kabul: bu test koşumu canlı `ragintel` şemasına config_audit/trigger
-    UYGULAMAMALI (DDL onaya bekliyor). Yokluk iddiasının kanıt değeri taşıması
-    için ÖNCE pozitif kontrol: aynı sorgu tekniği probe şemada VARLIĞI doğru
-    tespit ediyor mu?
+def test_uygulama_kodu_ddl_calistirmaz():
+    """M-6 değişmezi: DDL ELLE uygulanır — uygulama kodu ASLA şema yaratmaz/değiştirmez.
+
+    Bu testin ÖNCEKİ hâli "canlı şemada config_audit YOK" diye iddia ediyordu. O,
+    geçici bir durumu (DDL henüz onaylanmamış) kalıcı bir değişmez gibi kodluyordu ve
+    DDL uygulandığı an — ki planlanan adım TAM DA BUYDU — kırıldı. Kalıcı olan iddia
+    şudur: şemayı KOD DEĞİL, insan uygular. Onu koruyoruz.
+
+    (DDL'in canlıda gerçekten ÇALIŞTIĞI ayrıca kanıtlanıyor: yukarıdaki probe-şema
+    testleri old/new + changed_by davranışını uçtan uca doğruluyor.)
     """
+    import ast
+    import pathlib
+    import re
+
+    pkg = pathlib.Path(__file__).resolve().parent.parent / "ragintel"
+    ddl = re.compile(r"\b(CREATE|ALTER|DROP)\s+(TABLE|TRIGGER|SCHEMA|FUNCTION)\b", re.I)
+
+    def _sql_strings(node: ast.AST):
+        """execute()/executemany() çağrılarına giden SABİT SQL metinleri.
+
+        Satır-tabanlı grep YETMEZ: docstring'lerde DDL'den SÖZ ETMEK (ör. "DROP INDEX
+        gerekir") suç değildir — suç olan DDL'i ÇALIŞTIRMAKTIR. O yüzden yalnızca
+        execute'a giden argümanlara bakıyoruz.
+        """
+        for n in ast.walk(node):
+            if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and n.func.attr in ("execute", "executemany")):
+                continue
+            for arg in n.args[:1]:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    yield n.lineno, arg.value
+                elif isinstance(arg, ast.JoinedStr):   # f-string ile kurulan SQL
+                    parts = "".join(v.value for v in arg.values
+                                    if isinstance(v, ast.Constant) and isinstance(v.value, str))
+                    yield n.lineno, parts
+
+    offenders: list[str] = []
+    for py in pkg.rglob("*.py"):
+        tree = ast.parse(py.read_text(encoding="utf-8"))
+        for lineno, sql in _sql_strings(tree):
+            if ddl.search(sql):
+                rel = py.relative_to(pkg.parent)
+                offenders.append(f"{rel}:{lineno}: {' '.join(sql.split())[:80]}")
+
+    # MEŞRU istisna: HNSW vektör index'i (İP-8 bulk-reindex) — CREATE/DROP INDEX kodda
+    # bilinçlidir (storage.hnsw_bulk_reindex ile yönetilir, runbook'ta belgeli). Bu
+    # yüzden regex INDEX'i kapsamaz; TABLE/TRIGGER/SCHEMA/FUNCTION kodda YASAKTIR.
+    assert not offenders, (
+        "Uygulama kodu DDL ÇALIŞTIRIYOR (şema yalnızca elle uygulanır):\n" + "\n".join(offenders))
+
+
+@pytest.mark.db
+def test_probe_semasi_ardinda_iz_birakmaz(live_db):
+    """Testler geçici probe şeması yaratıyor; canlı DB'de ARTIK KALMAMALI
+    (yoksa her koşum bir çöp şema biriktirir)."""
     with live_db.connection() as conn:
-        # Pozitif ön-koşul: sorgu tekniği probe şemada GERÇEKTEN buluyor.
-        probe_exists = conn.execute(
-            "SELECT to_regclass(%s);", (f"{probe_schema}.config_audit",)
+        leftovers = conn.execute(
+            "SELECT count(*) FROM information_schema.schemata "
+            "WHERE schema_name LIKE 'config_audit_probe%';"
         ).fetchone()[0]
-        assert probe_exists is not None, \
-            "probe şemada config_audit bulunmalıydı — sorgu tekniği güvenilir değilse " \
-            "aşağıdaki 'canlı şemada yok' iddiası da güvenilmez olur"
-
-        # Asıl iddia: canlı ragintel şemasında YOK (DDL uygulanmadı).
-        live_exists = conn.execute("SELECT to_regclass('ragintel.config_audit');").fetchone()[0]
-        live_trig = conn.execute(
-            "SELECT count(*) FROM pg_trigger WHERE tgname = 'trg_app_config_audit' "
-            "AND tgrelid = 'ragintel.app_config'::regclass;"
-        ).fetchone()[0]
-
-    assert live_exists is None, \
-        "config_audit CANLI ragintel şemasında bulundu! DDL yalnızca onaydan sonra uygulanmalıydı."
-    assert live_trig == 0, \
-        "trg_app_config_audit CANLI app_config'e uygulanmış! DDL yalnızca onaydan sonra uygulanmalıydı."
+    assert leftovers == 0, f"{leftovers} adet unutulmuş probe şeması var (fixture temizlememiş)"

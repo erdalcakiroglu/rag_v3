@@ -23,6 +23,7 @@ from ...database import storage_repo as repo
 from ...database.config_store import make_db_reader
 from ...observability.logging import bind_context, clear_context, get_logger
 from ...observability.tracing import set_span_attributes, start_span
+from ..storage import save_figure_png
 
 
 class StorageWriteError(RuntimeError):
@@ -52,6 +53,27 @@ class StorageWriter:
             self.hnsw_bulk_reindex = hnsw_bulk_reindex
         self.log = logger or get_logger("ingestion.storage")
 
+    def _save_figure_images(self, file_id: int, figures) -> dict[int, str]:
+        """M-7: görsel PNG'lerini dosya deposuna yazar → {figure_index: yol}.
+
+        DB transaction'ının DIŞINDA yapılır (dosya G/Ç'sini transaction içinde
+        tutmak kilidi uzatır). Yazım BAŞARISIZ olursa ingest'i düşürmeyiz:
+        görsel ikincil bir varlıktır — uyarı loglanır, storage_path NULL kalır
+        ve metin/citation zinciri etkilenmez.
+        """
+        paths: dict[int, str] = {}
+        root = StorageSettings().root
+        for f in figures:
+            data = getattr(f, "image_png", None)
+            if not data:
+                continue
+            try:
+                paths[f.index] = save_figure_png(root, file_id, f.index, data)
+            except OSError as exc:
+                self.log.warning("figure_image_write_failed", file_id=file_id,
+                                 figure_index=f.index, error=str(exc)[:200])
+        return paths
+
     def write_file(self, file_id: int, embed_result, *, tables=None,
                    figures=None) -> WriteResult:
         """Bir dosyanın tüm türev kayıtlarını tek transaction'da yazar.
@@ -67,12 +89,19 @@ class StorageWriter:
         try:
             with start_span("ingest.store", file_id=file_id, component="store"):
                 try:
+                    fig_paths = self._save_figure_images(file_id, figures)
                     with self.db.connection() as conn:
                         repo.register_vector(conn)
                         repo.delete_file_derived(conn, file_id)
 
+                        # M-2b: SIRA ÖNEMLİ — tablolar chunk'lardan ÖNCE yazılır.
+                        # core_tables.table_id IDENTITY'dir; chunk'ın kalıcı tablo
+                        # bağını yazabilmek için id'lerin ÖNCEDEN var olması gerekir.
+                        repo.insert_tables(conn, file_id, tables)
+                        tbl_map = repo.table_id_map(conn, file_id)
+
                         chunks = [it.chunk for it in items]
-                        repo.copy_chunks(conn, file_id, chunks)
+                        repo.copy_chunks(conn, file_id, chunks, tbl_map)
                         id_map = repo.chunk_id_map(conn, file_id)
 
                         vec_rows = [
@@ -80,8 +109,7 @@ class StorageWriter:
                             for it in items if it.vector is not None
                         ]
                         repo.copy_vectors(conn, vec_rows)
-                        repo.insert_tables(conn, file_id, tables)
-                        repo.insert_figures(conn, file_id, figures)
+                        repo.insert_figures(conn, file_id, figures, fig_paths)
                         repo.set_status(conn, file_id, "COMPLETED")
                     set_span_attributes(
                         store_chunks=len(chunks),

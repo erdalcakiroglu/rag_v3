@@ -62,16 +62,50 @@ SELECT chunk_id, table_id, row_start, row_end FROM path_b;
 """
 
 
+# M-2b: KALICI bağ — chunk yazılırken doldurulan kolonlar. Türetme YOK.
+_COLUMN_SQL = """
+SELECT chunk_id, table_id, table_row_start, table_row_end
+  FROM core_chunks
+ WHERE chunk_id = ANY(%(ids)s) AND table_id IS NOT NULL;
+"""
+
+
+def _table_columns_present(conn: psycopg.Connection) -> bool:
+    row = conn.execute(
+        "SELECT count(*) FROM information_schema.columns "
+        "WHERE table_name = 'core_chunks' AND column_name = 'table_id';"
+    ).fetchone()
+    return bool(row and row[0])
+
+
 def resolve_table_refs(conn: psycopg.Connection, chunk_ids: list[int]) -> dict[int, dict[str, Any]]:
     """chunk_id → {table_id, row_start?, row_end?}. Tablo-kökenli OLMAYAN chunk'lar
-    sonuçta YER ALMAZ (çağıran `table_ref` eklemez → mevcut davranış korunur)."""
+    sonuçta YER ALMAZ (çağıran `table_ref` eklemez → mevcut davranış korunur).
+
+    M-2b ÇİFT YOL (geçiş dönemi):
+      1. KOLON yolu — chunk yazılırken doldurulan table_id/satır aralığı. Kesin.
+      2. TÜRETME yolu — kolonu NULL olan (DDL'den ÖNCE yazılmış) chunk'lar için
+         eski section_title-regex + core_tables JOIN mantığı.
+    REPROCESS tamamlanınca her chunk'ın kolonu dolar → türetme yolu hiç çalışmaz
+    ve Aşama 3'te (doğrulama yeşilken) sökülür. Geçişte İKİSİ birden gerekli:
+    yalnız kolona güvenmek, REPROCESS'ten önce tablo gösterimini KIRARDI.
+    """
     if not chunk_ids:
         return {}
-    rows = conn.execute(_RESOLVE_SQL, {"rx": _SECTION_RE, "ids": list(chunk_ids)}).fetchall()
-    return {
-        int(r[0]): {"table_id": int(r[1]), "row_start": r[2], "row_end": r[3]}
-        for r in rows
-    }
+    ids = list(chunk_ids)
+    out: dict[int, dict[str, Any]] = {}
+
+    if _table_columns_present(conn):
+        for r in conn.execute(_COLUMN_SQL, {"ids": ids}).fetchall():
+            out[int(r[0])] = {"table_id": int(r[1]), "row_start": r[2], "row_end": r[3]}
+
+    # Kolonu dolmayanlar için eski türetilmiş yol (yalnızca KALANLAR sorgulanır).
+    remaining = [i for i in ids if i not in out]
+    if remaining:
+        rows = conn.execute(_RESOLVE_SQL, {"rx": _SECTION_RE, "ids": remaining}).fetchall()
+        for r in rows:
+            out[int(r[0])] = {"table_id": int(r[1]), "row_start": r[2], "row_end": r[3]}
+    return out
 
 
 def _clean_cell(value: Any) -> str:

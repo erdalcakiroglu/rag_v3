@@ -382,6 +382,22 @@ class IngestionConfig(BaseModel):
         description="Başarısız (FAILED) bir dosya için azami yeniden deneme sayısı. Bu sayı "
                     "aşılınca dosya kalıcı FAILED sayılır ve otomatik denenmez.",
     )
+    # M-7: PDF/DOCX görsellerinin çıkarılıp dosya deposuna yazılması.
+    figure_images: bool = Field(
+        default=True,
+        description="Belgelerdeki görseller (şekil/grafik) çıkarılıp dosya deposuna kaydedilsin mi? "
+                    "Kapalıyken görseller yalnızca kayıt olarak (sayfa/başlık) tutulur, görüntü "
+                    "saklanmaz ve kaynak panelinde gösterilemez. Ölçüldü: parse süresine "
+                    "ölçülebilir maliyeti YOK; görsel başına ~10-20 KB disk.",
+        json_schema_extra={"danger": DANGER_REPROCESS},
+    )
+    figure_image_scale: float = Field(
+        default=2.0, ge=0.5, le=4.0,
+        description="Görsel çözünürlük çarpanı (Docling images_scale). 1.0 = sayfa çözünürlüğü "
+                    "(~10 KB/görsel, ekranda bulanık olabilir) · 2.0 = iki katı (~20 KB/görsel, "
+                    "önerilen). Süreyi etkilemez, yalnızca diski ve okunabilirliği.",
+        json_schema_extra={"danger": DANGER_REPROCESS},
+    )
 
 
 # --- Kalite skorlama (ADR-011 / Ek1). Defaultlar FAZ1_Sema_Ek1_Kalite.sql

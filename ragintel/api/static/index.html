@@ -53,6 +53,11 @@
   table.dt th{background:#0d1117;color:var(--mut);font-weight:600;position:sticky;top:0}
   table.dt tr.hl td{background:rgba(74,158,255,.16);border-color:rgba(74,158,255,.5)}
   .tmut{color:var(--mut);font-size:11.5px;margin:4px 0}
+  /* M-7: kaynağın sayfasındaki görseller */
+  .figbox{display:flex;flex-wrap:wrap;gap:10px;margin:6px 0}
+  .fig{margin:0;border:1px solid var(--line);border-radius:6px;padding:6px;background:#0d1117;max-width:300px}
+  .fig img{display:block;max-width:100%;height:auto;border-radius:4px}
+  .fig figcaption{color:var(--mut);font-size:11px;margin-top:5px;overflow-wrap:anywhere}
 </style>
 </head>
 <body>
@@ -120,8 +125,14 @@ function render(resp, injected){
       const tr = s.table_ref;
       const btn = tr ? `<button class="tbtn" onclick="showTable(${s.n},${tr.table_id},${num(tr.row_start)},${num(tr.row_end)},event)">Tabloyu görüntüle</button>` : '';
       const box = tr ? `<div id="tbl-${s.n}"></div>` : '';
+      // M-7: alıntının geldiği SAYFADAKİ görseller. Görseli olmayan kaynakta hiçbir
+      // şey çıkmaz (eski görünüm birebir korunur).
+      const figs = (s.figures && s.figures.length)
+        ? `<button class="tbtn" onclick="showFigures(${s.n},event)">Kaynağın görselleri (${s.figures.length})</button>
+           <div id="fig-${s.n}" class="figbox"></div>` : '';
       h += `<div class="src" onclick="this.classList.toggle('open')"><b>[${s.n}]</b> ${esc(s.file_name)} ${loc}
-             ${s.section?('· '+esc(s.section)):''}<div class="q">“${esc(s.quote)}”</div>${btn}${box}</div>`;
+             ${s.section?('· '+esc(s.section)):''}<div class="q">“${esc(s.quote)}”</div>${btn}${figs}${box}</div>`;
+      if(s.figures && s.figures.length) FIGS[s.n] = s.figures;
     });
   } else {
     // FAZ 5: reddedilen yanıtta kaynak GÖSTERİLMEZ (citation değil). İncelenen ama cevabı
@@ -176,6 +187,35 @@ function tableHtml(t, rowStart, rowEnd){
   }
   return h;
 }
+
+// ---- M-7: kaynağın sayfasındaki görseller ---------------------------------
+// <img src="/api/figure/..."> KULLANILAMAZ: img etiketi Authorization başlığı
+// gönderemez, uç ise Bearer istiyor (fail-closed). O yüzden fetch + blob URL.
+const FIGS = {};                       // n -> [{figure_id, caption, page}]
+async function showFigures(n, ev){
+  ev.stopPropagation();
+  const box = document.getElementById('fig-'+n);
+  if(box.dataset.open === '1'){ box.innerHTML=''; box.dataset.open='0'; _revoke(box); return; }
+  box.dataset.open = '1';
+  box.innerHTML = '<div class="tmut">Görseller yükleniyor…</div>';
+  const figs = FIGS[n] || [];
+  const urls = [];
+  const parts = await Promise.all(figs.map(async f => {
+    try{
+      const r = await fetch('/api/figure/'+f.figure_id, {headers: authHeaders()});
+      // 404 = yok VEYA scope dışı VEYA görüntü kaydedilmemiş (ayırt edilemez, fail-closed).
+      if(!r.ok) return `<div class="tmut">Görsel görüntülenemedi (${r.status}).</div>`;
+      const url = URL.createObjectURL(await r.blob());
+      urls.push(url);
+      const cap = f.caption ? esc(f.caption) : (f.page!=null ? ('s.'+f.page) : '');
+      return `<figure class="fig"><img src="${url}" alt="${cap}" loading="lazy">
+                ${cap ? `<figcaption>${cap}</figcaption>` : ''}</figure>`;
+    }catch(e){ return `<div class="tmut">Görsel yüklenemedi.</div>`; }
+  }));
+  box.innerHTML = parts.join('');
+  box._urls = urls;                    // kapanışta serbest bırakılacak
+}
+function _revoke(box){ (box._urls||[]).forEach(u=>URL.revokeObjectURL(u)); box._urls=[]; }
 
 async function showTable(n, tableId, rowStart, rowEnd, ev){
   ev.stopPropagation();                       // kaynak kartının aç/kapa toggle'ını tetikleme

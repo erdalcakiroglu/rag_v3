@@ -19,6 +19,16 @@ class TableRef(BaseModel):
     row_end: int | None = None
 
 
+class FigureRef(BaseModel):
+    """M-7: alıntının geldiği SAYFADA bulunan bir görsel. `figure_id`
+    /api/figure/{figure_id} ile (scope korumalı) çekilir."""
+    model_config = ConfigDict(extra="forbid")
+    figure_id: int
+    page: int | None = None
+    caption: str | None = None
+    figure_index: int | None = None
+
+
 class Source(BaseModel):
     model_config = ConfigDict(extra="forbid")
     n: int
@@ -30,6 +40,9 @@ class Source(BaseModel):
     # M-2: tablo-kökenli kaynaklarda dolu; diğerlerinde None (davranış değişmez).
     # Additive — extra='forbid' şemaya bilinçli eklendi (reviewed_sources ile aynı gerekçe).
     table_ref: TableRef | None = None
+    # M-7: kaynağın sayfasındaki görseller (yalnızca görüntüsü kaydedilmiş olanlar).
+    # Boş liste = gösterilecek görsel yok; alan her zaman vardır (additive).
+    figures: list[FigureRef] = Field(default_factory=list)
 
 
 class Meta(BaseModel):

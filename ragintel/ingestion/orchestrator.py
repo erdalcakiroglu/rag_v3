@@ -70,13 +70,21 @@ class Orchestrator:
     def scan(self, folder: str, *, doc_scope: str = "default"):
         return self.scanner.scan(folder, doc_scope=doc_scope)
 
-    def run(self, *, limit: int | None = None, recover: bool = True) -> dict:
+    def run(self, *, limit: int | None = None, recover: bool = True,
+            scope: str | None = None) -> dict:
         """PENDING dosyaları uçtan uca işler. EmbeddingBackendError fırlatabilir
-        (altyapı hatası — run durur)."""
+        (altyapı hatası — run durur).
+
+        M-7 ön-koşul: `scope=None` → TÜM scope'lar (production davranışı DEĞİŞMEZ).
+        Scope verilirse yalnızca o scope'un dosyaları işlenir ve yalnızca o scope'ta
+        stuck-recovery yapılır. Testler kendi scope'unu geçer → paylaşılan canlı DB'de
+        REPROCESS penceresindeki gerçek dosyalara DOKUNAMAZLAR (mekanik güvence;
+        "pencerede süit koşmayın" kuralı artık tek savunma hattı değil).
+        """
         if recover:
-            self.recover_stuck()
+            self.recover_stuck(scope=scope)
         with self.db.connection() as conn:
-            pending = [f["file_id"] for f in list_pending_files(conn, limit)]
+            pending = [f["file_id"] for f in list_pending_files(conn, limit, scope=scope)]
         results: dict[str, int] = {"COMPLETED": 0, "FAILED": 0}
         for file_id in pending:
             outcome = self._process_file(file_id)
@@ -118,13 +126,15 @@ class Orchestrator:
         with self.db.connection() as conn:
             return status_counts(conn)
 
-    def recover_stuck(self) -> list[int]:
+    def recover_stuck(self, scope: str | None = None) -> list[int]:
+        """`scope=None` → global kurtarma (production: açılışta her scope taranır)."""
         with self.db.connection() as conn:
-            stuck = list_stuck_processing(conn, self.stuck_minutes)
+            stuck = list_stuck_processing(conn, self.stuck_minutes, scope=scope)
             for fid in stuck:
                 increment_retry_and_pending(conn, fid)
         if stuck:
-            self.log.warning("recovered_stuck", count=len(stuck), file_ids=stuck[:20])
+            self.log.warning("recovered_stuck", count=len(stuck), file_ids=stuck[:20],
+                             scope=scope or "(tümü)")
         return stuck
 
     # -- pipeline -------------------------------------------------------------

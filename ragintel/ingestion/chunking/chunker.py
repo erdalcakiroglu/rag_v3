@@ -156,8 +156,13 @@ def _min_merge(chunks: list[Chunk], counter: TokenCounter,
 
 
 def _table_chunk(text: str, t: Table, counter: TokenCounter,
-                 section_title: str | None) -> Chunk:
-    """Bir tablo (alt-)chunk'ı üretir — sheet/sayfa kimliği korunur, is_table=True."""
+                 section_title: str | None, *,
+                 row_start: int | None = None, row_end: int | None = None) -> Chunk:
+    """Bir tablo (alt-)chunk'ı üretir — sheet/sayfa kimliği korunur, is_table=True.
+
+    M-2b: tablo bağı (table_index + satır aralığı) chunk'ın KENDİSİNDE taşınır;
+    okuma tarafı artık section_title'ı regex'le ayrıştırmak zorunda değil.
+    """
     return Chunk(
         chunk_index=-1,
         chunk_text=text,
@@ -169,6 +174,9 @@ def _table_chunk(text: str, t: Table, counter: TokenCounter,
         char_start=None,
         char_end=None,
         is_table=True,
+        table_index=t.index,
+        table_row_start=row_start,
+        table_row_end=row_end,
     )
 
 
@@ -193,8 +201,11 @@ def _table_chunks(t: Table, counter: TokenCounter, subchunk_max: int) -> list[Ch
         gtext = flatten_table([header] + g)
         end = start + len(g) - 1
         span = f"satır {start}" if start == end else f"satır {start}-{end}"
+        # section_title İNSAN İÇİN kalır (kaynak panelinde okunur); makine bağı
+        # artık kolonlarda (table_index/row_start/row_end) — M-2b.
         out.append(_table_chunk(gtext, t, counter,
-                                section_title=f"tablo{t.index} · {span}"))
+                                section_title=f"tablo{t.index} · {span}",
+                                row_start=start, row_end=end))
 
     for i, row in enumerate(body):
         cand_text = flatten_table([header] + group + [row])

@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Response
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from .auth import Unauthorized, bearer_token
 from .runtime import InputRejected, RagRuntime
@@ -110,6 +110,29 @@ def create_app(runtime: RagRuntime | None = None) -> FastAPI:
         if payload is None:
             raise HTTPException(404, "Tablo bulunamadı")
         return payload
+
+    @app.get("/api/figure/{figure_id}")
+    def figure(figure_id: int, authorization: str | None = Header(default=None)):
+        """M-7: kaynak panelindeki görselin PNG'si.
+
+        GÜVENLİK (fail-closed, M-2 tablo ucuyla BİREBİR): görselin dosyası
+        kullanıcının doc_scope'larında değilse 404 — 403 DEĞİL, çünkü 403 görselin
+        VAR OLDUĞUNU sızdırır. Var olmayan figure_id, scope dışı görsel ve görüntüsü
+        kaydedilmemiş kayıt AYIRT EDİLEMEZ yanıt verir.
+        """
+        try:
+            user_ctx = rt().resolver.resolve(bearer_token(authorization))
+        except Unauthorized as exc:
+            raise HTTPException(401, str(exc), headers={"WWW-Authenticate": "Bearer"})
+        fig = rt().figure(figure_id, user_ctx)
+        if fig is None:
+            raise HTTPException(404, "Görsel bulunamadı")
+        path = Path(fig["storage_path"])
+        # DB'de yol var ama dosya diskte yoksa (depo taşındı/silindi): yine 404 —
+        # 500 vermek iç dosya yolunu ve varlığını sızdırırdı.
+        if not path.is_file():
+            raise HTTPException(404, "Görsel bulunamadı")
+        return FileResponse(path, media_type="image/png")
 
     @app.post("/api/feedback")
     def feedback(req: FeedbackRequest):

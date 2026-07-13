@@ -15,8 +15,11 @@ from .text_utils import detect_language, flatten_table
 class DoclingBackend:
     name = "docling"
 
-    def __init__(self) -> None:
+    def __init__(self, *, figure_images: bool = True, figure_image_scale: float = 2.0) -> None:
         self._converters: dict[bool, object] = {}
+        # M-7: görsel çıkarma config'ten gelir (ingestion.figure_images/_scale).
+        self.figure_images = figure_images
+        self.figure_image_scale = figure_image_scale
 
     def supports(self, file_type: str) -> bool:
         return file_type in ("pdf", "docx")
@@ -30,6 +33,12 @@ class DoclingBackend:
             opts = PdfPipelineOptions()
             opts.do_ocr = ocr
             opts.do_table_structure = True
+            if self.figure_images:
+                # M-7: bu bayrak OLMADAN pic.image None kalır (görüntü hiç üretilmez).
+                # Ölçüldü (2 dosya × 2 tur, ısınma elenmiş): parse süresine ölçülebilir
+                # etkisi YOK (±2%, gürültü) — maliyet yalnızca disk (~10-20 KB/görsel).
+                opts.generate_picture_images = True
+                opts.images_scale = self.figure_image_scale
             self._converters[ocr] = DocumentConverter(
                 format_options={
                     InputFormat.PDF: PdfFormatOption(pipeline_options=opts)
@@ -42,6 +51,23 @@ class DoclingBackend:
         result = conv.convert(path)
         document = result.document
         return _map_document(document, ocr=ocr)
+
+
+def _picture_png(pic) -> bytes | None:
+    """M-7: Docling PictureItem → PNG baytları. Görüntü ancak pipeline'da
+    `generate_picture_images` açıkken üretilir; kapalıysa (veya API değişirse)
+    None döner ve çağıran uyarı yazar — parse ÇÖKMEZ (mevcut savunmacı desen)."""
+    img = getattr(pic, "image", None)
+    pil = getattr(img, "pil_image", None) if img is not None else None
+    if pil is None:
+        return None
+    try:
+        import io
+        buf = io.BytesIO()
+        pil.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        return None
 
 
 def _page_no_of(item) -> int | None:
@@ -99,7 +125,13 @@ def _map_document(document, *, ocr: bool) -> ParsedDocument:
             caption = pic.caption_text(document) or None
         except Exception:
             caption = None
-        pd.figures.append(Figure(index=idx, page_no=_page_no_of(pic), caption=caption))
+        png = _picture_png(pic)
+        if png is None:
+            # Görüntü yoksa KAYIT YİNE OLUŞUR (sayfa/başlık) — yalnızca görüntü eksik.
+            # Sessizce yutulmasın: hangi şeklin görüntüsü alınamadı, uyarıya düşsün.
+            pd.warn(f"docling: şekil #{idx} görüntüsü alınamadı (storage_path boş kalacak)")
+        pd.figures.append(Figure(index=idx, page_no=_page_no_of(pic),
+                                 caption=caption, image_png=png))
 
     pd.pages = [pages[k] for k in sorted(pages)]
     if not pd.pages:

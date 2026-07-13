@@ -82,13 +82,21 @@ def get_file(conn: psycopg.Connection, file_id: int) -> dict | None:
             "source_path": row[3], "status": row[4]}
 
 
-def list_pending_files(conn: psycopg.Connection, limit: int | None = None) -> list[dict]:
-    """PENDING dosyaları döndürür (İP-2 batch)."""
+def list_pending_files(conn: psycopg.Connection, limit: int | None = None,
+                       scope: str | None = None) -> list[dict]:
+    """PENDING dosyaları döndürür (İP-2 batch).
+
+    M-7 ön-koşul: `scope=None` → TÜM scope'lar (production davranışı, bit-bit aynı).
+    Bir doc_scope verilirse yalnızca o scope'un dosyaları döner — testler kendi
+    scope'unda kapalı devre çalışır ve REPROCESS penceresindeki GERÇEK dosyaları
+    işlemeye BAŞLAYAMAZ. (Kural değil MEKANİK koruma.)
+    """
     sql = ("SELECT file_id, file_name, file_type, source_path, status "
-           "FROM core_files WHERE status = 'PENDING' ORDER BY file_id")
+           "FROM core_files WHERE status = 'PENDING' "
+           "AND (%s::text IS NULL OR doc_scope = %s::text) ORDER BY file_id")
     if limit is not None:
         sql += f" LIMIT {int(limit)}"
-    rows = conn.execute(sql + ";").fetchall()
+    rows = conn.execute(sql + ";", (scope, scope)).fetchall()
     return [{"file_id": r[0], "file_name": r[1], "file_type": r[2],
              "source_path": r[3], "status": r[4]} for r in rows]
 
@@ -180,11 +188,17 @@ def increment_retry_and_pending(conn: psycopg.Connection, file_id: int) -> None:
         "fail_reason = NULL WHERE file_id = %s;", (file_id,))
 
 
-def list_stuck_processing(conn: psycopg.Connection, minutes: int) -> list[int]:
+def list_stuck_processing(conn: psycopg.Connection, minutes: int,
+                          scope: str | None = None) -> list[int]:
+    """M-7 ön-koşul: `scope=None` → global (crash-recovery'nin DOĞRU davranışı;
+    açılışta hangi scope'ta olursa olsun takılı dosya kurtarılmalı). Scope verilirse
+    yalnızca o scope taranır — test, başkasının PROCESSING dosyasını 'takılı' sayıp
+    RETRY'a çekemez."""
     rows = conn.execute(
         "SELECT file_id FROM core_files WHERE status = 'PROCESSING' "
-        "AND updated_at < now() - make_interval(mins => %s) ORDER BY file_id;",
-        (minutes,),
+        "AND updated_at < now() - make_interval(mins => %s) "
+        "AND (%s::text IS NULL OR doc_scope = %s::text) ORDER BY file_id;",
+        (minutes, scope, scope),
     ).fetchall()
     return [r[0] for r in rows]
 

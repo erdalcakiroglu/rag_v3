@@ -50,3 +50,23 @@ def copy_to_storage(src_path: str, root: str, checksum: str, file_name: str) -> 
     if not os.path.exists(dest):
         shutil.copy2(src_path, dest)
     return os.path.abspath(dest)
+
+
+# --- M-7: belge görselleri --------------------------------------------------
+def figure_path_for(root: str, file_id: int, figure_index: int) -> str:
+    """Görselin depo yolu: <root>/figures/<file_id>/<figure_index>.png
+
+    Raw deposu checksum-tabanlıdır (dedup); görsel deposu file_id-tabanlıdır,
+    çünkü görsel dosyanın TÜREVİdir — dosya yeniden işlenince (REPROCESS) aynı
+    yola YAZILIR (üzerine yazma = idempotent), öksüz kopya birikmez.
+    """
+    return os.path.join(root, "figures", str(file_id), f"{int(figure_index)}.png")
+
+
+def save_figure_png(root: str, file_id: int, figure_index: int, data: bytes) -> str:
+    """PNG baytlarını depoya yazar, mutlak yolu döndürür (üzerine yazar)."""
+    dest = figure_path_for(root, file_id, figure_index)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "wb") as f:
+        f.write(data)
+    return os.path.abspath(dest)

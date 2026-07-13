@@ -148,6 +148,9 @@ def test_danger_badges_on_reprocess_fields_only():
         "chunking.min_tokens", "chunking.table_subchunk_max_tokens",
         "embedding.model", "embedding.dim",
         "storage.hnsw_m", "storage.hnsw_ef_construction",
+        # M-7: görseller parse anında çıkarılır → değiştirmek yeniden işleme gerektirir
+        # (mevcut belgelerin görselleri geriye dönük OLUŞMAZ).
+        "ingestion.figure_images", "ingestion.figure_image_scale",
     }
     # Karşı-örnekler: bunlar mevcut veriyi geçersizleştirmez → rozet OLMAMALI.
     leaves = {g: _leaves(gs["fields"]) for g, gs in schema["groups"].items()}

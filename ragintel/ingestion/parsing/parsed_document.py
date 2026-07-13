@@ -49,6 +49,11 @@ class Figure:
     index: int
     page_no: int | None = None
     caption: str | None = None
+    # M-7: görüntünün PNG baytları. Parse sırasında üretilir (Docling
+    # generate_picture_images), StorageWriter dosya deposuna yazar ve yol
+    # core_figures.storage_path'e düşer. None = görüntü çıkarılamadı/kapalı;
+    # DB kaydı yine oluşur (sayfa/başlık), yalnızca görüntü yoktur.
+    image_png: bytes | None = None
 
 
 @dataclass

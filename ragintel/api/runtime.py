@@ -18,7 +18,7 @@ import httpx
 from ..agents.graph import build_agent_graph, run_agent
 from ..config.loader import EffectiveConfig
 from ..config.settings import LangfuseSettings, LiteLLMSettings, OllamaSettings, TeiSettings
-from ..database import table_repo
+from ..database import figure_repo, table_repo
 from ..ingestion.injection.scanner import InjectionScanner
 from ..observability.logging import get_logger
 from ..observability.tracing import set_span_attributes, start_span
@@ -147,6 +147,7 @@ class RagRuntime:
                 self.log.error("api_ask_failed", session_id=session_id, error=str(exc)[:200])
                 final = self._error_response(trace_id, t0, type(exc).__name__)
         self._enrich_table_refs(final)
+        self._enrich_figures(final, user_ctx)   # M-7: kaynağın sayfasındaki görseller
         return AskResult(session_id=session_id, final_response=final,
                          injection_flagged=inj.flagged, trace_id=trace_id)
 
@@ -171,12 +172,49 @@ class RagRuntime:
             if ref is not None:
                 src["table_ref"] = ref
 
+    # -- M-7: kaynağın SAYFASINDAKİ görseller (additive) ------------------------
+    def _enrich_figures(self, final: dict, user_ctx: dict) -> None:
+        """Kaynaklara `figures` (aynı dosya+sayfa görselleri) ekler. Scope korumalı:
+        listeleme de fail-closed'dır — kullanıcının göremeyeceği dosyanın görseli
+        listede BİLE görünmez (yoksa 404 veren bir düğme çizip varlığı sızdırırdık).
+        Hata /api/ask'i ÇÖKERTMEZ (table_ref ile aynı sözleşme)."""
+        srcs = list(final.get("sources") or [])
+        srcs += list((final.get("meta") or {}).get("reviewed_sources") or [])
+        chunk_ids = [int(s["chunk_id"]) for s in srcs if s.get("chunk_id") is not None]
+        if not chunk_ids:
+            return
+        scopes = list(user_ctx.get("allowed_doc_scopes") or [])
+        try:
+            with self.db.connection() as conn:
+                by_chunk = figure_repo.list_figures_for_chunks(conn, chunk_ids, scopes)
+        except Exception as exc:
+            self.log.warning("figure_enrich_failed", error=str(exc)[:200])
+            return
+        for src in srcs:
+            figs = by_chunk.get(int(src["chunk_id"]))
+            if figs:
+                src["figures"] = figs
+
     # -- M-2: GET /api/table/{table_id} (scope fail-closed) ---------------------
     def table(self, table_id: int, user_ctx: dict) -> dict | None:
         """Scope'a uygunsa tablo payload'ı, değilse/yoksa None (çağıran 404'e çevirir)."""
         with self.db.connection() as conn:
             return table_repo.get_table_for_scopes(
                 conn, table_id, list(user_ctx.get("allowed_doc_scopes") or []))
+
+    # -- M-7: GET /api/figure/{figure_id} (scope fail-closed — M-2 deseni) -------
+    def figure(self, figure_id: int, user_ctx: dict) -> dict | None:
+        """Scope'a uygunsa görsel meta'sı (storage_path dahil), değilse/yoksa None.
+
+        Görüntüsü kaydedilmemiş kayıt (storage_path NULL) da None sayılır: gösterilecek
+        bir şey yok, çağıran 404 döner — 'var ama boş' diye ayırt edilebilir bir yanıt
+        vermek scope dışı/var olmayan ayrımını da sızdırma riskine sokar."""
+        with self.db.connection() as conn:
+            fig = figure_repo.get_figure_for_scopes(
+                conn, figure_id, list(user_ctx.get("allowed_doc_scopes") or []))
+        if fig is None or not fig.get("storage_path"):
+            return None
+        return fig
 
     @staticmethod
     def _error_response(trace_id: str, t0: float, reason: str) -> dict:

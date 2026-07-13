@@ -22,3 +22,11 @@ class Chunk:
     char_start: int | None = None
     char_end: int | None = None
     is_table: bool = False   # tablo chunk'ı (bölünmez) — persist edilmez
+    # M-2b/M-7: tablo bağı KALICI kolonlara yazılır (eskiden section_title'dan
+    # regex'le TÜRETİLİYORDU — kırılgan). `table_index` parse-içi indekstir;
+    # StorageWriter onu core_tables.table_id'ye çevirir (yazım anında).
+    # Satır aralığı 1-tabanlı ve İKİ UÇ DA DAHİL; tablo tek chunk ise None
+    # ("bu chunk tablonun tamamı" — DDL'deki CHECK ile birebir).
+    table_index: int | None = None
+    table_row_start: int | None = None
+    table_row_end: int | None = None

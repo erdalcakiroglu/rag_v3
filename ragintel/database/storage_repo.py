@@ -36,6 +36,23 @@ _CHUNK_COLS = ("file_id", "chunk_index", "chunk_text", "chunk_text_norm",
                "token_count", "page_number", "sheet_name", "section_title",
                "char_start", "char_end")
 
+# M-2b: kalıcı tablo bağı kolonları (FAZ7_Sema_Ek2_ChunkTableRef.sql).
+_CHUNK_TABLE_COLS = ("table_id", "table_row_start", "table_row_end")
+
+
+def table_ref_columns_present(conn: psycopg.Connection) -> bool:
+    """M-2b kolonları DB'de açıldı mı? (DDL ELLE uygulanır — kod CREATE çağırmaz.)
+
+    Kod, DDL'den ÖNCE de çalışmalı: kolonlar yoksa chunk'lar eskisi gibi (bağsız)
+    yazılır ve okuma tarafı türetilmiş yola düşer. Böylece 'kod push' ile 'DDL
+    uygulama' birbirini BEKLEMEZ (M-6'da config_audit için kurulan desen).
+    """
+    row = conn.execute(
+        "SELECT count(*) FROM information_schema.columns "
+        "WHERE table_name = 'core_chunks' AND column_name = 'table_id';"
+    ).fetchone()
+    return bool(row and row[0])
+
 
 def register_vector(conn: psycopg.Connection) -> None:
     """pgvector tipini bu connection'a kaydeder (COPY binary + sorgu için)."""
@@ -51,17 +68,34 @@ def delete_file_derived(conn: psycopg.Connection, file_id: int) -> None:
     conn.execute("DELETE FROM core_figures WHERE file_id = %s;", (file_id,))
 
 
-def copy_chunks(conn: psycopg.Connection, file_id: int, chunks) -> None:
-    """core_chunks'a COPY ile toplu yazar (chunk_id IDENTITY üretir; tsv generated)."""
-    cols = ", ".join(_CHUNK_COLS)
+def copy_chunks(conn: psycopg.Connection, file_id: int, chunks,
+                table_ids: dict[int, int] | None = None) -> None:
+    """core_chunks'a COPY ile toplu yazar (chunk_id IDENTITY üretir; tsv generated).
+
+    M-2b: `table_ids` (parse-içi table_index -> core_tables.table_id) verilirse ve
+    kolonlar DB'de açıksa, tablo bağı KOLONA yazılır. Kolonlar yoksa eski davranış
+    aynen sürer (bağ yazılmaz; okuma türetilmiş yola düşer).
+    """
+    write_refs = table_ids is not None and table_ref_columns_present(conn)
+    cols = ", ".join(_CHUNK_COLS + (_CHUNK_TABLE_COLS if write_refs else ()))
     with conn.cursor() as cur:
         with cur.copy(f"COPY core_chunks ({cols}) FROM STDIN") as cp:
             for c in chunks:
-                cp.write_row((
+                row = (
                     file_id, c.chunk_index, c.chunk_text, c.chunk_text_norm,
                     c.token_count, c.page_number, c.sheet_name, c.section_title,
                     c.char_start, c.char_end,
-                ))
+                )
+                if write_refs:
+                    idx = getattr(c, "table_index", None)
+                    # Tablo-kökenli DEĞİLSE üçü de NULL; kökenliyse table_id zorunlu.
+                    # Satır aralığı yalnızca alt-chunk'ta dolu (tam tablo → NULL),
+                    # DDL'deki CHECK kısıtı bu sözleşmeyi zorlar.
+                    tid = table_ids.get(idx) if idx is not None else None
+                    row += (tid,
+                            getattr(c, "table_row_start", None) if tid else None,
+                            getattr(c, "table_row_end", None) if tid else None)
+                cp.write_row(row)
 
 
 def chunk_id_map(conn: psycopg.Connection, file_id: int) -> dict[int, int]:
@@ -125,14 +159,32 @@ def insert_tables(conn: psycopg.Connection, file_id: int, tables) -> None:
         )
 
 
-def insert_figures(conn: psycopg.Connection, file_id: int, figures) -> None:
+def table_id_map(conn: psycopg.Connection, file_id: int) -> dict[int, int]:
+    """M-2b: table_index -> table_id (insert_tables SONRASI tek SELECT).
+
+    core_tables.table_id IDENTITY'dir; chunk'ın bağını yazabilmek için ÖNCE
+    tablolar yazılmalı (bkz. StorageWriter sırası). chunk_id_map ile aynı desen.
+    """
+    rows = conn.execute(
+        "SELECT table_index, table_id FROM core_tables WHERE file_id = %s;", (file_id,)
+    ).fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def insert_figures(conn: psycopg.Connection, file_id: int, figures,
+                   storage_paths: dict[int, str] | None = None) -> None:
+    """M-7: `storage_paths` (figure_index -> diskteki PNG yolu) verilirse
+    core_figures.storage_path DOLAR. Görüntüsü alınamayan şekil için yol yoktur →
+    kayıt yine oluşur, storage_path NULL kalır (kayıp sessiz değil: parse uyarısı)."""
     if not figures:
         return
+    paths = storage_paths or {}
     with conn.cursor() as cur:
         cur.executemany(
             "INSERT INTO core_figures (file_id, page_number, figure_index, "
             "caption, storage_path) VALUES (%s,%s,%s,%s,%s);",
-            [(file_id, f.page_no, f.index, f.caption, None) for f in figures],
+            [(file_id, f.page_no, f.index, f.caption, paths.get(f.index))
+             for f in figures],
         )
 
 

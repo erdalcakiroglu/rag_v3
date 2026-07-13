@@ -94,7 +94,12 @@ class ParseAdapter:
             self.backend = backend
         else:
             from ...config.settings import ParsingSettings
-            self.backend = get_backend(ParsingSettings().backend)
+            ing = self.cfg.group("ingestion")   # M-7: görsel çıkarma config-first
+            self.backend = get_backend(
+                ParsingSettings().backend,
+                figure_images=bool(ing.figure_images),
+                figure_image_scale=float(ing.figure_image_scale),
+            )
         self.log = logger or get_logger("ingestion.parse")
 
     # -- saf dispatch (DB yok) ------------------------------------------------

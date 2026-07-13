@@ -19,8 +19,11 @@ def test_element_contracts():
         "title", "level", "page_start", "char_span"}
     assert {f.name for f in dataclasses.fields(Table)} == {
         "index", "data", "flattened_text", "page_no", "sheet_name"}
+    # M-7: `image_png` — görüntü baytları (Docling generate_picture_images).
+    # Parse'ta üretilir, StorageWriter dosya deposuna yazar; persist edilen alan
+    # core_figures.storage_path'tir (baytlar DB'ye GİRMEZ).
     assert {f.name for f in dataclasses.fields(Figure)} == {
-        "index", "page_no", "caption"}
+        "index", "page_no", "caption", "image_png"}
 
 
 def test_defaults_and_helpers():
