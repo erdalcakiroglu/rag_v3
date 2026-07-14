@@ -27,11 +27,30 @@ JUDGE_LABEL = "groq/dev-mode"  # geriye-uyum sabiti; gerçek etiket dev_label() 
 _LOG = get_logger("eval.judge")
 
 
+# M-9: judge'ın nerede koştuğu VERİ EGEMENLİĞİ meselesidir — belge içeriği judge'a
+# gider. Dış sağlayıcılar AÇIK LİSTE ile tanınır; listede olmayan uç KENDİ ALTYAPIMIZ
+# sayılır ve "local" etiketlenir.
+_DIS_SAGLAYICILAR = ("deepseek", "groq", "openai.com", "anthropic", "azure", "mistral", "cohere")
+
+
 def dev_label(api_base: str) -> str:
-    """Judge etiketi sağlayıcıya göre: hepsi DEV-MODE (resmi karne değil)."""
+    """Judge etiketi — koştuğu YERİ dürüstçe söyler.
+
+    ESKİDEN: bilinmeyen her uç "cloud" sayılıyordu. H200'e geçtikten sonra judge KENDİ
+    donanımımızda koşuyordu ama etiket hâlâ `cloud/dev-mode` diyordu — yani karnenin
+    veri-egemenliği iddiası hakkında YALAN söylüyordu. Etiket, egemenlik iddiasının
+    dayanağıdır; yanlışsa iddia da yanlıştır.
+
+    NOT: `dev-mode` eki KORUNUYOR. Lokal judge, runbook'un veri-egemenliği şartını
+    karşılar ama karnenin "resmî" ilan edilmesi AYRI bir karardır (çapraz doğrulama);
+    o kararı bu fonksiyon veremez.
+    """
     b = (api_base or "").lower()
-    provider = "deepseek" if "deepseek" in b else "groq" if "groq" in b else "cloud"
-    return f"{provider}/dev-mode"
+    for p in _DIS_SAGLAYICILAR:
+        if p in b:
+            provider = p.split(".")[0]
+            return f"{provider}/dev-mode"
+    return "local/dev-mode"
 
 
 def _verdict(v) -> int:

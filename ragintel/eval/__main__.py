@@ -83,7 +83,8 @@ def _cmd_run(args) -> int:
 
     result = evaluate(version=args.golden, limit=args.limit, runs=args.runs,
                       agent_model=args.agent_model, judge_model=args.judge_model,
-                      question_delay=args.question_delay, out_path=args.out)
+                      question_delay=args.question_delay, out_path=args.out,
+                      agent_runs=args.agent_runs)
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     else:
@@ -195,6 +196,10 @@ def main(argv: list[str] | None = None) -> int:
     rn.add_argument("--mode", default="report", choices=("report",), help="report (fail etmez, gösterge)")
     rn.add_argument("--limit", type=int, default=None, help="Dry-run: ilk N answerable (+2 unanswerable)")
     rn.add_argument("--runs", type=int, default=3, help="Judge medyanı için koşu sayısı (varsayılan 3)")
+    rn.add_argument("--agent-runs", type=int, default=1,
+                    help="Soru başına AGENT tekrar sayısı. MÜHÜR KARNESİ ve kalite iddiası "
+                         "taşıyan her A/B için 3 ŞARTTIR: tek agent koşumu bu sistemde "
+                         "gürültüdür (ölçülen taban ±6/31). Fallback oranı tekrar-dağılımıyla verilir.")
     rn.add_argument("--agent-model", default=None, help="Ajan LLM (varsayılan qwen/qwen3-32b — tool-calling)")
     rn.add_argument("--judge-model", default=None, help="Judge LLM (varsayılan llama-3.3-70b-versatile)")
     rn.add_argument("--question-delay", type=float, default=1.0, help="Sorular arası throttle sn (TPM)")

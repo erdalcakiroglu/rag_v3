@@ -94,6 +94,17 @@ def _feedback_message(state: dict) -> list[dict]:
         "Talimat: Yalnızca sağlanan bağlamdaki bilgiyle yanıtla; desteklenmeyen "
         "iddiaları çıkar veya ek arama yap."
     )
+    # M-9: low_coverage EN SIK arıza ama hedefli talimatı YOKTU — model `low_coverage:0.667`
+    # makine dizgesinden ne yapacağını çıkaramaz ve üstteki genel talimat onu yanlış yöne
+    # ("iddia çıkar / arama yap") iter. Oysa gereken tek şey: HER CÜMLEYİ alıntıya bağla.
+    if any(str(i).startswith("low_coverage") for i in issue_list):
+        hint += (
+            " Kapsama = geçerli alıntıya bağlanan CÜMLE sayısı / toplam cümle. Cevabındaki"
+            " bazı cümleler alıntısız kaldığı için yanıt reddedildi. Cevabı yeniden yaz:"
+            " HER cümle bir alıntıyla desteklensin; destekleyemediğin bağlayıcı/özet"
+            " cümleleri TAMAMEN ÇIKAR (kısa ve tümüyle alıntılı bir cevap, uzun ve kısmen"
+            " alıntılı olandan iyidir)."
+        )
     # FAZ 5 validate v2: entailment issue'larına hedefli düzeltme talimatı.
     if any(str(i).startswith("unsupported_claim") for i in issue_list):
         hint += (" Bir iddiayı YALNIZCA alıntı o iddiayı DOĞRUDAN kanıtlıyorsa öne sür; "
@@ -102,6 +113,12 @@ def _feedback_message(state: dict) -> list[dict]:
         hint += (" Hipotetik/tahmini/koşullu ya da başka ülke/döneme ait bir bilgiyi KESİN olgu "
                  "gibi sunma; ya 'tahmin/projeksiyon' olduğunu açıkça belirt ya da bu soruyu "
                  "'bulunamadı' diye yanıtla (kaynak GÖSTERME).")
+    # M-9: teslimat kanalı ŞART koşulur. Düzeltme turunda model düzyazıyla yanıtlarsa
+    # (submit_answer'ı çağırmazsa) agent_node onu "citation'sız taslak" sayar → coverage 0
+    # → fallback GARANTİ. Yani düzeltme turu, düzeltmeden ÖNCEKİNDEN kötü sonuç verebilir
+    # (ölçüldü: 0.40/5 alıntı → 0.00/0 alıntı). Kural açıkça söylenmeliydi.
+    hint += (" Düzeltilmiş cevabı MUTLAKA submit_answer aracıyla, citations alanını doldurarak"
+             " gönder; düz metin olarak yazma.")
     content = f"{_FEEDBACK_HEADER}\n{issues}\n{hint}"
     return [{"role": "user", "content": content}]
 

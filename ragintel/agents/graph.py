@@ -66,14 +66,30 @@ def route_after_agent(state: dict) -> str:
 
 
 def route_after_validate(state: dict) -> str:
+    """M-9 (Tasarim §9b, implementasyon-revizyonu): doğrulama-retry'si TOOL bütçesinden
+    AYRIDIR — tam 1 hak.
+
+    Eskiden `iteration >= max_iterations` da "tükenmiş" sayılıyordu. Tool turları (arama +
+    lookup + submit) bütçeyi zaten bitirdiği için validate FAIL ettiğinde retry hakkı
+    pratikte HİÇ ateşlenmiyordu: tasarımın vaat ettiği düzeltme turu erişilemezdi
+    (ölçüldü: fallback'lerin 4/6'sı retry'yi hiç görmeden düştü). Kalite mekanizmasının
+    tool bütçesiyle aynı kasadan yemesi bir sözleşme ihlaliydi.
+
+    SERT durdurucular yerinde: token bütçesi ve deadline. Retry sayısını `retry_count < 1`
+    sınırlar (sonsuz döngü imkânsız). Retry turunda agent_node zaten `final_only_schemas`
+    verir (iteration tükenmiş) — yani model yalnızca submit_answer'a gidebilir: yeni arama
+    yapamaz, sadece cevabını ALINTILAYARAK düzeltir. İstenen davranış tam olarak budur.
+    """
     validation = state.get("validation") or {}
     if validation.get("passed"):
         return "compose"
     budget = state.get("budget") or {}
-    exhausted = int(budget.get("iteration", 0)) >= int(budget.get("max_iterations", 0)) or int(
-        budget.get("tokens_used", 0)
-    ) >= int(budget.get("max_tokens", 1 << 30))
-    if int(state.get("retry_count", 0)) < 1 and not exhausted:
+    deadline = budget.get("deadline_ts")
+    hard_stop = (
+        int(budget.get("tokens_used", 0)) >= int(budget.get("max_tokens", 1 << 30))
+        or bool(deadline and time.time() > float(deadline))
+    )
+    if int(state.get("retry_count", 0)) < 1 and not hard_stop:
         return "agent"
     return "fallback"
 

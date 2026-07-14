@@ -204,19 +204,68 @@ def _honesty(row: dict) -> dict:
     }
 
 
+def is_fallback(row: dict) -> bool:
+    """Cevaplanabilir bir soruya 'bulunamadı' döndüyse bu bir FALLBACK'tir.
+
+    M-9: Fallback, TANIMI GEREĞİ sadıktır (hiçbir iddia öne sürmez) ve bağlamı da
+    'isabetli' sayılır → faithfulness/context_precision'ı YAPISAL olarak şişirir.
+    Ölçüldü: fallback veren satırlar faithfulness 0.937 / answer_relevancy 0.000;
+    gerçek cevap verenler 0.985 / 0.692. Genel ortalama bu yüzden yanıltıcıdır.
+    """
+    ans = (row.get("answer") or "").lower()
+    return any(m in ans for m in _NOTFOUND_MARKERS)
+
+
 def _aggregate(scored: list[dict]) -> dict:
     def mean_of(rows, m):
         vals = [r[m] for r in rows]
         return round(sum(vals) / len(vals), 4) if vals else 0.0
 
-    overall = {m: mean_of(scored, m) for m in _METRICS}
-    overall["n"] = len(scored)
-    by_cat = {}
-    for cat in _cat_order({r["category"] for r in scored}):
-        rows = [r for r in scored if r["category"] == cat]
-        by_cat[cat] = {m: mean_of(rows, m) for m in _METRICS}
-        by_cat[cat]["n"] = len(rows)
-    return {"overall": overall, "by_category": by_cat}
+    def blok(rows: list[dict]) -> dict:
+        d = {m: mean_of(rows, m) for m in _METRICS}
+        d["n"] = len(rows)
+        return d
+
+    cevaplananlar = [r for r in scored if not r.get("fallback")]
+    overall = blok(scored)
+    by_cat = {cat: blok([r for r in scored if r["category"] == cat])
+              for cat in _cat_order({r["category"] for r in scored})}
+    # ANSWERED-ONLY: tek dürüst kalite özeti — fallback'lerin şişirmesi olmadan.
+    answered_only = blok(cevaplananlar)
+    answered_by_cat = {cat: blok([r for r in cevaplananlar if r["category"] == cat])
+                       for cat in _cat_order({r["category"] for r in cevaplananlar})}
+    n_fb = len(scored) - len(cevaplananlar)
+    return {
+        "overall": overall,
+        "by_category": by_cat,
+        "answered_only": {"overall": answered_only, "by_category": answered_by_cat},
+        "fallback": {
+            "count": n_fb, "total": len(scored),
+            "rate": round(n_fb / len(scored), 4) if scored else 0.0,
+            "ids": [r["id"] for r in scored if r.get("fallback")],
+        },
+    }
+
+
+def _fallback_by_repeat(scored: list[dict], agent_runs: int) -> dict:
+    """Tekrar başına fallback oranı — DAĞILIM, tek sayı değil. Koşumlar arası fark
+    büyükse ortalama tek başına yanıltır (gürültü tabanı ölçüldü: ±6/31)."""
+    out = {}
+    for i in range(agent_runs):
+        rows = [r for r in scored if r.get("repeat") == i]
+        n_fb = sum(1 for r in rows if r.get("fallback"))
+        out[str(i)] = {"count": n_fb, "total": len(rows),
+                       "rate": round(n_fb / len(rows), 4) if rows else 0.0}
+    return out
+
+
+def _kararsiz(scored: list[dict]) -> list[str]:
+    """Tekrarlar arasında YÖN DEĞİŞTİREN sorular (bazen cevap, bazen fallback).
+    Bunlar eşiğin kıyısında salınır; mühürlenen sayının güven aralığını bunlar belirler."""
+    by_q: dict[str, set] = {}
+    for r in scored:
+        by_q.setdefault(r.get("rec_id", r["id"]), set()).add(bool(r.get("fallback")))
+    return sorted(q for q, v in by_q.items() if len(v) > 1)
 
 
 def _iteration_stats(rows: list[dict]) -> dict:
@@ -239,10 +288,16 @@ def _iteration_stats(rows: list[dict]) -> dict:
 def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
              agent_model: str | None = None, judge_model: str | None = None,
              question_delay: float = 1.0, out_path: str | None = None,
-             all_unanswerable: bool = False) -> dict:
+             all_unanswerable: bool = False, agent_runs: int = 1) -> dict:
     """Uçtan uca eval; `limit` → dry-run. `out_path` → checkpoint/resume (gece koşusu):
     her soru/skor sonrası kaydedilir; günlük rate-limit kapına takılınca zarifçe DURAKLAR
-    (status=paused), tekrar koşulunca kaldığı yerden devam eder; tamamlanınca status=complete."""
+    (status=paused), tekrar koşulunca kaldığı yerden devam eder; tamamlanınca status=complete.
+
+    `agent_runs` (M-9 kuralı): soru başına AGENT tekrar sayısı. Bu sistemde tek agent koşumu
+    GÜRÜLTÜDÜR — ölçüldü: aynı 31 soruda arka arkaya iki koşum 12'sinde yön değiştirdi
+    (gürültü tabanı ±6/31). `runs` yalnızca JUDGE'ı medyanlıyordu; agent tarafı tek örnekti.
+    Kalite iddiası taşıyan her A/B ve her MÜHÜR karnesi `agent_runs=3` ile koşar; fallback
+    oranı tekrar-dağılımıyla birlikte raporlanır. Varsayılan 1 → eski davranış (dry-run/smoke)."""
     db, cfg, model, app = build_eval_app(agent_model)
     try:
         with db.connection() as conn:
@@ -277,24 +332,29 @@ def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
         # 1) Dataset üretimi (resumable) — checkpoint'te olan sorular atlanır
         _LOG.info("eval_dataset_start", answerable=len(answerable), unanswerable=len(unanswerable),
                   judge=judge.label, agent_model=model, resumed=len(ck["answers"]))
-        for idx, rec in enumerate(queue):
-            if rec["id"] in ck["answers"] or rec["id"] in ck["errors"]:
+        # agent_runs>1 → her soru k kez koşar; anahtar "id#tekrar" olur (k=1'de anahtar
+        # DEĞİŞMEZ: eski checkpoint'ler ve smoke/dry-run yolu bozulmaz).
+        plan = [(rec, i, rec["id"] if agent_runs == 1 else f"{rec['id']}#{i}")
+                for rec in queue for i in range(agent_runs)]
+        for idx, (rec, tekrar, key) in enumerate(plan):
+            if key in ck["answers"] or key in ck["errors"]:
                 continue
             try:
                 row = run_question(app, rec, ctx_cap=int(cfg.group("eval").ctx_cap))
-                ck["answers"][rec["id"]] = row
+                row["rec_id"], row["repeat"] = rec["id"], tekrar
+                ck["answers"][key] = row
                 _save_ck(out_path, ck)
-                _LOG.info("eval_answered", id=rec["id"], iterations=row["iterations"],
+                _LOG.info("eval_answered", id=key, iterations=row["iterations"],
                           confidence=row["confidence"], answerable=rec["answerable"])
             except Exception as exc:
                 if _rate_limited(exc):
-                    paused = ("answer", rec["id"])
-                    _LOG.warning("eval_paused_ratelimit", phase="answer", id=rec["id"])
+                    paused = ("answer", key)
+                    _LOG.warning("eval_paused_ratelimit", phase="answer", id=key)
                     break
-                ck["errors"][rec["id"]] = str(exc)[:200]
+                ck["errors"][key] = str(exc)[:200]
                 _save_ck(out_path, ck)
-                _LOG.warning("eval_answer_failed", id=rec["id"], error=str(exc)[:160])
-            if question_delay and idx < len(queue) - 1:
+                _LOG.warning("eval_answer_failed", id=key, error=str(exc)[:160])
+            if question_delay and idx < len(plan) - 1:
                 time.sleep(question_delay)  # TPM yumuşatma (gateway backoff'a ek throttle)
 
         # 2) RAGAS-tarzı skorlama (answerable, `runs` koşu medyanı; resumable)
@@ -320,22 +380,29 @@ def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
         scored = [
             {"id": rid, "category": ck["answers"][rid]["category"],
              "iterations": ck["answers"][rid]["iterations"], "confidence": ck["answers"][rid]["confidence"],
+             "fallback": is_fallback(ck["answers"][rid]),
+             "rec_id": ck["answers"][rid].get("rec_id", rid),
+             "repeat": ck["answers"][rid].get("repeat", 0),
              **ck["scores"][rid]}
             for rid in ck["scores"] if rid in ck["answers"]
         ]
         honesty_rows = [_honesty(r) for r in unans_rows]
         honest_pass = sum(1 for h in honesty_rows if h["honest"])
         agg = _aggregate(scored)
+        if agent_runs > 1:
+            agg["fallback"]["by_repeat"] = _fallback_by_repeat(scored, agent_runs)
+            agg["fallback"]["kararsiz_sorular"] = _kararsiz(scored)
         iters = _iteration_stats(ans_rows + unans_rows)
         targets = {
             k: {"target": v, "value": agg["overall"][k], "pass": agg["overall"][k] >= v}
             for k, v in _TARGETS.items()
         }
         done_answers = len(ck["answers"]) + len(ck["errors"])
-        complete = paused is None and done_answers >= len(queue) and len(scored) == len(ans_rows)
+        complete = paused is None and done_answers >= len(plan) and len(scored) == len(ans_rows)
         return {
             "judge": judge.label, "judge_model": judge.model, "agent_model": model,
-            "golden": version, "mode": "report", "dev_mode": True, "runs": runs, "limit": limit,
+            "golden": version, "mode": "report", "dev_mode": True, "runs": runs,
+            "agent_runs": agent_runs, "limit": limit,
             "status": "complete" if complete else "paused",
             "paused_at": {"phase": paused[0], "id": paused[1]} if paused else None,
             "progress": {"answered": len(ck["answers"]), "scored": len(scored),
@@ -377,7 +444,33 @@ def format_report(result: dict) -> str:
     ov = result["ragas"]["overall"]
     cols = list(_METRICS)
     header = "kategori".ljust(20) + "n   " + "  ".join(c[:13].ljust(13) for c in cols)
-    L.append("\n-- RAGAS-tarzı metrikler (answerable) --")
+
+    # M-9: FALLBACK ORANI önce gelir — metrikler onsuz okunamaz (fallback tanımı gereği
+    # "sadık" olduğu için faithfulness/context_precision'ı YAPISAL olarak şişirir).
+    fb = result["ragas"].get("fallback") or {}
+    if fb:
+        L.append(f"\n-- FALLBACK ORANI: {fb['count']}/{fb['total']} "
+                 f"(%{100 * fb['rate']:.0f}) — cevaplanabilir soruya 'bulunamadı' --")
+        if fb.get("by_repeat"):
+            L.append("   tekrar dağılımı: " + " · ".join(
+                f"#{i}: {d['count']}/{d['total']} (%{100 * d['rate']:.0f})"
+                for i, d in fb["by_repeat"].items()))
+        if fb.get("kararsiz_sorular"):
+            L.append(f"   KARARSIZ (tekrarlar arası yön değiştiren) {len(fb['kararsiz_sorular'])} soru: "
+                     + ", ".join(fb["kararsiz_sorular"]))
+        if fb["ids"]:
+            L.append("   " + ", ".join(fb["ids"]))
+
+    ao = (result["ragas"].get("answered_only") or {}).get("overall")
+    if ao:
+        L.append("\n-- RAGAS (ANSWERED-ONLY — fallback'ler HARİÇ; tek dürüst kalite özeti) --")
+        L.append(header)
+        L.append("-" * len(header))
+        L.append("GENEL".ljust(20) + f"{ao['n']:<4}" + "  ".join(f"{ao[c]:<13.3f}" for c in cols))
+        for cat, m in result["ragas"]["answered_only"]["by_category"].items():
+            L.append(cat.ljust(20) + f"{m['n']:<4}" + "  ".join(f"{m[c]:<13.3f}" for c in cols))
+
+    L.append("\n-- RAGAS (TÜM answerable — fallback'ler DÂHİL; şişkin, tek başına okunmaz) --")
     L.append(header)
     L.append("-" * len(header))
     L.append("GENEL".ljust(20) + f"{ov['n']:<4}" + "  ".join(f"{ov[c]:<13.3f}" for c in cols))
