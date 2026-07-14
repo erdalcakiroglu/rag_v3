@@ -806,22 +806,32 @@ class AgentConfig(BaseModel):
 
 
 class EvalGatesConfig(BaseModel):
-    """FAZ 8 CI eval gate eşikleri (DEV — mühürlü dilim-1 karnesinin ~%5 altı; regresyon
-    yakalar, mükemmellik dayatmaz). Değişince gate davranışı değişir (config-first)."""
+    """FAZ 8 CI eval gate eşikleri — MÜHÜRLÜ KARNENİN ~%5 ALTI (regresyon yakalar,
+    mükemmellik dayatmaz). Değişince gate davranışı değişir (config-first; DB otoriter).
+
+    M-7 (2026-07-13): eşikler `docs/M7_Karne_v1.md`'ye kalibre edildi
+    (agent=deepseek-v4-pro · judge=llama-3.3-70b-versatile · golden=v0.1 ·
+    iterative_scan=relaxed_order). ESKİ karne (FAZ5, agent=qwen/qwen3-32b) ARŞİVDİR:
+    zemini yeniden üretilemez (agent+korpus+retrieval semantiği değişti).
+    Karne değişirse bu eşikler de yeniden kalibre EDİLMELİDİR — aksi hâlde gate,
+    başka bir zeminin eşiğiyle ölçer ve sessizce yanlış karar verir.
+    """
 
     honesty_min_ratio: float = Field(
-        default=0.80, ge=0.0, le=1.0,
+        default=0.76, ge=0.0, le=1.0,
         description="Dürüstlük testi (cevabı olmayan soruya 'bilmiyorum' diyebilme) asgari geçme "
-                    "oranı. CI eval bu oranın altındaysa BAŞARISIZ olur.",
+                    "oranı. CI eval bu oranın altındaysa BAŞARISIZ olur. Karne: 4/5 = 0.80. "
+                    "Metrik AYRIKTIR (5 soru): 0.76 eşiği hâlâ 4/5 şart koşar, 3/5 (0.60) düşer.",
     )
     faithfulness_min: float = Field(
-        default=0.70, ge=0.0, le=1.0,
-        description="Cevabın kaynağa sadakati için asgari eval skoru. Altındaysa CI gate düşer.",
+        default=0.72, ge=0.0, le=1.0,
+        description="Cevabın kaynağa sadakati için asgari eval skoru. Altındaysa CI gate düşer. "
+                    "Karne: 0.761.",
     )
     context_precision_min: float = Field(
-        default=0.75, ge=0.0, le=1.0,
+        default=0.70, ge=0.0, le=1.0,
         description="Getirilen bağlamın isabeti için asgari eval skoru (ilgisiz chunk oranı). "
-                    "Altındaysa CI gate düşer.",
+                    "Altındaysa CI gate düşer. Karne: 0.739.",
     )
 
 
