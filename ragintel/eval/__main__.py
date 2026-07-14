@@ -95,10 +95,17 @@ def _cmd_run(args) -> int:
 def _cmd_gate(args) -> int:
     """CI eval gate: golden'ı koşar, eşiklerle kıyaslar. pass=0 / fail=1 / altyapı=2.
 
-    ÖN-KOŞUL (M-7 son adım): eşik-kıyas aşamasından ÖNCE, evidence çözünürlüğü ucuz ve
-    deterministik biçimde doğrulanır (bkz. `gates.evidence_precondition`). Çözülemezse
-    exit 2 (altyapı) — Judge (pahalı, token harcayan) HİÇ ÇAĞRILMAZ. Bu bir kalite
-    regresyonu değil, ölçüm zemininin (korpus/parse) kaymasıdır.
+    ÖN-KOŞULLAR (judge'a GİTMEDEN, ucuz ve deterministik — ikisi de exit 2):
+      1. evidence çözünürlüğü (`gates.evidence_precondition`) — korpus/parse kaydı mı?
+      2. model zemini (`gates.model_ground_precondition`) — karnenin agent/judge'ı mı?
+    İkisi de KALİTE regresyonu değil, ÖLÇÜM ZEMİNİNİN kaymasıdır → exit 2, exit 1 değil.
+
+    SİNYAL-VARYANS EŞLEMESİ (M-7, smoke):
+      HARD (exit 1)     : honesty_ratio — 5 soruda deterministik kontrol.
+      ADVISORY (exit 0) : faithfulness / context_precision — n=5 + tek koşum judge
+                          gürültüsü hard-fail taşıyamaz (kurt-çocuk etkisi korumanın
+                          kendisini öldürür). RAPORLANIR, susturulmaz.
+    Otoriter hard karar: NIGHTLY TAM koşu (36, runs=3) — orada hepsi HARD.
     """
     from ..config.loader import load_config
     from ..config.settings import DbSettings
@@ -144,16 +151,21 @@ def _cmd_gate(args) -> int:
     try:
         thr = thresholds_from_config(cfg)
         result = evaluate(version=args.golden, limit=(5 if args.smoke else None), runs=args.runs,
-                          agent_model=args.agent_model, judge_model=args.judge_model)
+                          agent_model=args.agent_model, judge_model=args.judge_model,
+                          # honesty smoke'ta HARD → karneyle AYNI 5-soruluk zeminde ölçülmeli
+                          # (judge kullanmaz; 3 ek agent çağrısı, token yakmaz).
+                          all_unanswerable=args.smoke)
     except Exception as exc:  # harness kurulum/koşum hatası → altyapı (exit 2)
         print(f"=== EVAL GATE — ERROR ⚠ (altyapı, exit 2) ===\nharness çalıştırılamadı: {str(exc)[:200]}")
         return 2
 
     result["models"] = models          # M-7: ölçüm zemini HER koşumda raporlanır
-    outcome = gate_decision(result, thr)
+    outcome = gate_decision(result, thr, smoke=args.smoke)
     if args.json:
         print(json.dumps({"code": outcome.code, "reason": outcome.reason,
-                          "checks": [{"name": n, "value": v, "threshold": t, "ok": ok} for n, v, t, ok in outcome.checks],
+                          "checks": [{"name": n, "value": v, "threshold": t, "ok": ok,
+                                      "severity": "hard" if hard else "advisory"}
+                                     for n, v, t, ok, hard in outcome.checks],
                           "thresholds": vars(thr),
                           "models": models},   # ölçüm zemini: sayılar hangi agent/judge/ANN ile üretildi
                          ensure_ascii=False, indent=2))

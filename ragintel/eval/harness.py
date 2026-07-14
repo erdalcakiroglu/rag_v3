@@ -237,7 +237,8 @@ def _iteration_stats(rows: list[dict]) -> dict:
 
 def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
              agent_model: str | None = None, judge_model: str | None = None,
-             question_delay: float = 1.0, out_path: str | None = None) -> dict:
+             question_delay: float = 1.0, out_path: str | None = None,
+             all_unanswerable: bool = False) -> dict:
     """Uçtan uca eval; `limit` → dry-run. `out_path` → checkpoint/resume (gece koşusu):
     her soru/skor sonrası kaydedilir; günlük rate-limit kapına takılınca zarifçe DURAKLAR
     (status=paused), tekrar koşulunca kaldığı yerden devam eder; tamamlanınca status=complete."""
@@ -251,9 +252,17 @@ def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
         answerable = [r for r in records if r["answerable"]]
         unanswerable = [r for r in records if not r["answerable"]]
         if limit is not None:
-            # dry-run: ilk `limit` answerable + en çok 2 unanswerable (dürüstlük yolu da denensin)
             answerable = answerable[:limit]
-            unanswerable = unanswerable[: min(2, limit)]
+            if not all_unanswerable:
+                # dry-run: ilk `limit` answerable + en çok 2 unanswerable
+                unanswerable = unanswerable[: min(2, limit)]
+            # M-7: gate smoke'unda `all_unanswerable=True` → 5'in TAMAMI koşulur.
+            # NEDEN: honesty smoke'ta HARD'dır (exit 1 taşır) ve 2 soruyla ölçülürse
+            # eşik (0.76) fiilen 2/2 şart koşar; tek soruluk sapma gate'i kırmızıya
+            # çevirir. Ölçüldü: ardışık iki smoke koşusu 1.000 ve 0.500 verdi (aynı kod,
+            # aynı korpus). honesty JUDGE KULLANMAZ (kural tabanlı: 'bulunamadı' dedi mi
+            # + kaynak uydurmadı mı) → 3 ek soru yalnızca 3 agent çağrısı, judge token'ı
+            # HARCAMAZ. Böylece karnedeki 5-soruluk zeminle AYNI temelde ölçülür.
 
         judge = Judge(model=judge_model or LiteLLMSettings().model
                       or cfg.group("eval").judge_model or DEFAULT_JUDGE_MODEL)

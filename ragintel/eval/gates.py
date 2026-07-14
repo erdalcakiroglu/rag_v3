@@ -134,8 +134,26 @@ def model_ground_precondition(cfg, *, agent_model: str | None = None,
     ))
 
 
-def gate_decision(result: dict, thr: GateThresholds) -> GateOutcome:
-    """Eval sonucunu eşiklerle kıyaslar. ÖNCE altyapı sağlığı (exit 2), sonra eşik (0/1)."""
+def gate_decision(result: dict, thr: GateThresholds, *, smoke: bool = False) -> GateOutcome:
+    """Eval sonucunu eşiklerle kıyaslar. ÖNCE altyapı sağlığı (exit 2), sonra eşik (0/1).
+
+    SMOKE'ta SİNYAL-VARYANS EŞLEMESİ (M-7) — eşik gevşetme DEĞİLDİR:
+    Aynı eşikler, aynı sayılar; değişen tek şey hangi sinyalin exit kodunu taşımaya
+    YETERİNCE KARARLI olduğudur.
+
+      HARD (exit 1)     : honesty_ratio — 5 soruda deterministik bir kontroldür
+                          (agent "bilmiyorum" diyebildi mi?), judge puanı değil.
+      ADVISORY (exit 0) : faithfulness / context_precision — n=5 + TEK KOŞUM judge
+                          puanıdır. Ölçüldü: aynı korpusta tek koşum
+                          context_precision 0.630, runs=3 medyanı 0.739 verdi.
+                          Bu varyans hard-fail TAŞIYAMAZ: her push'ta rastgele kırmızı
+                          yanan bir gate, KURT-ÇOCUK etkisiyle korumanın kendisini
+                          öldürür (kimse bakmaz olur).
+
+    Otoriter hard gate = NIGHTLY TAM koşu (36 soru, runs=3) — judge metrikleri orada
+    hard'tır, çünkü orada varyans yeterince bastırılmıştır.
+    (Altyapı/evidence/model-zemini zaten exit 2'dir ve smoke'ta da HARD kalır.)
+    """
     # --- altyapı hataları (exit 2): eval güvenilir çalışmadı ---
     if result.get("status") != "complete":
         return GateOutcome(2, f"eval tamamlanmadı (status={result.get('status')}) — rate-limit/kap?")
@@ -153,15 +171,30 @@ def gate_decision(result: dict, thr: GateThresholds) -> GateOutcome:
     ov = result["ragas"]["overall"]
     h = result.get("honesty", {})
     hon_ratio = round(h.get("pass", 0) / h["total"], 4) if h.get("total") else 0.0
+    # (ad, değer, eşik, HARD mı?) — smoke'ta judge-metrikleri advisory'ye düşer.
     raw = [
-        ("faithfulness", float(ov.get("faithfulness", 0.0)), thr.faithfulness_min),
-        ("context_precision", float(ov.get("context_precision", 0.0)), thr.context_precision_min),
-        ("honesty_ratio", hon_ratio, thr.honesty_min_ratio),
+        ("faithfulness", float(ov.get("faithfulness", 0.0)), thr.faithfulness_min, not smoke),
+        ("context_precision", float(ov.get("context_precision", 0.0)), thr.context_precision_min, not smoke),
+        ("honesty_ratio", hon_ratio, thr.honesty_min_ratio, True),   # her modda HARD
     ]
-    checks = [(n, v, t, v >= t) for (n, v, t) in raw]
-    failed = [c for c in checks if not c[3]]
-    if failed:
-        return GateOutcome(1, "eşik ALTINDA: " + ", ".join(c[0] for c in failed), checks)
+    checks = [(n, v, t, v >= t, hard) for (n, v, t, hard) in raw]
+
+    hard_failed = [c for c in checks if not c[3] and c[4]]
+    advisory_failed = [c for c in checks if not c[3] and not c[4]]
+
+    if hard_failed:
+        reason = "eşik ALTINDA: " + ", ".join(c[0] for c in hard_failed)
+        if advisory_failed:
+            reason += " (ayrıca advisory: " + ", ".join(c[0] for c in advisory_failed) + ")"
+        return GateOutcome(1, reason, checks)
+    if advisory_failed:
+        # Exit'e ETKİ ETMEZ ama SUSTURULMAZ — nightly tam koşuda hard'tır.
+        return GateOutcome(0, (
+            "hard eşikler geçildi · ADVISORY eşik altı: "
+            + ", ".join(c[0] for c in advisory_failed)
+            + " — smoke'ta (n=5, tek koşum) judge varyansı hard-fail taşıyamaz; "
+              "otoriter karar nightly TAM koşudadır (36, runs=3)."
+        ), checks)
     return GateOutcome(0, "tüm eşikler geçildi", checks)
 
 
@@ -176,7 +209,12 @@ def format_gate(outcome: GateOutcome, result: dict, thr: GateThresholds, *, smok
          f"iterative_scan={m.get('iterative_scan','-')}",
          f"mod={'smoke(5)' if smoke else 'full(36)'} · judge={result.get('judge','-')} · {outcome.reason}"]
     if outcome.checks:
-        L.append("metrik              değer    eşik    sonuç")
-        for n, v, t, ok in outcome.checks:
-            L.append(f"  {n:18s}{v:<8.3f}{t:<8.3f}{'PASS' if ok else 'FAIL'}")
+        L.append("metrik              değer    eşik    sonuç      tür")
+        for n, v, t, ok, hard in outcome.checks:
+            sonuc = "PASS" if ok else ("FAIL" if hard else "ALTINDA")
+            tur = "HARD" if hard else "ADVISORY"   # advisory: exit'e etki etmez, GİZLENMEZ
+            L.append(f"  {n:18s}{v:<8.3f}{t:<8.3f}{sonuc:<11s}{tur}")
+        if smoke:
+            L.append("  ↳ smoke: judge metrikleri ADVISORY (n=5, tek koşum → varyans). "
+                     "Otoriter hard gate = nightly TAM koşu (36, runs=3).")
     return "\n".join(L)
