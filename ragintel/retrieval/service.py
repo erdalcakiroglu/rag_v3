@@ -184,7 +184,7 @@ class RetrievalService:
         # sorgu aynı modeli kullanmalı (aksi halde vektör uzayları ayrışır).
         _model = self.cfg.group("embedding").model or s.model
         self.embedder = embedder or OllamaEmbedder(
-            s.require_base_url(), model=_model, timeout=s.timeout)
+            s.require_base_url(), model=_model, timeout=s.timeout, api_key=s.api_key)
         self.store = store or PgRetrievalStore(db)
         self.retrieval_cfg = self.cfg.group("retrieval")
         self.tei_settings = TeiSettings()

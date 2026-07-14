@@ -186,6 +186,9 @@ class OllamaSettings(DotenvOnlySettings):
     )
 
     base_url: str = ""          # M-4: iç host koda gömülmez → .env zorunlu
+    # M-9: auth'lu Ollama ucu (H200 / Open WebUI proxy) → Bearer token. Boşsa başlık
+    # GÖNDERİLMEZ (auth'suz doğrudan Ollama ile geriye dönük uyumlu).
+    api_key: str = ""
     # M-4 PARÇA 1: model artık `embedding.model` (DB) otoritesinde. Bu alan yalnızca
     # bootstrap-fallback (DB/config erişilemezse). Boş bırakılması normaldir.
     model: str = ""
@@ -786,6 +789,18 @@ class AgentConfig(BaseModel):
                     "sürüm, o da yoksa koddaki varsayılan kullanılır. Buraya yazmak Promptlar "
                     "sekmesindeki sürümlemeyi BAYPAS eder — sürümlü yönetim tercih edilir.",
         json_schema_extra={"multiline": True},
+    )
+    # M-9: qwen3.5:35b bir "düşünen" (reasoning) modeldir.
+    reasoning_effort: Literal["none", "low", "medium", "high", "default"] = Field(
+        default="none",
+        description="Düşünen modellerde (ör. qwen3.5:35b) iç akıl yürütmenin derinliği. "
+                    "'none': düşünme KAPALI — ölçüldü: çağrı başına ~%40 daha hızlı ve ~%50 daha az "
+                    "token; cevabın kalitesini etkilemediği KANITLANMADI, karneyle izlenir. "
+                    "'default': modelin kendi davranışı (düşünme açık). "
+                    "NOT: agent cevabı `submit_answer` TOOL argümanlarıyla teslim eder, düz "
+                    "metinle değil — bu yüzden düşünme kapalıyken de cevap yolu bozulmaz. "
+                    "'default' dışındaki değerler LiteLLM `extra_body` ile geçirilir (openai "
+                    "sağlayıcısı bu parametreyi doğrudan kabul etmez).",
     )
     # FAZ 7: API girdi uzunluk sınırı (soru karakter üst sınırı).
     max_question_chars: int = Field(

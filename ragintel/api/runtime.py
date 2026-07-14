@@ -255,9 +255,10 @@ class RagRuntime:
     def health(self) -> dict:
         api_cfg = self.cfg.group("api")
         tei_url = TeiSettings().rerank_url
+        _ol = OllamaSettings()
         checks = {"db": self._check_db(),
-                  "ollama": self._check_http(OllamaSettings().base_url + "/api/tags",
-                                             api_cfg.health_timeout),
+                  "ollama": self._check_http(_ol.base_url + "/api/tags",
+                                             api_cfg.health_timeout, _ol.api_key),
                   # M-4: TEI OPSİYONEL — URL tanımsızsa "down" değil "disabled".
                   "tei": (self._check_http(tei_url.rstrip("/") + "/health", api_cfg.health_timeout)
                           if tei_url else "disabled"),
@@ -279,9 +280,12 @@ class RagRuntime:
             return f"down:{str(exc)[:40]}"
 
     @staticmethod
-    def _check_http(url: str, timeout: float = 8.0) -> str:
+    def _check_http(url: str, timeout: float = 8.0, api_key: str = "") -> str:
+        """M-9: auth'lu uç (H200/Open WebUI) anahtarsız istekte 401 döner — başlık
+        gönderilmezse sağlıklı sistem 'down' görünürdü."""
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         try:
-            httpx.get(url, timeout=timeout).raise_for_status()   # yavaş-ama-ayakta backend'e tolerans
+            httpx.get(url, timeout=timeout, headers=headers).raise_for_status()   # yavaş-ama-ayakta backend'e tolerans
             return "ok"
         except Exception:
             return "down"

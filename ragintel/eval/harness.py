@@ -115,7 +115,8 @@ def build_eval_app(agent_model: str | None = None):
     cfg = load_config(db_reader=make_db_reader(db))
     model = (agent_model or cfg.group("eval").agent_model
              or LiteLLMSettings().model or DEFAULT_AGENT_MODEL)
-    gateway = LiteLLMGateway(model=model, settings=LiteLLMSettings())
+    gateway = LiteLLMGateway(model=model, settings=LiteLLMSettings(),
+                             reasoning_effort=str(cfg.group("agent").reasoning_effort))
     service = RetrievalService(db=db, config=cfg)
     context_builder = ContextBuilder(db=db, config=cfg)
     registry = ToolRegistry(service)

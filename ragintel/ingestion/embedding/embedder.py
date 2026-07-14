@@ -22,13 +22,40 @@ def ollama_tag(model: str) -> str:
     return model.rsplit("/", 1)[-1]
 
 
+def ollama_wire_tag(model: str) -> str:
+    """M-9: İSTEĞE giden etiket (`BAAI/bge-m3` → `bge-m3:latest`).
+
+    KİMLİK DAMGASINDAN AYRIDIR — bilerek. Open WebUI (H200 proxy'si) model adını kendi
+    kaydına karşı BİREBİR doğrular: `bge-m3` → 400 "not found", `bge-m3:latest` → 200.
+    (Doğrudan Ollama etiketsiz adı çözer; katı olan proxy katmanıdır.)
+
+    Etiket bir SUNUM detayıdır, model KİMLİĞİ değildir: damga (`model_stamp`) bundan
+    ETKİLENMEZ. Aksi hâlde damga `bge-m3:latest@ollama` olur ve korpustaki 1478 vektörle
+    uyum kırılırdı (`assert_corpus_model` patlar, gereksiz reprocess dayatılırdı).
+    Model adında etiket zaten varsa (ör. `qwen3.5:35b`) dokunulmaz.
+    """
+    tag = ollama_tag(model)
+    return tag if ":" in tag else f"{tag}:latest"
+
+
 def model_stamp(model: str) -> str:
     """`core_vectors.model_name` köken damgası: `bge-m3@ollama`.
 
     Damga ETİKETTEN türer (repo id'den değil) — böylece M-4 öncesi yazılmış korpusla
     birebir uyumludur ve backfill gerekmez.
+
+    M-9: sondaki `:latest` damgaya GİRMEZ. Gerekçe: `:latest` bir SÜRÜM değil,
+    "varsayılan etiket" takma adıdır — model kimliğinin parçası değildir. Aksi hâlde
+    config'e `bge-m3:latest` yazan biri damgayı `bge-m3:latest@ollama`'ya kaydırır ve
+    korpustaki 1478 vektör sessizce "yabancı model" sayılır (assert_corpus_model patlar,
+    gereksiz reprocess dayatılır).
+    DİKKAT: `:latest` DIŞINDAKİ etiketler damgada KALIR (`bge-m3:v2` GERÇEKTEN başka bir
+    modeldir; onu `bge-m3` ile aynı damgaya indirmek iki farklı vektör uzayını karıştırırdı).
     """
-    return f"{ollama_tag(model)}@ollama"
+    tag = ollama_tag(model)
+    if tag.endswith(":latest"):
+        tag = tag[: -len(":latest")]
+    return f"{tag}@ollama"
 
 
 class EmbeddingBackendError(RuntimeError):
@@ -63,21 +90,25 @@ class OllamaEmbedder:
     """
 
     def __init__(self, base_url: str, *, model: str = "BAAI/bge-m3",
-                 timeout: float = 30.0, client=None):
+                 timeout: float = 30.0, client=None, api_key: str = ""):
         if not base_url:
             raise EmbeddingBackendError("Ollama base_url tanımsız (RAGINTEL_OLLAMA_BASE_URL)")
         self.base_url = base_url.rstrip("/")
         self.hf_model = model
-        self.model = ollama_tag(model)        # /api/embed'e giden etiket
-        self.model_name = model_stamp(model)  # core_vectors.model_name damgası
+        self.model = ollama_wire_tag(model)   # M-9: /api/embed'e giden etiket (`bge-m3:latest`)
+        self.model_name = model_stamp(model)  # core_vectors.model_name damgası (`bge-m3@ollama`)
         self.timeout = timeout
+        # M-9: auth'lu uç (H200/Open WebUI) Bearer ister; auth'suz doğrudan Ollama'da
+        # anahtar BOŞ kalır ve başlık hiç gönderilmez (geriye dönük uyum).
+        self.api_key = api_key
         self._client = client
 
     @property
     def client(self):
         if self._client is None:
             import httpx
-            self._client = httpx.Client(timeout=self.timeout)
+            headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+            self._client = httpx.Client(timeout=self.timeout, headers=headers)
         return self._client
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:

@@ -93,13 +93,56 @@ class LLMGateway(Protocol):
     def complete(self, *, messages: list[dict], tools: list[dict]) -> LLMResponse: ...
 
 
+class EmptyReasoningResponse(RuntimeError):
+    """M-9: model YALNIZCA düşündü — ne metin ne araç çağrısı üretti (sessiz boş cevap)."""
+
+
+def _reasoning_of(message) -> str:
+    for attr in ("reasoning", "reasoning_content", "thinking"):
+        val = getattr(message, attr, None)
+        if val:
+            return str(val)
+    return ""
+
+
+def _assert_not_silently_empty(message, tool_calls: list, *, model: str) -> None:
+    """M-9 REGRESYON KİLİDİ: düşünen model SESSİZCE boş cevap dönemez.
+
+    KAPSAM ÖNEMLİ — "content boş + reasoning dolu" TEK BAŞINA hata DEĞİLDİR:
+    agent, cevabı `submit_answer` TOOL argümanlarıyla teslim eder (prompt: "düz metin
+    yazma"). Yani NORMAL akışta content HER TURDA boştur ve reasoning doludur; bu kural
+    öylece yazılsaydı sağlıklı sistemde her turda ateşlenirdi (ölçüldü: arama ve nihai
+    cevap turlarının İKİSİNDE de tool-call 5/5, content 0 karakter).
+
+    Gerçek arıza şudur: model ne ARAÇ ÇAĞIRDI ne de METİN üretti — sadece düşündü.
+    O zaman yukarıdaki katman elinde hiçbir şey olmadan devam eder ve kullanıcıya
+    sessizce boş/uydurma cevap gider. Bunu AÇIK hataya çeviriyoruz.
+    """
+    if tool_calls or (getattr(message, "content", None) or "").strip():
+        return
+    reasoning = _reasoning_of(message)
+    if not reasoning:
+        return          # ne düşünce ne çıktı → başka bir arıza (yukarısı ele alır)
+    _LOG.error("llm_empty_answer_reasoning_only", model=model,
+               reasoning_chars=len(reasoning), reasoning_head=reasoning[:180])
+    raise EmptyReasoningResponse(
+        f"Model ({model}) yalnızca düşündü: araç çağrısı YOK, metin YOK, "
+        f"reasoning {len(reasoning)} karakter. Token bütçesi düşünmeye harcanmış olabilir "
+        f"(agent.max_tokens) ya da `agent.reasoning_effort='none'` gerekiyor. "
+        f"Sessiz boş cevap yerine AÇIK hata (M-9)."
+    )
+
+
 class LiteLLMGateway:
     """Gerçek LiteLLM → Ollama gateway. Model adı config-first (`agent.model`);
     bağlantı LiteLLMSettings'ten (RAGINTEL_LLM_*)."""
 
-    def __init__(self, *, model: str, settings: LiteLLMSettings | None = None):
+    def __init__(self, *, model: str, settings: LiteLLMSettings | None = None,
+                 reasoning_effort: str = "default"):
         self.model = model
         self.settings = settings or LiteLLMSettings()
+        # M-9: düşünen model kontrolü (config-first: `agent.reasoning_effort`).
+        self.reasoning_effort = reasoning_effort
 
     def complete(self, *, messages: list[dict], tools: list[dict]) -> LLMResponse:
         import litellm
@@ -111,6 +154,13 @@ class LiteLLMGateway:
             "api_base": self.settings.api_base,
             "timeout": self.settings.request_timeout,
         }
+        # M-9: düşünen modelde (qwen3.5:35b) akıl yürütmeyi kıs/kapat.
+        # `extra_body` ŞART: LiteLLM'in `openai` sağlayıcısı `reasoning_effort`'ü
+        # doğrudan REDDEDER (UnsupportedParamsError); extra_body ise gövdeye
+        # olduğu gibi geçer. (`think:false` ve `chat_template_kwargs` uçta YOK SAYILIYOR
+        # — ölçüldü; işe yarayan tek yol budur.)
+        if self.reasoning_effort and self.reasoning_effort != "default":
+            kwargs["extra_body"] = {"reasoning_effort": self.reasoning_effort}
         # Auth'lu OpenAI-compat uç (ör. Open WebUI/H200 /ollama/v1) → Bearer token.
         if self.settings.api_key:
             kwargs["api_key"] = self.settings.api_key
@@ -138,6 +188,8 @@ class LiteLLMGateway:
             raw_args = tc.function.arguments or "{}"
             args = raw_args if isinstance(raw_args, dict) else json.loads(raw_args)
             tool_calls.append(ToolCall(id=tc.id, name=tc.function.name, arguments=args))
+
+        _assert_not_silently_empty(message, tool_calls, model=self.model)
 
         usage = getattr(resp, "usage", None)
         prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)

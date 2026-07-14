@@ -37,7 +37,11 @@ def build_default_runtime() -> RagRuntime:
     model = os.environ.get("RAGINTEL_AGENT_MODEL") or llm.model or cfg.group("agent").model
     api_base = os.environ.get("RAGINTEL_LLM_API_BASE") or llm.api_base
     req_timeout = float(os.environ.get("RAGINTEL_LLM_REQUEST_TIMEOUT") or llm.request_timeout)
-    gateway = LiteLLMGateway(model=model, settings=LiteLLMSettings(api_base=api_base, request_timeout=req_timeout))
+    gateway = LiteLLMGateway(
+        model=model,
+        settings=LiteLLMSettings(api_base=api_base, request_timeout=req_timeout),
+        # M-9: düşünen model kontrolü config-first (agent.reasoning_effort).
+        reasoning_effort=str(cfg.group("agent").reasoning_effort))
     cm = PostgresSaver.from_conn_string(DbSettings().conninfo())
     saver = cm.__enter__()
     rt = RagRuntime(db=db, config=cfg, gateway=gateway, checkpointer=saver)

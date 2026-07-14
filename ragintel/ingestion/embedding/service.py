@@ -73,7 +73,7 @@ class EmbeddingService:
         # yalnızca bootstrap-fallback (DB/config erişilemezse).
         model = emb.model or s.model
         self.embedder = embedder or OllamaEmbedder(
-            s.require_base_url(), model=model, timeout=s.timeout)
+            s.require_base_url(), model=model, timeout=s.timeout, api_key=s.api_key)
         self.retries = s.retries if retries is None else retries
         self.backoff_base = s.backoff_base if backoff_base is None else backoff_base
         self.sleep = sleep

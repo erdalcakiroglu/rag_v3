@@ -127,7 +127,8 @@ class Judge:
 class JudgeEmbedder:
     def __init__(self):
         s = OllamaSettings()
-        self._emb = OllamaEmbedder(s.base_url, model=s.model, timeout=s.timeout)
+        self._emb = OllamaEmbedder(s.base_url, model=s.model, timeout=s.timeout,
+                                   api_key=s.api_key)   # M-9: auth'lu H200 ucu
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         return self._emb.embed_batch(texts)
