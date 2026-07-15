@@ -116,7 +116,8 @@ def build_eval_app(agent_model: str | None = None):
     model = (agent_model or cfg.group("eval").agent_model
              or LiteLLMSettings().model or DEFAULT_AGENT_MODEL)
     gateway = LiteLLMGateway(model=model, settings=LiteLLMSettings(),
-                             reasoning_effort=str(cfg.group("agent").reasoning_effort))
+                             reasoning_effort=str(cfg.group("agent").reasoning_effort),
+                             temperature=float(cfg.group("agent").temperature))
     service = RetrievalService(db=db, config=cfg)
     context_builder = ContextBuilder(db=db, config=cfg)
     registry = ToolRegistry(service)
@@ -401,6 +402,9 @@ def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
         complete = paused is None and done_answers >= len(plan) and len(scored) == len(ans_rows)
         return {
             "judge": judge.label, "judge_model": judge.model, "agent_model": model,
+            # M-9: sıcaklık MÜHÜR ZEMİNİDİR — zemini belirleyen parametre mühürde görünür,
+            # gate model-zemini kontrolü de bunu izler (sapma → exit 2).
+            "agent_temperature": float(cfg.group("agent").temperature),
             "golden": version, "mode": "report", "dev_mode": True, "runs": runs,
             "agent_runs": agent_runs, "limit": limit,
             "status": "complete" if complete else "paused",
@@ -435,7 +439,10 @@ def format_report(result: dict) -> str:
                         f"{pr.get('scored')}/{pr.get('answerable')} skor → tekrar koşunca devam eder")
     L.append(status_line)
     L.append(f"golden={result['golden']} · agent={result['agent_model']} · judge={result['judge_model']} "
-             f"· runs={result['runs']} (medyan) · süre={result['elapsed_sec']}s"
+             f"· temp={result.get('agent_temperature', '?')} "
+             f"· runs={result['runs']} (medyan)"
+             + (f" · agent_runs={result['agent_runs']}" if result.get('agent_runs', 1) > 1 else "")
+             + f" · süre={result['elapsed_sec']}s"
              + (f" · DRY-RUN limit={result['limit']}" if result.get("limit") else ""))
     ds = result["dataset"]
     L.append(f"dataset: {ds['answerable_run']} answerable + {ds['unanswerable_run']} unanswerable"

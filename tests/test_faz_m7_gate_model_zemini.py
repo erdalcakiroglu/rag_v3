@@ -23,11 +23,14 @@ class _Cfg:
     """Minimal EffectiveConfig ikamesi (group() döndüren)."""
 
     def __init__(self, agent="deepseek-v4-pro", judge="llama-3.3-70b-versatile",
-                 iterative="relaxed_order"):
+                 iterative="relaxed_order", temperature=0.0, ground_temperature=0.0):
         from types import SimpleNamespace
         self._g = {
-            "eval": SimpleNamespace(agent_model=agent, judge_model=judge),
+            # M-9: eval.agent_temperature = karne zemini; agent.temperature = koşum değeri.
+            "eval": SimpleNamespace(agent_model=agent, judge_model=judge,
+                                    agent_temperature=ground_temperature),
             "retrieval": SimpleNamespace(hnsw_iterative_scan=iterative),
+            "agent": SimpleNamespace(temperature=temperature),
         }
 
     def group(self, name):
@@ -65,6 +68,24 @@ def test_judge_sapmasi_da_yakalanir():
     out = model_ground_precondition(_Cfg(), judge_model="baska-judge")
     assert out is not None and out.code == 2
     assert "judge:" in out.reason
+
+
+def test_sicaklik_sapmasi_exit2_ile_durdurulur():
+    """M-9: karne deterministik zeminde (0.0) mühürlendi; koşum sıcaklığı yükseltilirse
+    fallback varyansı geri gelir ve skorlar kıyaslanamaz → exit 2 (ALTYAPI).
+
+    Bu, sıcaklığın 'sessiz varsayılan' olarak karneyi bozmasını engeller — tam da
+    başlangıçta yaşanan sınıf (gateway sıcaklığı hiç set etmiyordu, uç 0.8'e düşüyordu)."""
+    out = model_ground_precondition(_Cfg(temperature=0.7, ground_temperature=0.0))
+    assert out is not None and out.code == 2
+    assert "temperature" in out.reason
+    assert "0.7" in out.reason and "0.0" in out.reason
+
+
+def test_ayni_sicaklik_zemininde_gecer():
+    """POZİTİF ÖN-KOŞUL: koşum ve karne sıcaklığı eşitken sapma YOK (deterministik
+    zeminde mühürlenmiş karne, aynı zeminde koşan gate ile uyumlu)."""
+    assert model_ground_precondition(_Cfg(temperature=0.0, ground_temperature=0.0)) is None
 
 
 def test_bilincli_sapma_allow_drift_ile_mumkun():

@@ -46,10 +46,14 @@ class _FakeCfg:
 
     def group(self, name):
         if name == "eval":
+            # M-9: agent_temperature = karne zemini (agent.temperature ile eşleşmeli).
             return SimpleNamespace(agent_model="deepseek-v4-pro",
-                                   judge_model="llama-3.3-70b-versatile")
+                                   judge_model="llama-3.3-70b-versatile",
+                                   agent_temperature=0.0)
         if name == "retrieval":
             return SimpleNamespace(hnsw_iterative_scan="relaxed_order")
+        if name == "agent":
+            return SimpleNamespace(temperature=0.0)
         return SimpleNamespace()
 
 

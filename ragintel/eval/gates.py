@@ -96,6 +96,8 @@ def effective_models(cfg, *, agent_model: str | None = None,
         "judge": judge_model or ev.judge_model or DEFAULT_JUDGE_MODEL,
         # Ölçüm zemininin parçası: filtreli-ANN semantiği retrieval'ı değiştirir.
         "iterative_scan": str(cfg.group("retrieval").hnsw_iterative_scan),
+        # M-9: sıcaklık ölçüm zeminidir — fallback varyansının kök kaynağıydı.
+        "temperature": float(cfg.group("agent").temperature),
     }
 
 
@@ -121,6 +123,10 @@ def model_ground_precondition(cfg, *, agent_model: str | None = None,
         sapan.append(f"agent: karne='{ev.agent_model}' ≠ koşum='{eff['agent']}'")
     if ev.judge_model and eff["judge"] != ev.judge_model:
         sapan.append(f"judge: karne='{ev.judge_model}' ≠ koşum='{eff['judge']}'")
+    # M-9: sıcaklık sapması da zemin kaymasıdır — deterministik zeminde mühürlenen karne,
+    # sıcaklık yükseltilmiş bir koşumla kıyaslanamaz (fallback varyansı geri gelir).
+    if eff["temperature"] != float(ev.agent_temperature):
+        sapan.append(f"temperature: karne={ev.agent_temperature} ≠ koşum={eff['temperature']}")
     if not sapan or allow_drift:
         return None
     return GateOutcome(2, (
@@ -206,7 +212,7 @@ def format_gate(outcome: GateOutcome, result: dict, thr: GateThresholds, *, smok
          # (Bu satır olmadığı için `.env`'de kalmış bir model override'ı sessizce
          #  karneyle kıyaslanamaz sayılar üretmişti — M-7.)
          f"zemin: agent={m.get('agent','-')} · judge={m.get('judge','-')} · "
-         f"iterative_scan={m.get('iterative_scan','-')}",
+         f"temp={m.get('temperature','-')} · iterative_scan={m.get('iterative_scan','-')}",
          f"mod={'smoke(5)' if smoke else 'full(36)'} · judge={result.get('judge','-')} · {outcome.reason}"]
     if outcome.checks:
         L.append("metrik              değer    eşik    sonuç      tür")

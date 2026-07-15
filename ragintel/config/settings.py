@@ -802,6 +802,18 @@ class AgentConfig(BaseModel):
                     "'default' dışındaki değerler LiteLLM `extra_body` ile geçirilir (openai "
                     "sağlayıcısı bu parametreyi doğrudan kabul etmez).",
     )
+    # M-9: örnekleme sıcaklığı. Ölçüldü — fallback varyansının KÖK KAYNAĞI buydu.
+    temperature: float = Field(
+        default=0.0, ge=0.0, le=2.0,
+        description="LLM örnekleme sıcaklığı. 0.0 = deterministik/tekrarlanabilir; "
+                    "yükseltmek karne zeminini değiştirir ve fallback varyansı geri getirir. "
+                    "Ölçüldü: sıcaklık set edilmeyince uç Ollama varsayılanına (0.8) düşüyordu; "
+                    "aynı soru %0–%60 arası fallback veriyordu (mühür imkânsız). 0.0'da her soru "
+                    "5/5 aynı sonuç. Grounded soru-cevapta 'yaratıcılık' değersiz, "
+                    "tekrarlanabilirlik ise mühür şartı. NOT: retry turu determinizmden zarar "
+                    "GÖRMEZ — girdi farklıdır (geri bildirim mesajı eklenir), model aynı çıktıyı "
+                    "üretmez; çeşitlilik gerekirse o hedefli bir deney olur, global sıcaklık değil.",
+    )
     # FAZ 7: API girdi uzunluk sınırı (soru karakter üst sınırı).
     max_question_chars: int = Field(
         default=2000, ge=1, le=100000,
@@ -989,6 +1001,17 @@ class EvalConfig(BaseModel):
         default="llama-3.3-70b-versatile",
         description="Cevapları puanlayan hakem model (ölçen taraf). Agent'tan güçlü olmalı; "
                     "değiştirmek geçmiş karnelerle kıyası bozar.",
+    )
+    # M-9: karnenin MÜHÜRLENDİĞİ sıcaklık zemini (agent.temperature'ın ölçüm-zamanı kaydı).
+    # agent.temperature = ÜRETİMDE kullanılan; eval.agent_temperature = karnenin zemini.
+    # İkisi ayrışırsa (biri sıcaklığı değiştirip gate koşarsa) skorlar kıyaslanamaz —
+    # gate model-zemini kontrolü bunu yakalar (sapma → exit 2). agent_model/eval.agent_model
+    # ayrımıyla BİREBİR simetrik.
+    agent_temperature: float = Field(
+        default=0.0, ge=0.0, le=2.0,
+        description="Karnenin mühürlendiği örnekleme sıcaklığı zemini. Gate koşumundaki "
+                    "agent.temperature bundan saparsa ölçüm karneyle kıyaslanamaz → exit 2 "
+                    "(altyapı). Mühür sırasında agent.temperature ile aynı değere set edilir.",
     )
 
 

@@ -138,11 +138,14 @@ class LiteLLMGateway:
     bağlantı LiteLLMSettings'ten (RAGINTEL_LLM_*)."""
 
     def __init__(self, *, model: str, settings: LiteLLMSettings | None = None,
-                 reasoning_effort: str = "default"):
+                 reasoning_effort: str = "default", temperature: float = 0.0):
         self.model = model
         self.settings = settings or LiteLLMSettings()
         # M-9: düşünen model kontrolü (config-first: `agent.reasoning_effort`).
         self.reasoning_effort = reasoning_effort
+        # M-9: örnekleme sıcaklığı (config-first: `agent.temperature`). 0.0 = deterministik.
+        # Ölçüldü: set edilmeyince uç 0.8'e düşüyor, fallback varyansının kök kaynağı buydu.
+        self.temperature = temperature
 
     def complete(self, *, messages: list[dict], tools: list[dict]) -> LLMResponse:
         import litellm
@@ -153,6 +156,10 @@ class LiteLLMGateway:
             "tools": tools or None,
             "api_base": self.settings.api_base,
             "timeout": self.settings.request_timeout,
+            # M-9: sıcaklık AÇIKÇA geçirilir — set edilmezse uç kendi varsayılanına (0.8)
+            # düşer ve karne zemini sessizce kayar. Config yalan söylemez: davranışı
+            # belirleyen parametre çağrıda görünür.
+            "temperature": self.temperature,
         }
         # M-9: düşünen modelde (qwen3.5:35b) akıl yürütmeyi kıs/kapat.
         # `extra_body` ŞART: LiteLLM'in `openai` sağlayıcısı `reasoning_effort`'ü

@@ -41,7 +41,9 @@ def build_default_runtime() -> RagRuntime:
         model=model,
         settings=LiteLLMSettings(api_base=api_base, request_timeout=req_timeout),
         # M-9: düşünen model kontrolü config-first (agent.reasoning_effort).
-        reasoning_effort=str(cfg.group("agent").reasoning_effort))
+        reasoning_effort=str(cfg.group("agent").reasoning_effort),
+        # M-9: örnekleme sıcaklığı config-first (agent.temperature); 0.0 = deterministik.
+        temperature=float(cfg.group("agent").temperature))
     cm = PostgresSaver.from_conn_string(DbSettings().conninfo())
     saver = cm.__enter__()
     rt = RagRuntime(db=db, config=cfg, gateway=gateway, checkpointer=saver)
