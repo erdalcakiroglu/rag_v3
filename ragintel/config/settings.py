@@ -847,18 +847,28 @@ class EvalGatesConfig(BaseModel):
     honesty_min_ratio: float = Field(
         default=0.76, ge=0.0, le=1.0,
         description="Dürüstlük testi (cevabı olmayan soruya 'bilmiyorum' diyebilme) asgari geçme "
-                    "oranı. CI eval bu oranın altındaysa BAŞARISIZ olur. Karne: 4/5 = 0.80. "
+                    "oranı. CI eval bu oranın altındaysa BAŞARISIZ olur. M-9 karne: 5/5 = 1.00. "
                     "Metrik AYRIKTIR (5 soru): 0.76 eşiği hâlâ 4/5 şart koşar, 3/5 (0.60) düşer.",
     )
     faithfulness_min: float = Field(
-        default=0.72, ge=0.0, le=1.0,
+        default=0.87, ge=0.0, le=1.0,
         description="Cevabın kaynağa sadakati için asgari eval skoru. Altındaysa CI gate düşer. "
-                    "Karne: 0.761.",
+                    "M-9 karne (ANSWERED-ONLY): 0.915 → eşik 0.87 (×0.95). Fallback'ler HARİÇ "
+                    "ölçülür; fallback yapısal olarak 'sadıktır' ve şişirir.",
     )
     context_precision_min: float = Field(
-        default=0.70, ge=0.0, le=1.0,
+        default=0.85, ge=0.0, le=1.0,
         description="Getirilen bağlamın isabeti için asgari eval skoru (ilgisiz chunk oranı). "
-                    "Altındaysa CI gate düşer. Karne: 0.739.",
+                    "Altındaysa CI gate düşer. M-9 karne (ANSWERED-ONLY): 0.895 → eşik 0.85 (×0.95).",
+    )
+    # M-9: sapkın teşviki kapatan HARD kontrol. Gate ESKİDEN şişkin 'overall'ı okuyordu →
+    # sistem daha çok reddettikçe faithfulness YÜKSELİYOR, gate KOLAYLAŞIYORDU (gate'in
+    # varlık amacının tersi). Fallback oranı artık ayrı bir HARD tavandır.
+    fallback_rate_max: float = Field(
+        default=0.25, ge=0.0, le=1.0,
+        description="Cevaplanabilir soruya 'bulunamadı' (fallback) oranının ÜST sınırı. "
+                    "M-9 karne: 5/30 = 0.167 → tavan 0.25 (~+0.08 tolerans). Aşılırsa CI gate "
+                    "düşer: 'reddederek kaliteli görünme' sapkın teşvikini kapatır.",
     )
 
 

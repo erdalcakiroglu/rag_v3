@@ -13,8 +13,9 @@ from dataclasses import dataclass, field
 @dataclass
 class GateThresholds:
     honesty_min_ratio: float = 0.80
-    faithfulness_min: float = 0.70
-    context_precision_min: float = 0.75
+    faithfulness_min: float = 0.87
+    context_precision_min: float = 0.85
+    fallback_rate_max: float = 0.25   # M-9: fallback tavanı (sapkın teşviki kapatır)
 
 
 @dataclass
@@ -30,8 +31,9 @@ def thresholds_from_config(cfg) -> GateThresholds:
         g = cfg.group("eval_gates")
         return GateThresholds(
             honesty_min_ratio=float(getattr(g, "honesty_min_ratio", 0.80)),
-            faithfulness_min=float(getattr(g, "faithfulness_min", 0.70)),
-            context_precision_min=float(getattr(g, "context_precision_min", 0.75)),
+            faithfulness_min=float(getattr(g, "faithfulness_min", 0.87)),
+            context_precision_min=float(getattr(g, "context_precision_min", 0.85)),
+            fallback_rate_max=float(getattr(g, "fallback_rate_max", 0.25)),
         )
     except Exception:
         return GateThresholds()
@@ -174,16 +176,24 @@ def gate_decision(result: dict, thr: GateThresholds, *, smoke: bool = False) -> 
         return GateOutcome(2, f"tüm sorular hata verdi ({len(ds.get('errors', []))})")
 
     # --- eşik kıyası (exit 0/1) ---
-    ov = result["ragas"]["overall"]
+    # M-9: KARAR ZEMİNİ = answered_only. Şişkin 'overall' okunursa sistem daha çok
+    # reddettikçe faithfulness YÜKSELİR ve gate KOLAYLAŞIR (sapkın teşvik). Eşikler
+    # answered_only karneye kalibrelidir; eski karneler için answered_only yoksa overall'a düş.
+    rag = result["ragas"]
+    ov = (rag.get("answered_only") or {}).get("overall") or rag["overall"]
+    fb = rag.get("fallback") or {}
+    fb_rate = float(fb.get("rate", 0.0))
     h = result.get("honesty", {})
     hon_ratio = round(h.get("pass", 0) / h["total"], 4) if h.get("total") else 0.0
-    # (ad, değer, eşik, HARD mı?) — smoke'ta judge-metrikleri advisory'ye düşer.
+    # (ad, değer, eşik, ok-yönü, HARD mı?) — smoke'ta judge-metrikleri advisory'ye düşer.
+    #   fallback_rate: DÜŞÜK iyi (v <= t). honesty ve fallback her modda HARD (deterministik).
     raw = [
-        ("faithfulness", float(ov.get("faithfulness", 0.0)), thr.faithfulness_min, not smoke),
-        ("context_precision", float(ov.get("context_precision", 0.0)), thr.context_precision_min, not smoke),
-        ("honesty_ratio", hon_ratio, thr.honesty_min_ratio, True),   # her modda HARD
+        ("faithfulness", float(ov.get("faithfulness", 0.0)), thr.faithfulness_min, "min", not smoke),
+        ("context_precision", float(ov.get("context_precision", 0.0)), thr.context_precision_min, "min", not smoke),
+        ("honesty_ratio", hon_ratio, thr.honesty_min_ratio, "min", True),   # her modda HARD
+        ("fallback_rate", fb_rate, thr.fallback_rate_max, "max", True),      # her modda HARD
     ]
-    checks = [(n, v, t, v >= t, hard) for (n, v, t, hard) in raw]
+    checks = [(n, v, t, (v >= t if yon == "min" else v <= t), hard) for (n, v, t, yon, hard) in raw]
 
     hard_failed = [c for c in checks if not c[3] and c[4]]
     advisory_failed = [c for c in checks if not c[3] and not c[4]]
