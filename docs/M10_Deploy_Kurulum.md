@@ -37,10 +37,17 @@ Bu, §5'teki test planıyla **ölçülerek** karara bağlanır — tahminle değ
 | `docker-compose.h200.yml` → `environment:` | **mimari/dağıtım sabitleri**: doğrudan Ollama (`localhost:11434/v1`), host-network | Repoda **dokümante** olmalı: "hangi mimariyle koşuyoruz" kod incelemesinde görünsün |
 | `.env.h200` (repoya girmez) | **sırlar + makineye özgü bağlantı**: `RAGINTEL_DB_*`, Langfuse, API token | Makineden makineye değişir; parolayla aynı dosyada durması doğaldır |
 
-**DB neden compose'da DEĞİL:** compose'da `environment:` her zaman `env_file:`'ı
-**ezer**. Repoda sabitlenmiş bir `RAGINTEL_DB_HOST: 192.168.36.15`, adres
-`10.50.130.55`'e taşındığında `.env.h200`'deki doğru değeri **sessizce** eskiye
-döndürürdü. Bağlantı bilgisi repoda sabitlenmez.
+**DB neden compose'da DEĞİL:** iki katmanlı gerekçe.
+
+1. **Doğru adres, nereden baktığınıza bağlı.** Dev makinesi ile H200 farklı
+   segmentte ve **aynı** veritabanını **farklı adresten** görüyor (dev↔H200
+   firewall notu: [RAG_v2_Proje_Dokumani.md](RAG_v2_Proje_Dokumani.md)). Repoda
+   tek bir sabit, taraflardan birini zorunlu olarak yanıltır.
+2. **Sabitlenirse sessizce ezer.** compose'da `environment:` her zaman
+   `env_file:`'ı yener — yani repodaki değer, makinedeki doğru değeri gürültüsüzce
+   geçersiz kılar.
+
+Bağlantı bilgisi makinenin bilgisidir → `.env.h200`.
 
 ### Bu değerler konteynere NASIL ulaşıyor (M-10/0'da düzeltildi)
 
@@ -49,7 +56,7 @@ os.environ kasıtlı olarak zincir dışıydı (M-4 PARÇA 3: bayat host env `.e
 İmajda `.env` yoktur ve **olmamalıdır** → compose'un geçirdiği hiçbir değer görülmüyordu:
 
 ```
-konteynerde:  os.getenv('RAGINTEL_DB_HOST') -> '10.50.130.55'
+konteynerde:  os.getenv('RAGINTEL_DB_HOST') -> '<compose'un verdiği adres>'
               DbSettings().host             -> ''          ← arıza buydu
 ```
 

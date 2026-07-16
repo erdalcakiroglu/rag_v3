@@ -136,10 +136,14 @@ def test_dockerfile_yerel_tokenizer_SOZLESMESI():
 
 
 # ------------------------------------------------------------- compose / deploy
-def test_compose_MAKINEYE_OZGU_DB_degeri_TASIMAZ():
-    """compose'da `environment:` her zaman `env_file:`'ı EZER. Buraya yazılan bir
-    RAGINTEL_DB_*, `.env.h200`'deki canlı değeri sessizce eskiye döndürür —
-    adres 192.168.36.15 → 10.50.130.55 taşınırken tam da bu yakalandı."""
+def test_compose_ORTAMA_BAGLI_DB_degeri_TASIMAZ():
+    """compose'da `environment:` her zaman `env_file:`'ı EZER → buraya yazılan bir
+    RAGINTEL_DB_*, `.env.h200`'deki doğru değeri sessizce ezer.
+
+    Ve DB adresi repoda sabitlenemez: aynı veritabanını dev makinesi ile H200
+    FARKLI adresten görüyor (ayrı segment). "Doğru değer" nereden baktığına bağlı
+    olduğu için tek bir sabit zorunlu olarak birini yanıltır.
+    """
     for satir in (KOK / "docker-compose.h200.yml").read_text(encoding="utf-8").splitlines():
         s = satir.strip()
         if not s or s.startswith("#"):

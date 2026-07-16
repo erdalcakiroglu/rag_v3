@@ -9,8 +9,8 @@
 #     taşınma sorunu ÇÖZER; hâlâ kırıksa suçlu Ollama/model (bkz.
 #     scripts/ollama_dogrudan_smoke.py — kayıtlı istek ×20).
 #
-# network_mode: host → Ollama (11434) ve TEI (8085) localhost'tan erişilir;
-# DB ise ağdaki 192.168.36.15'te.
+# network_mode: host → Ollama (11434) localhost'tan erişilir; DB ise ağdaki ayrı
+# bir sunucuda — adresi `.env.h200`'den gelir (bkz. `environment:` üstündeki not).
 
 services:
   ragintel-api:
@@ -33,11 +33,16 @@ services:
     env_file:
       - .env.h200
 
-    # DİKKAT — buraya MAKİNEYE ÖZGÜ değer YAZILMAZ: compose'da `environment:` her
+    # DİKKAT — buraya ORTAMA BAĞLI değer YAZILMAZ: compose'da `environment:` her
     # zaman `env_file:`'ı EZER. Burası yalnızca MİMARİ/DAĞITIM SABİTLERİ içindir
-    # (host-network + doğrudan Ollama kararı). Bir zamanlar burada
-    # `RAGINTEL_DB_HOST: 192.168.36.15` yazıyordu; adres 10.50.130.55'e taşınınca
-    # bu satır .env.h200'deki DOĞRU değeri sessizce ezecekti (M-10/0'da yakalandı).
+    # (host-network + doğrudan Ollama kararı).
+    #
+    # Bir zamanlar burada `RAGINTEL_DB_HOST: <bir adres>` yazıyordu. Kaldırıldı,
+    # çünkü DB adresi NEREDEN BAKTIĞINA bağlı: dev makinesi ile H200 farklı
+    # segmentte ve AYNI veritabanını farklı adresten görüyor (bkz.
+    # docs/RAG_v2_Proje_Dokumani.md — dev↔H200 segment/firewall notu). Repoda tek
+    # bir değer sabitlemek imkânsız; sabitlense `.env.h200`'deki doğru değeri
+    # SESSİZCE ezerdi. Bağlantı bilgisi makinenin bilgisidir → `.env.h200`.
     environment:
       # --- LLM: DOĞRUDAN Ollama (Open WebUI DEĞİL) ---
       # litellm `openai` provider'ı OpenAI-compat uç ister → Ollama /v1 sunar.
@@ -74,10 +79,9 @@ services:
 
       # --- DB: BURADA DEĞİL ---
       # RAGINTEL_DB_HOST/PORT/NAME/SCHEMA/USER/PASSWORD tamamı `.env.h200`'dedir.
-      # Gerekçe: DB bağlantısı makineye/ortama özgüdür (adres 192.168.36.15 →
-      # 10.50.130.55 taşındı) ve parolayla aynı dosyada durması doğaldır. Repoda
-      # sabitlenirse `environment:` üstünlüğü yüzünden canlı değeri sessizce ezer.
-      # Şablon: docs/M10_Deploy_Kurulum.md §2 · eksikse deploy.sh açılıştan ÖNCE durur.
+      # Gerekçe: DB adresi ORTAMA göre değişir (aynı DB, dev makinesinden başka
+      # adres, H200'den başka) ve parolayla aynı dosyada durması doğaldır.
+      # Şablon: docs/M10_H200_Kurulum.md §2 · eksikse deploy.sh açılıştan ÖNCE durur.
 
     healthcheck:
       # /api/health: db + ollama + tei + warmup. Warming'de de 200 döner (status
