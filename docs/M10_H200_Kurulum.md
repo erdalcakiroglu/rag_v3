@@ -75,11 +75,16 @@ vi .env.h200
 chmod 600 .env.h200
 ```
 
-Şablon:
+Şablon — **gerçek değerleri buraya değil, sunucudaki `.env.h200`'e yazın.**
+Bu dosya repoda **takip edilir**; buraya yazılan bir parola git geçmişine kalıcı
+girer ve `.gitignore` onu koruyamaz (o yalnızca `.env.*` dosyalarını dışlar).
 
 ```bash
 # --- DB (ağdaki sunucu) — TAMAMI burada, compose'da DEĞİL ---
-RAGINTEL_DB_HOST=10.50.130.55
+# Adres ortama göre değişir; repoda/dokümanda SABİTLENMEZ (M-4 PARÇA 3: iç
+# altyapı bilgisi koda gömülmez). §0'daki `nc -zv <DB_ADRES> 5432` ile DOĞRULAYIN
+# — yanlış adres "Connection refused" verir ve konteyner açılışta ölür.
+RAGINTEL_DB_HOST=<db-adresi>
 RAGINTEL_DB_PORT=5432
 RAGINTEL_DB_NAME=ragintel
 RAGINTEL_DB_SCHEMA=ragintel
@@ -186,6 +191,7 @@ rerank passthrough; bu degrade ETMEZ) · `langfuse: enabled|disabled` · `warmup
 | `Container ... is restarting` | aynı — açılışta ölüyor, restart döngüsü | Log'a bakın ↓ |
 | `"status":"degraded"` + `checks.tei` `ok` değil | `RAGINTEL_TEI_RERANK_URL` dolu ama TEI ayakta değil. rerank `passthrough` olduğu için **işlev kaybı yok** — yalnızca yanlış alarm | compose'da o satır **kapalı** olmalı (`c14a95a` sonrası kapalı) → `tei: disabled` → `healthy` |
 | `curl: (7) ... port 8085: Connection refused` | TEI yok — **beklenen**, gerekmiyor | Yok sayın (bkz. §0) |
+| `DatabaseConnectionError: ... connection to server at "<adres>", port 5432 failed: Connection refused` | `RAGINTEL_DB_HOST` **yanlış adres**. "Refused" = makine ULAŞILABİLİR ama 5432'de dinleyen yok (firewall olsaydı *timeout* alırdınız) — tipik olarak H200'ün kendi IP'si yazılmış, oysa DB ağda başka makinede | `hostname -I` ile H200'ün IP'sini görün; adayları `nc -zv <adres> 5432` ile deneyin (refused = yanlış); doğru adresi `.env.h200`'e yazıp `./deploy.sh --no-pull` |
 
 ```bash
 docker compose -f docker-compose.h200.yml logs --tail 60 ragintel-api
