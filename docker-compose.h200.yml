@@ -27,10 +27,17 @@ services:
     # H200 üzerinde koşar: Ollama/TEI localhost, port map'e gerek yok.
     network_mode: host
 
-    # Sırlar (DB parolası, Langfuse) dosyadan; repoya GİRMEZ.
+    # Sırlar + MAKİNEYE ÖZGÜ bağlantı bilgisi (DB adresi/parolası, Langfuse) dosyadan;
+    # repoya GİRMEZ. Bootstrap ayarları bunu os.environ üzerinden okur — imajda `.env`
+    # yoktur ve olmamalıdır (bkz. settings.DotenvFirstSettings).
     env_file:
       - .env.h200
 
+    # DİKKAT — buraya MAKİNEYE ÖZGÜ değer YAZILMAZ: compose'da `environment:` her
+    # zaman `env_file:`'ı EZER. Burası yalnızca MİMARİ/DAĞITIM SABİTLERİ içindir
+    # (host-network + doğrudan Ollama kararı). Bir zamanlar burada
+    # `RAGINTEL_DB_HOST: 192.168.36.15` yazıyordu; adres 10.50.130.55'e taşınınca
+    # bu satır .env.h200'deki DOĞRU değeri sessizce ezecekti (M-10/0'da yakalandı).
     environment:
       # --- LLM: DOĞRUDAN Ollama (Open WebUI DEĞİL) ---
       # litellm `openai` provider'ı OpenAI-compat uç ister → Ollama /v1 sunar.
@@ -54,11 +61,12 @@ services:
       # --- TEI rerank (H200 lokal) ---
       RAGINTEL_TEI_RERANK_URL: http://localhost:8085
 
-      # --- DB (ağdaki sunucu) ---
-      RAGINTEL_DB_HOST: 192.168.36.15
-      RAGINTEL_DB_PORT: "5432"
-      RAGINTEL_DB_NAME: ragintel
-      RAGINTEL_DB_SCHEMA: ragintel
+      # --- DB: BURADA DEĞİL ---
+      # RAGINTEL_DB_HOST/PORT/NAME/SCHEMA/USER/PASSWORD tamamı `.env.h200`'dedir.
+      # Gerekçe: DB bağlantısı makineye/ortama özgüdür (adres 192.168.36.15 →
+      # 10.50.130.55 taşındı) ve parolayla aynı dosyada durması doğaldır. Repoda
+      # sabitlenirse `environment:` üstünlüğü yüzünden canlı değeri sessizce ezer.
+      # Şablon: docs/M10_Deploy_Kurulum.md §2 · eksikse deploy.sh açılıştan ÖNCE durur.
 
     healthcheck:
       # /api/health: db + ollama + tei + warmup. Warming'de de 200 döner (status

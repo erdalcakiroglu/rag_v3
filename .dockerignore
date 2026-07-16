@@ -27,4 +27,16 @@ tests/
 docs/
 data/
 *.md
-!README.md          # pyproject readme = README.md → build'de ŞART
+
+# DİKKAT: Docker `.dockerignore`'da INLINE yorum TANIMAZ — `#` yalnızca satır
+# başında yorumdur. Aşağıdaki satır bir zamanlar
+#     !README.md          # pyproject readme = README.md → build'de ŞART
+# şeklindeydi: Docker bunu "adı `!README.md          # pyproject...` olan dosya"
+# deseni sandı, istisna hiç kurulmadı, README.md `*.md` tarafından dışlanmış
+# KALDI ve `COPY pyproject.toml README.md ./` şu hatayla build'i kırdı:
+#     failed to calculate checksum: "/README.md": not found
+# (H200'de yaşandı.) Yorum, desen satırının ÜSTÜNDE durur — yanında değil.
+#
+# NEDEN gerekli: pyproject.toml `readme = "README.md"` → setuptools onu build'de
+# okur. Bu istisna kalkarsa `pip install --no-deps .` adımı da kırılır.
+!README.md

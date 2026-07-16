@@ -39,12 +39,20 @@ numpy==1.26.4
 
 # --- BGE-M3 tokenizer (İP-5: tiktoken YASAK) ---
 # torch GEREKMEZ: AutoTokenizer fast/rust (tokenizers) üzerinden çalışır.
+#
+# 4.57.3'te KALIYOR — 4.57.1'e DÜŞÜRÜLMEDİ. Gerekçe ölçüldü (M-10/0): offline
+# arızası sürümden değil ÇAĞRI BİÇİMİNDEN geliyordu. 4.57.3'te repo-id ile
+# çağırmak (`from_pretrained("BAAI/bge-m3")`) cache dolu + HF_HUB_OFFLINE=1 olsa
+# bile model_info() tetikliyor; YEREL DİZİN verilince aynı 4.57.3 offline
+# ÇALIŞIYOR. Kod yerel dizine geçtiğine göre (bkz. chunking/tokenizer.py)
+# downgrade, ölçülmemiş ikinci bir değişken olurdu.
 transformers==4.57.3
 tokenizers==0.22.1
-# BGE-M3 = XLM-RoBERTa tabanlı. HF cache'inde hazır `tokenizer.json` yoksa
-# transformers slow→fast DÖNÜŞTÜRÜR ve bu sentencepiece ister; dönüşüm sonucu
-# cache'e YAZILMADIĞI için runtime'da da gerekebilir. ~2 MB sigorta — torch'suzluk
-# korunur (asıl hedef oydu). Dockerfile build doğrulaması bunu ayrıca test eder.
+# BGE-M3 = XLM-RoBERTa tabanlı. ÖLÇÜLDÜ (M-10/0): tokenizer YEREL dizinden ve hazır
+# `tokenizer.json` (fast) ile yüklense bile `XLMRobertaTokenizerFast` slow muadilini
+# import ediyor → sentencepiece runtime'da GERÇEKTEN yükleniyor (sys.modules'te
+# görüldü). Yani "gerekebilir" değil, gerekiyor. ~2 MB; torch'suzluk (asıl hedef)
+# korunur. Dockerfile build doğrulaması tokenizer'ı ayrıca çalıştırır.
 sentencepiece==0.2.0
 protobuf==5.29.5
 

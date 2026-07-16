@@ -1,5 +1,10 @@
 # Ortam / sırlar (7d: .env asla repo'ya girmez)
 .env
+# M-10/0: dağıtım sır dosyaları (.env.h200 vb.). `.env` deseni bunları KAPSAMAZ —
+# yalnızca tam adı `.env` olan dosyayı eşler. `.env.h200` DB parolasını ve Langfuse
+# anahtarlarını taşır; deseni olmadan tek `git add -A` ile repoya girerdi.
+.env.*
+!.env.example
 
 # Python
 __pycache__/

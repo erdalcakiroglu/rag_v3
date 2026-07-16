@@ -25,15 +25,23 @@ Bu, §5'teki test planıyla **ölçülerek** karara bağlanır — tahminle değ
 
 ## 2. `.env.h200` (H200'de oluşturulur, repoya GİRMEZ)
 
-Yalnızca **sırlar** ve makineye özgü değerler. Geri kalan her şey compose'da açık.
+**Sırlar + makineye özgü bağlantı bilgisi.** Mimari sabitler (doğrudan Ollama, TEI,
+host-network) compose'da açık durur.
 
 ```bash
-# --- DB (ağdaki sunucu) ---
+# --- DB (ağdaki sunucu) — TAMAMI burada ---
+# Compose'da DEĞİL: adres makineye özgü ve değişiyor (192.168.36.15 → 10.50.130.55).
+# Compose'da `environment:` her zaman `env_file:`'ı EZER; oraya yazılan bir adres
+# buradaki DOĞRU değeri sessizce eskiye döndürürdü.
+RAGINTEL_DB_HOST=<adres>
+RAGINTEL_DB_PORT=5432
+RAGINTEL_DB_NAME=ragintel
+RAGINTEL_DB_SCHEMA=ragintel
 RAGINTEL_DB_USER=ragintel_app
 RAGINTEL_DB_PASSWORD=<parola>
 
 # --- Langfuse (opsiyonel; kapalıysa boş bırakılabilir) ---
-RAGINTEL_LANGFUSE_HOST=http://192.168.36.15:3000
+RAGINTEL_LANGFUSE_HOST=http://127.0.0.1:3000
 RAGINTEL_LANGFUSE_PUBLIC_KEY=<pk>
 RAGINTEL_LANGFUSE_SECRET_KEY=<sk>
 
@@ -42,6 +50,38 @@ RAGINTEL_API_TOKEN=<token>
 ```
 
 > Dış-API anahtarı **YOK** — v2.10 istisnası kapandı, LLM/embedding lokal.
+
+**Zorunlu olanlar** (kodda `_require`): `RAGINTEL_DB_HOST`, `RAGINTEL_DB_USER`,
+`RAGINTEL_DB_PASSWORD`. `deploy.sh` bunları açılıştan ÖNCE denetler ve eksikse
+**değerleri basmadan** (yalnızca SET/EKSİK) durur. PORT/NAME/SCHEMA'nın kod
+varsayılanı vardır — zorunlu değiller.
+
+### Bu değerler konteynere NASIL ulaşıyor (M-10/0'da düzeltildi)
+
+Bootstrap ayarları (`DbSettings` vd.) eskiden **yalnızca `.env` dosyasını** okuyordu;
+os.environ kasıtlı olarak zincir dışıydı (M-4 PARÇA 3: bayat host env `.env`'i ezmesin).
+İmajda `.env` yoktur ve **olmamalıdır** → compose'un geçirdiği hiçbir değer görülmüyordu:
+
+```
+konteynerde:  os.getenv('RAGINTEL_DB_HOST') -> '10.50.130.55'
+              DbSettings().host             -> ''          ← arıza buydu
+```
+
+Yeni öncelik (`settings.DotenvFirstSettings`):
+
+    init kwarg > .env > OS ortam değişkeni > kod varsayılanı
+
+`.env` VARSA (geliştirici makinesi) tekel onundur — M-4'ün amacı korunur.
+`.env` YOKSA (konteyner) ortam konuşur. Build, bunu sahte bir değerle **doğrular**
+(`BUILD DOGRULAMA 2`) — bir daha sessizce kırılamaz.
+
+### Güvenlik
+
+`docker compose config` çıktısı `env_file`'ı çözer ve **parolaları/anahtarları açıkça
+basar**. Paylaşmadan önce maskeleyin; log/ekran görüntüsüne girdiyse ilgili anahtarlar
+**döndürülmelidir**. `.env.h200` hem `.gitignore` hem `.dockerignore` tarafından
+dışlanır (`.env.*` deseni — `.env` deseni onu kapsamıyordu, M-10/0'da eklendi) ve
+`chmod 600 .env.h200` önerilir.
 
 ## 3. Kurulum (H200, tek sefer)
 
@@ -52,6 +92,7 @@ git checkout feat/h200-transition
 
 # 2) sırlar
 vi .env.h200          # §2 şablonu
+chmod 600 .env.h200
 
 # 3) dağıt (pull → build → up → health doğrulama)
 chmod +x deploy.sh && ./deploy.sh
@@ -60,13 +101,40 @@ chmod +x deploy.sh && ./deploy.sh
 ./deploy.sh            # veya --no-pull (yerel kodla)
 ```
 
+> **`./deploy.sh`** — `sh deploy.sh` DEĞİL. Script bash dizileri kullanır; `sh`
+> altında bozulur. (Script artık bunu kendisi denetleyip açık hata veriyor.)
+
+### Sunucuda elle düzeltme yapıldıysa — ÖNCE geri alın
+
+Arıza avında `.dockerignore` / `Dockerfile` / `requirements-api.txt` gibi **izlenen**
+dosyalar sunucuda düzenlendiyse `git pull --ff-only` çakışır. Kalıcı düzeltmeler
+repoda olduğu için yerel yamalara artık gerek yok:
+
+```bash
+git -C /opt/ragintel status --short          # ne değişmiş, görün
+git -C /opt/ragintel stash                   # (yedek isterseniz) veya:
+git -C /opt/ragintel checkout -- .           # izlenen dosyaları repoya döndür
+rm -f /opt/ragintel/.dockerignore.backup.*   # arıza avından kalan yedekler
+./deploy.sh
+```
+
+`.env.h200` bu komutlardan **etkilenmez** (izlenmiyor) — yerinde kalır.
+
 Build ~5-10 dk (tokenizer indirme dahil, tek seferlik). **İnternet yalnızca build'de**
 gerekir; runtime kapalı ağda çalışır.
 
 ### Beklenen çıktı
 ```
+==> .env.h200 ön-doğrulama
+    RAGINTEL_DB_HOST: SET
+    RAGINTEL_DB_USER: SET
+    RAGINTEL_DB_PASSWORD: SET
 ==> dağıtılan sürüm: d8634de
-BUILD DOGRULAMA OK — torch/docling yok, tokenizer offline calisiyor (5 token)
+==> build
+BUILD DOGRULAMA 1 OK — torch/docling yok, .env yok, tokenizer offline (5 token)
+BUILD DOGRULAMA 2 OK — bootstrap os.environ zinciri calisiyor: build-smoke.invalid
+==> up
+ ✔ Container ragintel-api  Recreated          ← "Started" değil (--force-recreate)
 ==> health bekleniyor
 {"status":"healthy","checks":{...},"git_sha":"d8634de"}
 ==> DAĞITIM TAMAM (d8634de)
@@ -79,9 +147,13 @@ BUILD DOGRULAMA OK — torch/docling yok, tokenizer offline calisiyor (5 token)
 | **torch/docling YOK** | `import ragintel.api.app` sonrası `sys.modules`'te docling/torch **yok** — docling `parsing/backends.py` içinde LAZY. İmaj ~2.5 GB → ~700 MB sınıfı. Build'de `assert` ile kilitlendi |
 | **`--no-deps` ile kurulum** | ŞART: düz `pip install .` pyproject'teki docling'i geri getirir, torch'u çeker → imajın anlamı kaybolur |
 | **`libmagic1` apt** | import-time ZORUNLU: `ingestion/__init__` eager zinciri `filetypes`(magic) çeker. Yoksa konteyner **açılışta** patlar |
-| **tokenizer build'de gömülü** | `HF_HOME=/opt/hf` + `HF_HUB_OFFLINE=1`. Runtime'da HF'ye çıkma girişimi olmaz (kapalı ağ) |
+| **tokenizer build'de gömülü, YEREL DİZİNDEN** | `save_pretrained(/opt/models/bge-m3-tokenizer)` + `RAGINTEL_TOKENIZER_DIR`. Repo-id (`"BAAI/bge-m3"`) ile çağırmak kapalı ağda ÖLÜYOR — cache dolu ve `HF_HUB_OFFLINE=1` olsa bile. Traceback: `_patch_mistral_regex` → `if _is_local or is_base_mistral(id)` → `model_info(id)`. `or` kısa devre yapar: kaynak yerel DİZİNSE `_is_local=True` → ağ çağrısı hiç olmaz. `local_files_only=True` tek başına KURTARMIYOR (ölçüldü) |
+| **transformers 4.57.3'te kaldı** | 4.57.1'e düşürmek de arızayı gizliyor (H200'de denendi, build geçti) ama sebebi sürüm değil ÇAĞRI BİÇİMİ — 4.57.3+ geri geldiğinde arıza döner. Yerel dizin, sürümden bağımsız keser |
+| **bootstrap os.environ'u okur** | `.env` ÖNCELİKLİ, ortam YEDEK. İmajda `.env` yok → compose'un geçirdiği değerler görülmeliydi; görülmüyordu (bkz. §2) |
+| **`!README.md` istisnası** | `.dockerignore` INLINE YORUM TANIMAZ — `!README.md  # açıklama` deseni bozar, README.md dışlanır, `COPY` "not found" der. Yorum satırın ÜSTÜNDE |
 | **pyproject'e dokunulmadı** | lokal geliştirme `pip install -e .` ile ingestion dahil kurulmaya devam eder; ayrım yalnızca imajda |
 | **`git_sha` health'te** | `deploy.sh` dağıttığı sürümle kıyaslar → cache'li/yanlış imaj sessizce eski kod sunamaz |
+| **build kendi kendini denetler** | `BUILD DOGRULAMA 1`: torch/docling yok + `/app/.env` sızmamış + tokenizer offline çalışıyor · `BUILD DOGRULAMA 2`: bootstrap os.environ'u gerçekten okuyor (sahte değerle). Kırıksa üretimde değil BUILD'de patlar |
 
 > **ingest bu imajda KOŞMAZ** (docling yok). Doküman yükleme, docling'li tam kurulumla
 > ayrıca yürütülür — bilinçli kapsam kararı.

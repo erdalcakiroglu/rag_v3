@@ -2,9 +2,9 @@
 varsayılanları.
 
 - `DbSettings` / `LogSettings` / … : bootstrap (bağlantı/secret) ayarları.
-  KARAR: yalnızca `.env` (+ init kwarg + kod varsayılanı); OS ortam değişkenleri
-  YOK SAYILIR (bkz. `DotenvOnlySettings`). Bunlar app_config'ten OKUNMAZ (DB'ye
-  bağlanmak için gerekliler — tavuk/yumurta).
+  KARAR: öncelik `init kwarg > .env > OS ortam değişkeni > kod varsayılanı`
+  (bkz. `DotenvFirstSettings`). Bunlar app_config'ten OKUNMAZ (DB'ye bağlanmak
+  için gerekliler — tavuk/yumurta).
 - Pipeline grupları (`chunking`, `embedding`, `ingestion`): varsayılanları burada
   tanımlı; efektif değer öncelik zincirinden gelir (DB > ENV > varsayılan),
   bkz. `resolver.py` / `loader.py`. Varsayılanlar `FAZ1_Sema.sql` app_config
@@ -38,26 +38,55 @@ DANGER_REINDEX = "Değişiklik vektör index'inin yeniden kurulmasını gerektir
 
 
 class MissingBootstrapSetting(RuntimeError):
-    """Zorunlu bootstrap ayarı (.env) tanımsız — fail-fast, sessiz varsayılan YOK."""
+    """Zorunlu bootstrap ayarı tanımsız — fail-fast, sessiz varsayılan YOK."""
 
 
 def _require(value: str, env_name: str) -> str:
-    """M-4 PARÇA 3: iç altyapı bilgisi koda gömülmez. Boşsa AÇIK hata."""
+    """M-4 PARÇA 3: iç altyapı bilgisi koda gömülmez. Boşsa AÇIK hata.
+
+    Mesaj GEÇERLİ KANALLARIN HEPSİNİ sayar. M-10/0 dersi: eski metin yalnızca
+    "(.env'de tanımlayın)" diyordu; konteynerde `.env` yoktur ve olmamalıdır, o
+    yüzden bu mesaj arayanı saatlerce yanlış yere (compose env_file/`.env.h200`)
+    baktırdı — gerçek arıza os.environ'un okunmamasıydı. Hata mesajı eksik
+    sayarsa, teşhisi kendisi saptırır.
+    """
     if not value:
-        raise MissingBootstrapSetting(f"{env_name} tanımsız (.env'de tanımlayın)")
+        raise MissingBootstrapSetting(
+            f"{env_name} tanımsız — `.env` dosyasında ya da ortam değişkeni olarak "
+            f"tanımlayın (konteynerde: compose `environment:` / `env_file:`)."
+        )
     return value
 
 
 # --------------------------------------------------------------------------
-# Bootstrap ayarları — bağlantı/secret katmanı. KARAR: değerler YALNIZCA .env
-# (+ init kwarg + kod varsayılanı) kaynaklarından gelir; OS ortam değişkenleri
-# KASITLI olarak yok sayılır. Böylece host makinede kalmış bir `RAGINTEL_DB_*`
-# (veya benzeri) ortam değişkeni `.env`'i EZEMEZ — bağlantı bilgisi .env'in
-# tekelindedir. (Davranışsal pipeline config DB'den gelir; onun env katmanı
-# ayrıdır — bkz. loader._collect_env_overrides, bu değişiklikten etkilenmez.)
+# Bootstrap ayarları — bağlantı/secret katmanı.
+#
+# KARAR (M-4 PARÇA 3; M-10/0'da GENİŞLETİLDİ — mimar onayı):
+#     init kwarg > .env > OS ortam değişkeni > kod varsayılanı
+#
+# M-4'ün AMACI korunuyor: host makinede kalmış BAYAT bir `RAGINTEL_DB_*`,
+# `.env`'i EZEMEZ — çünkü `.env` zincirde ÖNDE. Değişen tek şey, `.env`'in
+# BULUNMADIĞI durumda ne olacağı.
+#
+# NEDEN genişletildi (M-10/0, H200'de yaşandı): os.environ zincirin TAMAMEN
+# dışındayken bootstrap konteynerde ULAŞILAMAZ hâle geliyordu. İmajda `.env`
+# YOKTUR ve OLMAMALIDIR (sır dosyası imaja gömülmez — .dockerignore onu bilerek
+# dışlar), dolayısıyla compose `environment:`/`env_file:` ile geçirilen
+# `RAGINTEL_DB_HOST` okunmadı → MissingBootstrapSetting → konteyner hiç ayağa
+# kalkamadı. Kanıt: konteynerde `os.getenv('RAGINTEL_DB_HOST')` doluyken
+# `DbSettings().host == ''`.
+#
+# Özetle: `.env` VARSA tekel onundur; `.env` YOKSA (konteyner) ortam konuşur.
+#
+# (Davranışsal pipeline config DB'den gelir; onun env katmanı ayrıdır —
+# bkz. loader._collect_env_overrides, bu değişiklikten etkilenmez.)
 # --------------------------------------------------------------------------
-class DotenvOnlySettings(BaseSettings):
-    """OS ortam değişkenlerini yok sayan bootstrap ayar tabanı (.env-authoritative)."""
+class DotenvFirstSettings(BaseSettings):
+    """Bootstrap ayar tabanı: `.env` ÖNCELİKLİ, OS ortamı YEDEK (.env-first).
+
+    Ad M-10/0'da değişti (eski: `DotenvOnlySettings`). os.environ artık zincirde
+    olduğu için "Only" demek config'i yalancı yapardı.
+    """
 
     # populate_by_name: aliased alanlar (schema_name/json_logs/rerank_url) init kwarg'ı
     # ALAN ADIYLA da kabul etsin (servis/test programatik enjeksiyonu için). Alt
@@ -73,12 +102,13 @@ class DotenvOnlySettings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        # env_settings (os.environ) KASITLI olarak dışarıda bırakıldı.
-        # Öncelik: init kwarg > .env > secrets > kod varsayılanı.
-        return (init_settings, dotenv_settings, file_secret_settings)
+        # SIRA = ÖNCELİK. env_settings (os.environ) zincirde, ama dotenv_settings'in
+        # ARKASINDA: `.env` varsa bayat host env'i ezemez (M-4 amacı); `.env` yoksa
+        # — yani konteynerde — ortam okunur ve uygulama ayağa kalkar.
+        return (init_settings, dotenv_settings, env_settings, file_secret_settings)
 
 
-class DbSettings(DotenvOnlySettings):
+class DbSettings(DotenvFirstSettings):
     """PostgreSQL bağlantı ve pool ayarları (7d)."""
 
     # Ortam değişkeni adları RAG_v2 Proje Dokümanı 7d ile birebir (tek alt çizgi).
@@ -133,7 +163,7 @@ class DbSettings(DotenvOnlySettings):
         }
 
 
-class LogSettings(DotenvOnlySettings):
+class LogSettings(DotenvFirstSettings):
     """structlog ayarları."""
 
     model_config = SettingsConfigDict(
@@ -147,7 +177,7 @@ class LogSettings(DotenvOnlySettings):
     json_logs: bool = Field(default=True, alias="RAGINTEL_LOG_JSON")
 
 
-class StorageSettings(DotenvOnlySettings):
+class StorageSettings(DotenvFirstSettings):
     """Raw dosya deposu (İP-1). MVP: yerel dosya sistemi (7b; MinIO FAZ 2)."""
 
     model_config = SettingsConfigDict(
@@ -162,7 +192,7 @@ class StorageSettings(DotenvOnlySettings):
     hnsw_bulk_reindex: bool = False
 
 
-class ParsingSettings(DotenvOnlySettings):
+class ParsingSettings(DotenvFirstSettings):
     """Parse backend seçimi (İP-2). 'auto' = docling varsa docling, yoksa fallback."""
 
     model_config = SettingsConfigDict(
@@ -175,7 +205,7 @@ class ParsingSettings(DotenvOnlySettings):
     backend: str = "auto"   # auto | docling | fallback
 
 
-class OllamaSettings(DotenvOnlySettings):
+class OllamaSettings(DotenvFirstSettings):
     """Embedding backend (İP-7 / ADR-012): remote Ollama HTTP /api/embed."""
 
     model_config = SettingsConfigDict(
@@ -200,7 +230,7 @@ class OllamaSettings(DotenvOnlySettings):
         return _require(self.base_url, "RAGINTEL_OLLAMA_BASE_URL")
 
 
-class TeiSettings(DotenvOnlySettings):
+class TeiSettings(DotenvFirstSettings):
     """TEI rerank backend ayarları (ADR-014). URL bootstrap katmanından gelir."""
 
     model_config = SettingsConfigDict(
@@ -218,7 +248,7 @@ class TeiSettings(DotenvOnlySettings):
         return _require(self.rerank_url, "RAGINTEL_TEI_RERANK_URL")
 
 
-class LiteLLMSettings(DotenvOnlySettings):
+class LiteLLMSettings(DotenvFirstSettings):
     """FAZ 4 agent LLM bağlantısı (ADR-003: LiteLLM → Ollama). Bootstrap katmanı
     (yalnızca ENV); MODEL ADI burada DEĞİL — o config-first `agent.model`'den gelir.
     Prefix `RAGINTEL_LLM_`, pipeline grup tarayıcısıyla (RAGINTEL_AGENT_) çakışmaz."""
@@ -243,7 +273,7 @@ class LiteLLMSettings(DotenvOnlySettings):
     model: str = ""
 
 
-class LangfuseSettings(DotenvOnlySettings):
+class LangfuseSettings(DotenvFirstSettings):
     """OTel exporter ayarları (İP-2.2). Bootstrap katmanı: yalnızca ENV."""
 
     model_config = SettingsConfigDict(
