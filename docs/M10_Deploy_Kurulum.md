@@ -1,6 +1,10 @@
-# M-10/0 — ragintel-api Container/Deploy (H200)
+# M-10/0 — ragintel-api Container/Deploy (H200): kararlar ve gerekçeler
 
-**Durum:** dosyalar hazır, **H200'de uygulanacak** (Erdal). GPU beklemeden yazıldı.
+> **Kurulum yapacaksanız bu dosya değil** → [M10_H200_Kurulum.md](M10_H200_Kurulum.md)
+> (adım adım, kopyala-yapıştır, sorun giderme, `.env.h200` şablonu).
+>
+> Burası **neden** dosyasıdır: mimari değişiklik, ölçülmüş imaj kararları ve
+> stabilizasyon test planı.
 
 ## 1. Ne değişiyor — ve neden iki işi birden yapıyor
 
@@ -23,38 +27,20 @@ hatası (submit_answer tool-call'unda, citations JSON'unda) **Open WebUI katman�
 
 Bu, §5'teki test planıyla **ölçülerek** karara bağlanır — tahminle değil.
 
-## 2. `.env.h200` (H200'de oluşturulur, repoya GİRMEZ)
+## 2. Config nereye yazılır — ve neden
 
-**Sırlar + makineye özgü bağlantı bilgisi.** Mimari sabitler (doğrudan Ollama, TEI,
-host-network) compose'da açık durur.
+**İki kanal, iki gerekçe.** Şablon ve adımlar kurulum dosyasındadır
+([M10_H200_Kurulum.md §2](M10_H200_Kurulum.md)) — burada yalnızca ayrımın nedeni.
 
-```bash
-# --- DB (ağdaki sunucu) — TAMAMI burada ---
-# Compose'da DEĞİL: adres makineye özgü ve değişiyor (192.168.36.15 → 10.50.130.55).
-# Compose'da `environment:` her zaman `env_file:`'ı EZER; oraya yazılan bir adres
-# buradaki DOĞRU değeri sessizce eskiye döndürürdü.
-RAGINTEL_DB_HOST=<adres>
-RAGINTEL_DB_PORT=5432
-RAGINTEL_DB_NAME=ragintel
-RAGINTEL_DB_SCHEMA=ragintel
-RAGINTEL_DB_USER=ragintel_app
-RAGINTEL_DB_PASSWORD=<parola>
+| kanal | ne durur | neden |
+|---|---|---|
+| `docker-compose.h200.yml` → `environment:` | **mimari/dağıtım sabitleri**: doğrudan Ollama (`localhost:11434/v1`), TEI, host-network | Repoda **dokümante** olmalı: "hangi mimariyle koşuyoruz" kod incelemesinde görünsün |
+| `.env.h200` (repoya girmez) | **sırlar + makineye özgü bağlantı**: `RAGINTEL_DB_*`, Langfuse, API token | Makineden makineye değişir; parolayla aynı dosyada durması doğaldır |
 
-# --- Langfuse (opsiyonel; kapalıysa boş bırakılabilir) ---
-RAGINTEL_LANGFUSE_HOST=http://127.0.0.1:3000
-RAGINTEL_LANGFUSE_PUBLIC_KEY=<pk>
-RAGINTEL_LANGFUSE_SECRET_KEY=<sk>
-
-# --- API auth (varsa) ---
-RAGINTEL_API_TOKEN=<token>
-```
-
-> Dış-API anahtarı **YOK** — v2.10 istisnası kapandı, LLM/embedding lokal.
-
-**Zorunlu olanlar** (kodda `_require`): `RAGINTEL_DB_HOST`, `RAGINTEL_DB_USER`,
-`RAGINTEL_DB_PASSWORD`. `deploy.sh` bunları açılıştan ÖNCE denetler ve eksikse
-**değerleri basmadan** (yalnızca SET/EKSİK) durur. PORT/NAME/SCHEMA'nın kod
-varsayılanı vardır — zorunlu değiller.
+**DB neden compose'da DEĞİL:** compose'da `environment:` her zaman `env_file:`'ı
+**ezer**. Repoda sabitlenmiş bir `RAGINTEL_DB_HOST: 192.168.36.15`, adres
+`10.50.130.55`'e taşındığında `.env.h200`'deki doğru değeri **sessizce** eskiye
+döndürürdü. Bağlantı bilgisi repoda sabitlenmez.
 
 ### Bu değerler konteynere NASIL ulaşıyor (M-10/0'da düzeltildi)
 
@@ -78,67 +64,21 @@ Yeni öncelik (`settings.DotenvFirstSettings`):
 ### Güvenlik
 
 `docker compose config` çıktısı `env_file`'ı çözer ve **parolaları/anahtarları açıkça
-basar**. Paylaşmadan önce maskeleyin; log/ekran görüntüsüne girdiyse ilgili anahtarlar
+basar** — paylaşmadan önce maskeleyin; log/ekran görüntüsüne girdiyse ilgili anahtarlar
 **döndürülmelidir**. `.env.h200` hem `.gitignore` hem `.dockerignore` tarafından
-dışlanır (`.env.*` deseni — `.env` deseni onu kapsamıyordu, M-10/0'da eklendi) ve
-`chmod 600 .env.h200` önerilir.
+dışlanır (`.env.*` deseni — `.env` deseni onu kapsamıyordu, M-10/0'da eklendi).
+Operasyonel ayrıntı: [M10_H200_Kurulum.md §7](M10_H200_Kurulum.md).
 
-## 3. Kurulum (H200, tek sefer)
+## 3. Kurulum
 
-```bash
-# 1) kod
-git clone <repo> /opt/ragintel && cd /opt/ragintel
-git checkout feat/h200-transition
+Adım adım kurulum, doğrulama, sorun giderme ve günlük işlemler:
+**[M10_H200_Kurulum.md](M10_H200_Kurulum.md)**.
 
-# 2) sırlar
-vi .env.h200          # §2 şablonu
-chmod 600 .env.h200
-
-# 3) dağıt (pull → build → up → health doğrulama)
-chmod +x deploy.sh && ./deploy.sh
-
-# sonraki dağıtımlar:
-./deploy.sh            # veya --no-pull (yerel kodla)
-```
-
-> **`./deploy.sh`** — `sh deploy.sh` DEĞİL. Script bash dizileri kullanır; `sh`
-> altında bozulur. (Script artık bunu kendisi denetleyip açık hata veriyor.)
-
-### Sunucuda elle düzeltme yapıldıysa — ÖNCE geri alın
-
-Arıza avında `.dockerignore` / `Dockerfile` / `requirements-api.txt` gibi **izlenen**
-dosyalar sunucuda düzenlendiyse `git pull --ff-only` çakışır. Kalıcı düzeltmeler
-repoda olduğu için yerel yamalara artık gerek yok:
-
-```bash
-git -C /opt/ragintel status --short          # ne değişmiş, görün
-git -C /opt/ragintel stash                   # (yedek isterseniz) veya:
-git -C /opt/ragintel checkout -- .           # izlenen dosyaları repoya döndür
-rm -f /opt/ragintel/.dockerignore.backup.*   # arıza avından kalan yedekler
-./deploy.sh
-```
-
-`.env.h200` bu komutlardan **etkilenmez** (izlenmiyor) — yerinde kalır.
-
-Build ~5-10 dk (tokenizer indirme dahil, tek seferlik). **İnternet yalnızca build'de**
-gerekir; runtime kapalı ağda çalışır.
-
-### Beklenen çıktı
-```
-==> .env.h200 ön-doğrulama
-    RAGINTEL_DB_HOST: SET
-    RAGINTEL_DB_USER: SET
-    RAGINTEL_DB_PASSWORD: SET
-==> dağıtılan sürüm: d8634de
-==> build
-BUILD DOGRULAMA 1 OK — torch/docling yok, .env yok, tokenizer offline (5 token)
-BUILD DOGRULAMA 2 OK — bootstrap os.environ zinciri calisiyor: build-smoke.invalid
-==> up
- ✔ Container ragintel-api  Recreated          ← "Started" değil (--force-recreate)
-==> health bekleniyor
-{"status":"healthy","checks":{...},"git_sha":"d8634de"}
-==> DAĞITIM TAMAM (d8634de)
-```
+Özet akış — `deploy.sh` (Seviye A): `.env.h200` ön-doğrulama → `git pull` → build
+→ `up -d --force-recreate` → health + `git_sha` doğrulama. Herhangi bir adım düşerse
+durur: **yarım dağıtım, çalışan eski sürümden kötüdür**. Build ~5-10 dk (tokenizer
+indirme dahil, tek seferlik); **internet yalnızca build'de** gerekir, runtime kapalı
+ağda çalışır.
 
 ## 4. İmaj tasarımı — ölçülmüş kararlar
 
