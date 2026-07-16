@@ -3,6 +3,10 @@
 **Uygulama kılavuzu.** Baştan sona kopyala-yapıştır. Neden'ler burada değil:
 tasarım kararları ve ölçümler için bkz. [M10_Deploy_Kurulum.md](M10_Deploy_Kurulum.md).
 
+> **Bu kılavuz sahada koştu:** kurulum 2026-07-16'da H200'de tamamlandı ve sistem
+> çalışır durumda. §5'teki sorun giderme satırlarının tamamı o kurulumda **gerçekten
+> yaşanmış** arızalardır — teorik değil.
+
 | | |
 |---|---|
 | Hedef | `ragintel-api` konteyneri, H200'ün üzerinde, **doğrudan Ollama**'ya (`:11434`) |

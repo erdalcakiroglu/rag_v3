@@ -251,8 +251,17 @@ postgresql+psycopg://ragintel_app:ragintel_app%21.@192.168.36.15:5432/ragintel
 
 **DB ayrı sunucuda olduğu için kurulum rehberine ek (Kurulum_RHEL... Bölüm 5/7 revizyonu):**
 
-1. `postgresql.conf`: `listen_addresses = 'localhost, 192.168.36.15'`
-2. `pg_hba.conf`: uygulama makinesinin IP'si için `host ragintel ragintel_app <APP_IP>/32 scram-sha-256`
+1. `postgresql.conf`: `listen_addresses` uygulama makinesinin eriştiği arayüzü içermeli.
+   **ÖLÇÜLDÜ (2026-07-16): şu an `*`** — yani tüm arayüzlerde dinliyor ve bu madde
+   karşılanmış durumda. (Bu satır önceden `'localhost, 192.168.36.15'` diyordu; canlı
+   değer öyle değil — `SHOW listen_addresses;` ile doğrulanabilir.)
+2. `pg_hba.conf`: uygulama makinesinin IP'si için `host ragintel ragintel_app <APP_IP>/32 scram-sha-256`.
+   **DİKKAT — `<APP_IP>` istemcinin kendi IP'si olmayabilir:** ölçüm (2026-07-16),
+   araya NAT girdiğini gösterdi (`SELECT inet_client_addr()` dev makinesi için
+   `192.168.36.1` — yani gateway) . Doğru değeri tahmin etmeyin: bağlanmayı deneyin,
+   PostgreSQL reddederse IP'yi kendisi söyler →
+   `FATAL: no pg_hba.conf entry for host "X.X.X.X"`. Bağlanabiliyorsanız
+   `SELECT inet_client_addr();` zaten cevaptır.
 3. Firewall: 5432 yalnızca uygulama makinesinin IP'sine açık — subnet'e değil.
 4. Redis ağa açılacaksa aynı prensip (6379 sadece APP_IP); mümkünse Redis'e yalnızca uygulama sunucusundan erişin.
 
@@ -263,6 +272,7 @@ postgresql+psycopg://ragintel_app:ragintel_app%21.@192.168.36.15:5432/ragintel
 - FAZ 4-5 LLM ön adayları: birincil `qwen3.5:35b` (instruct, tool-calling, çok dilli), judge/ağır iş `llama3.3:70b`. Coder modeller RAG yanıtı için aday dışı; IQ3_M agresif quant nedeniyle aday dışı. Nihai karar: FAZ 2 golden set Türkçe benchmark'ı.
 - Embedding backend kuralı (İP-7): aynı korpus tek backend'le embed edilir — Ollama bge-m3 (GGUF/quant) ile FlagEmbedding FP32 çıktıları karıştırılamaz; `core_vectors.model_name` backend+quant içerir. Backend seçimi Ollama sunucusunun GPU durumuna bağlı (açık soru).
 - Ollama endpoint: `http://banasor.goldenglobalbank.com.tr:11434` (→ 10.50.130.55, iç DNS) — sunucuda **NVIDIA H200**. **Ağ notu (2026-07-02):** dev makinesinden TCP 11434 kapalı (farklı segment/firewall) — istisna açılacak; açılınca İP-7 canlı smoke (`pytest -m slow`) koşulup "1000 chunk canlı" kriteri kapatılır. `.env`'e: `RAGINTEL_OLLAMA_BASE_URL=http://banasor.goldenglobalbank.com.tr:11434`. Not: Ollama auth'suzdur — endpoint yalnızca iç ağda kalmalı, dışa açılmamalı (FAZ 6'da erişim katmanı değerlendirilir).
+  - **GÜNCELLEME (M-10/0, 2026-07-16):** API artık **H200'ün üzerinde konteynerde koşuyor** → Ollama'ya `http://localhost:11434` ile, **doğrudan** (Open WebUI `/ollama/v1` üzerinden DEĞİL) erişiyor. Dev-segment engeli uygulama için **aşılarak değil, ATLANARAK** ortadan kalktı: `10.50.130.55` H200'ün kendi IP'si olduğundan `network_mode: host` ile ağ atlaması hiç olmuyor (ölçüldü: `POST localhost:11434/api/embed → 200`, auth'suz). **Engel duruyor** ama yalnızca *dev makinesinden* koşan işler için (`pytest -m slow` canlı smoke). Ollama'nın auth'suz kalması kuralı aynen geçerli — üstelik artık dinleyicinin yanı başındayız.
 
 ## 7e. Observability Mimarisi — Langfuse'un Rolü ve Container İlkesi
 
@@ -313,3 +323,4 @@ postgresql+psycopg://ragintel_app:ragintel_app%21.@192.168.36.15:5432/ragintel
 | 2026-07-02 | 1.1 | ADR-012 (embedding=Ollama/H200), Ek2-Ek3 migration'ları, İP-4 kural-tabanlı revizyonu. **FAZ 1 KOD TAMAM** (İP-0..10, 131 test). Resmi kapanış koşulu: Ollama ağ istisnası → canlı smoke + gerçek korpus koşusu + `ragintel report ingestion` çıktısının ≥%95 parse kriterine karşı değerlendirilmesi. |
 | 2026-07-02 | 1.2 | ADR-013 (Langfuse/Podman) + Bölüm 7e: Langfuse'un dört amacı, metrics↔Langfuse iş bölümü, container ilkesi. `Kurulum_RHEL_Langfuse_Podman.md` + doldurulmuş `.env`/compose dosyaları üretildi. FAZ 2 planı yayında (`FAZ2_Is_Plani.md`). |
 | 2026-07-03 | 1.3 | **Langfuse v3 KURULDU ve erişildi** (http://192.168.36.15:3000, "RAG v2" projesi). Kurulum dersleri rehbere işlendi: ClickHouse `latest` → 24.8 pin (hibrit CPU/hypervisor "illegal instruction"), secret'lar hex-only (base64 `+` ClickHouse URL auth'unu bozdu). Sunucu RAM'i 16 GB olarak netleşti — PG17 tuning düşürüldü (shared_buffers 4GB). Kalan altyapı engeli: Ollama firewall istisnası. |
+| 2026-07-16 | 1.4 | **M-10/0 — API H200'E TAŞINDI ve konteynerde KOŞUYOR.** Rehberler: `M10_H200_Kurulum.md` (uygulama) + `M10_Deploy_Kurulum.md` (kararlar/ölçümler). **(a) Deployment kararı REVİZE:** v0.3'teki "RHEL bare-metal, Docker'sız" ilkesi **API için** kalktı — `ragintel-api` Docker imajı (torch/docling HARİÇ; ölçüldü: API import zinciri docling'e dokunmuyor, `--no-deps` şart). DB/Redis bare-metal, Langfuse Podman: **değişmedi**. **(b) Doğrudan Ollama:** `localhost:11434` (host-network) — Open WebUI devre dışı; hem ağ atlamasını hem M-9.1'deki tool-call JSON arızasının şüpheli katmanını kaldırır. **(c) Tokenizer imaja gömüldü:** soğuk yükleme ~12 sn → **1.4 sn**, runtime'da internet şartı YOK. **(d) Bootstrap config kararı (M-4/3) GENİŞLETİLDİ:** os.environ zincire eklendi ama `.env`'in ARKASINA (`init > .env > os.environ > default`) — M-4'ün amacı (bayat host env `.env`'i ezemez) korunuyor; imajda `.env` yoktur ve olmamalı, o yüzden compose'un geçirdiği değerler okunabilmeliydi. **(e) Ölçüm düzeltmeleri (7d):** `listen_addresses` gerçekte `*`; `pg_hba` için istemci IP'si NAT nedeniyle gateway görünüyor (`inet_client_addr()`). **Bekleyen:** stabilizasyon testi (kayıtlı istek ×20 → suçlu WebUI muydu?) ve sonrasında temiz k=1 karne. |

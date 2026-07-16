@@ -1,22 +1,45 @@
 # M-10/0 — ragintel-api Container/Deploy (H200): kararlar ve gerekçeler
 
+> ## ✅ DURUM (2026-07-16): H200'DE KOŞUYOR
+>
+> Kurulum tamamlandı, konteyner ayakta. Konteyner log'undan **doğrulananlar**
+> (iddia değil, çıktı):
+>
+> ```
+> INFO:  Application startup complete.                                → DB bağlandı
+> {"component":"tokenizer","warmup_ms":1410,"event":"warmup_done"}    → tokenizer OFFLINE çalıştı
+> POST http://localhost:11434/api/embed "HTTP/1.1 200 OK"             → DOĞRUDAN Ollama
+> "None of PyTorch, TensorFlow >= 2.0, or Flax have been found."      → torch/docling imajda YOK
+> INFO:  127.0.0.1 - "GET /api/health HTTP/1.1" 200 OK                → servis yanıtlıyor
+> ```
+>
+> `startup complete` tek başına DB'yi kanıtlar: `build_default_runtime()` açılışta
+> `Database(DbSettings()).open()` çağırır — bağlantı kurulmasaydı süreç ölürdü.
+>
+> **Yan kazanç:** tokenizer soğuk yükleme ~12 sn → **1.4 sn** (imaja gömüldü).
+> M-10 latency backlog'unun büyük kalemi kapandı.
+>
+> **Bekleyen:** §5 stabilizasyon testi — kurulumun *ikinci* amacı olan tanı sorusu
+> (suçlu WebUI katmanı mıydı?) henüz ölçülmedi.
+
 > **Kurulum yapacaksanız bu dosya değil** → [M10_H200_Kurulum.md](M10_H200_Kurulum.md)
 > (adım adım, kopyala-yapıştır, sorun giderme, `.env.h200` şablonu).
 >
 > Burası **neden** dosyasıdır: mimari değişiklik, ölçülmüş imaj kararları ve
 > stabilizasyon test planı.
 
-## 1. Ne değişiyor — ve neden iki işi birden yapıyor
+## 1. Ne değişti — ve neden iki işi birden yapıyor
 
-API artık **H200'ün üzerinde**, **doğrudan Ollama'ya** (`:11434`) konuşarak koşacak —
+API artık **H200'ün üzerinde**, **doğrudan Ollama'ya** (`:11434`) konuşarak koşuyor —
 Open WebUI (`/ollama/v1`) üzerinden DEĞİL.
 
-| | eski | yeni |
-|---|---|---|
-| API nerede | geliştirici makinesi | H200 (konteyner) |
-| LLM yolu | Open WebUI → Ollama | **doğrudan Ollama** |
-| Ağ | internet üzerinden HTTPS | `localhost` (host-network) |
-| Auth | Bearer (WebUI anahtarı) | gerekmiyor (auth'suz uç) |
+| | eski | yeni | durum |
+|---|---|---|---|
+| API nerede | geliştirici makinesi | H200 (konteyner) | ✅ koşuyor |
+| LLM yolu | Open WebUI → Ollama | **doğrudan Ollama** | ✅ `/api/embed 200` |
+| Ağ | internet üzerinden HTTPS | `localhost` (host-network) | ✅ |
+| Auth | Bearer (WebUI anahtarı) | gerekmiyor (auth'suz uç) | ✅ embed auth'suz geçti |
+| Tokenizer | HF'den indirme (ağ şartı) | imaja gömülü (offline) | ✅ 1.4 sn |
 
 **İkinci fayda — tanı.** M-9.1'de bulunan `500 failed to parse JSON: invalid character 'H'`
 hatası (submit_answer tool-call'unda, citations JSON'unda) **Open WebUI katmanında** ortaya
@@ -141,6 +164,20 @@ olduğunu doğrular** (asıl kırılma noktası orası).
 
 ## 6. Bekleyen / kapsam dışı
 
-- **ingest imajı** — docling'li ayrı imaj (bu turda kapsam dışı).
+**Sırada (M-10/0'ın kapanması için):**
+- **§5 stabilizasyon testi** — kurulumun ikinci amacı. `m91_gs012_istek.json` ×20
+  doğrudan `:11434`'e. Sonuç M-9.1'i açar (temiz → kırık-soru turu) veya model
+  kararına götürür (kırık → mimara). Dosya korpus içeriği taşıdığı için repoda
+  değil; H200'e ayrıca kopyalanır.
+- **Temiz k=1 karne** — stabilizasyon sonrası, yeni zeminde (API H200'de, doğrudan
+  Ollama). Mühür/gate yeniden kalibre edilir.
+
+**Kapsam dışı (bilinçli):**
+- **ingest imajı** — docling'li ayrı imaj. Doküman yükleme hâlâ tam kurulumla
+  yürütülür (bu imajda docling YOK).
 - **Seviye B/C dağıtım** (rollback, mavi-yeşil) — Seviye A yeterli görüldü.
 - **eval koşusu ile serving aynı GPU** — operasyonel risk, backlog'ta duruyor.
+  (Ölçüm: nightly gate koşarken `qwen3-coder` 45 GB VRAM'de görüldü — başka tüketici.)
+
+**Kapandı:**
+- ~~tokenizer soğuk yükleme ~12 sn~~ → 1.4 sn (imaja gömüldü, 2026-07-16 ölçüldü).

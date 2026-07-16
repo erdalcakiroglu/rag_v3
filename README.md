@@ -118,6 +118,10 @@ FAZ 4 checkpoint tabloları uygulanmış olmalı (`docs/FAZ4_Sema.sql`).
 
 ### Çalıştırma
 
+> **Sunucu (H200) dağıtımı için bu bölüm değil** → [docs/M10_H200_Kurulum.md](docs/M10_H200_Kurulum.md).
+> API 2026-07-16'dan beri H200'ün üzerinde **konteynerde** koşuyor (`./deploy.sh`,
+> doğrudan Ollama, tokenizer imaja gömülü). Aşağısı **yerel geliştirme** içindir.
+
 Agent LLM'i **config-first**: model `app_config('agent').model`'den (DB), bağlantı
 `.env`'den (`RAGINTEL_LLM_API_BASE`, `RAGINTEL_LLM_REQUEST_TIMEOUT`) gelir. Kalıcı
 ayarlandıysa tek satır yeter:
