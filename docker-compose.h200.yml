@@ -1,0 +1,70 @@
+# ragintel-api — H200 dağıtımı (M-10/0).
+#
+# ÖNEMLİ MİMARİ DEĞİŞİKLİK: LLM artık DOĞRUDAN Ollama'ya (:11434) gidiyor,
+# Open WebUI (/ollama/v1) ÜZERİNDEN DEĞİL.
+#   Gerekçe 1 (deploy): API H200'ün ÜZERİNDE koşacak → localhost, ağ atlaması yok.
+#   Gerekçe 2 (tanı)  : M-9.1'de bulunan "500 failed to parse JSON: invalid
+#     character 'H'" hatası submit_answer tool-call'unda WebUI katmanında ortaya
+#     çıkıyordu. Doğrudan Ollama, o katmanı devreden çıkarır → suçlu WebUI ise
+#     taşınma sorunu ÇÖZER; hâlâ kırıksa suçlu Ollama/model (bkz.
+#     scripts/ollama_dogrudan_smoke.py — kayıtlı istek ×20).
+#
+# network_mode: host → Ollama (11434) ve TEI (8085) localhost'tan erişilir;
+# DB ise ağdaki 192.168.36.15'te.
+
+services:
+  ragintel-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # deploy.sh bunu `git rev-parse --short HEAD` ile doldurur → /api/health
+        GIT_SHA: ${GIT_SHA:-unknown}
+    image: ragintel-api:${GIT_SHA:-latest}
+    container_name: ragintel-api
+    restart: unless-stopped
+
+    # H200 üzerinde koşar: Ollama/TEI localhost, port map'e gerek yok.
+    network_mode: host
+
+    # Sırlar (DB parolası, Langfuse) dosyadan; repoya GİRMEZ.
+    env_file:
+      - .env.h200
+
+    environment:
+      # --- LLM: DOĞRUDAN Ollama (Open WebUI DEĞİL) ---
+      # litellm `openai` provider'ı OpenAI-compat uç ister → Ollama /v1 sunar.
+      RAGINTEL_LLM_PROVIDER: openai
+      RAGINTEL_LLM_API_BASE: http://localhost:11434/v1
+      # Ollama auth İSTEMEZ. Ama openai SDK boş anahtarı reddedebilir → zararsız
+      # yer tutucu. (gateway: api_key varsa Bearer ekler; Ollama görmezden gelir.)
+      # Smoke listesinde doğrulanır: boş bırakılabiliyorsa bu satır silinir.
+      RAGINTEL_LLM_API_KEY: ollama-local
+      # Model adı DB-OTORİTER (app_config `agent.model`); .env EZEMEZ → BOŞ.
+      RAGINTEL_LLM_MODEL: ""
+      RAGINTEL_LLM_REQUEST_TIMEOUT: "300"
+
+      # --- Embedding: DOĞRUDAN Ollama ---
+      # Damga (`bge-m3@ollama`) DEĞİŞMEZ → korpustaki 1478 vektörle uyum korunur.
+      RAGINTEL_OLLAMA_BASE_URL: http://localhost:11434
+      RAGINTEL_OLLAMA_MODEL: bge-m3
+      # Auth'suz uçta Bearer GÖNDERİLMEZ (embedder: anahtar yoksa header yok).
+      RAGINTEL_OLLAMA_API_KEY: ""
+
+      # --- TEI rerank (H200 lokal) ---
+      RAGINTEL_TEI_RERANK_URL: http://localhost:8085
+
+      # --- DB (ağdaki sunucu) ---
+      RAGINTEL_DB_HOST: 192.168.36.15
+      RAGINTEL_DB_PORT: "5432"
+      RAGINTEL_DB_NAME: ragintel
+      RAGINTEL_DB_SCHEMA: ragintel
+
+    healthcheck:
+      # /api/health: db + ollama + tei + warmup. Warming'de de 200 döner (status
+      # gövdede) → healthcheck'i warm-up'a esir etmemek için gövdeye bakmıyoruz.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s   # ilk warm-up (tokenizer + embedder) için pay
+      retries: 3

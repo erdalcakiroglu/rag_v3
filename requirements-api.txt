@@ -1,0 +1,60 @@
+# ragintel-api imajı — SORGU tarafı bağımlılıkları (M-10/0).
+#
+# NEDEN AYRI LİSTE: pyproject `dependencies` ingestion'ı da kapsar ve docling
+# üzerinden torch+opencv çeker (~2.5 GB). API (sorgu/agent/retrieval) docling'e
+# DOKUNMAZ — ölçüldü: `import ragintel.api.app` sonrası sys.modules'te docling/torch
+# YOK (docling `parsing/backends.py` içinde LAZY import edilir, yalnızca ingest
+# koşarken yüklenir). Bu liste o sınırı imaja taşır.
+#
+# pyproject'e DOKUNULMADI (bilinçli): lokal geliştirme `pip install -e .` ile
+# ingestion dahil kurulmaya devam eder; ayrım yalnızca imajda.
+#
+# HARİÇ (ingest-only): docling, pymupdf, python-docx, openpyxl,
+#                      lingua-language-detector, opencv-python  → ve transitif torch.
+
+# --- config / doğrulama ---
+pydantic==2.12.5
+pydantic-settings==2.14.2
+annotated-types==0.7.0          # ui_schema Ge/Le kısıtlarını DOĞRUDAN okur
+
+# --- veritabanı ---
+psycopg[binary]==3.3.2
+psycopg-pool==3.3.0
+pgvector==0.4.2
+
+# --- gözlemlenebilirlik ---
+structlog==26.1.0
+opentelemetry-sdk==1.38.0
+opentelemetry-exporter-otlp-proto-http==1.38.0
+
+python-dotenv==1.2.1
+
+# --- import-time ZORUNLU (ölçüldü: ingestion/__init__ eager zinciri) ---
+# `ragintel.ingestion.embedding.embedder` (sorgu embedding) import edilince Python
+# üst paketin __init__'ini çalıştırır → filetypes(magic) + cleaning(ftfy) yüklenir.
+python-magic==0.4.27            # sistem libmagic1 gerekir (Dockerfile apt)
+ftfy==6.3.1
+charset-normalizer==3.4.4
+numpy==1.26.4
+
+# --- BGE-M3 tokenizer (İP-5: tiktoken YASAK) ---
+# torch GEREKMEZ: AutoTokenizer fast/rust (tokenizers) üzerinden çalışır.
+transformers==4.57.3
+tokenizers==0.22.1
+# BGE-M3 = XLM-RoBERTa tabanlı. HF cache'inde hazır `tokenizer.json` yoksa
+# transformers slow→fast DÖNÜŞTÜRÜR ve bu sentencepiece ister; dönüşüm sonucu
+# cache'e YAZILMADIĞI için runtime'da da gerekebilir. ~2 MB sigorta — torch'suzluk
+# korunur (asıl hedef oydu). Dockerfile build doğrulaması bunu ayrıca test eder.
+sentencepiece==0.2.0
+protobuf==5.29.5
+
+# --- embedding + LLM ---
+httpx==0.28.1
+langgraph==1.2.7
+langgraph-checkpoint-postgres==3.1.0
+litellm==1.90.2
+openai==2.44.0
+
+# --- servis ---
+fastapi==0.128.0
+uvicorn==0.40.0

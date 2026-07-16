@@ -1,0 +1,21 @@
+# M-10/0: satır sonu disiplini — geliştirme Windows'ta, ÇALIŞMA Linux'ta (H200).
+#
+# Bu dosya olmadan `deploy.sh` H200'de CRLF ile checkout edilir ve kabuk şunu der:
+#   bash: /usr/bin/env bash^M: bad interpreter: No such file or directory
+# Yani teslim edilen dağıtım betiği ÇALIŞMAZ. Aynı tuzak Dockerfile/compose için de
+# geçerlidir (RUN satırlarına sızan \r).
+
+# Linux'ta çalışan/okunan her şey LF olmalı — checkout platformu ne olursa olsun.
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+requirements*.txt text eol=lf
+.dockerignore   text eol=lf
+
+# Python: LF (konteynerde koşuyor).
+*.py            text eol=lf
+
+# Dokümanlar: normalize et, çalışma platformu farketmez.
+*.md            text
+*.sql           text

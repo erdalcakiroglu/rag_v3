@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 import uuid
@@ -269,7 +270,11 @@ class RagRuntime:
         # Warming, unhealthy'yi MASKELEMEZ (db/ollama down daha kritik); sadece
         # aksi halde çalışır durumdayken "henüz ilk istek yavaş olur" sinyali.
         status = base if base == "unhealthy" or warm else "warming"
-        return {"status": status, "checks": checks}
+        # M-10/0: HANGİ KOD koşuyor? İmaja build'de gömülür (Dockerfile ARG GIT_SHA).
+        # deploy.sh bunu dağıttığı sürümle kıyaslar → yanlış/cache'li imaj sessizce
+        # eski kodu sunamaz. Konteyner dışında (lokal koşum) "unknown" döner.
+        return {"status": status, "checks": checks,
+                "git_sha": os.environ.get("RAGINTEL_GIT_SHA", "unknown")}
 
     def _check_db(self) -> str:
         try:

@@ -1,0 +1,30 @@
+# Build bağlamını küçük ve GÜVENLİ tut.
+
+# --- SIR: imaja asla girmemeli ---
+.env
+.env.*
+*.pem
+*.key
+
+# --- git / IDE ---
+.git
+.gitignore
+.idea
+.vscode
+
+# --- python artıkları ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+
+# --- imajda işi olmayanlar ---
+tests/
+docs/
+data/
+*.md
+!README.md          # pyproject readme = README.md → build'de ŞART
