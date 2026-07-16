@@ -58,8 +58,19 @@ services:
       # Auth'suz uçta Bearer GÖNDERİLMEZ (embedder: anahtar yoksa header yok).
       RAGINTEL_OLLAMA_API_KEY: ""
 
-      # --- TEI rerank (H200 lokal) ---
-      RAGINTEL_TEI_RERANK_URL: http://localhost:8085
+      # --- TEI rerank: KAPALI (bilinçli) ---
+      # DB-otoriter `retrieval.rerank_backend = "passthrough"` → TEI HİÇ ÇAĞRILMIYOR.
+      # URL'i yine de vermek zararsız DEĞİL: kod, URL doluysa health check atar
+      # (runtime.health), TEI ayakta olmadığı için "tei" düşer ve sistem hiçbir
+      # işlev kaybı olmadan sürekli "degraded" görünür — yanlış alarm. URL boşken
+      # health "disabled" der ve degrade ETMEZ (M-4: yapılandırılmamış opsiyonel
+      # bileşen, arızalı bileşen değildir).
+      #
+      # TEI'ye geçilecekse: TEI'yi ayağa kaldırın, aşağıdaki satırı açın ve
+      # `retrieval.rerank_backend`'i DB'den 'tei' yapın (mimari karar — ikisi
+      # birlikte değişir). Yalnızca backend'i 'tei' yapıp URL'i açmazsanız
+      # `require_rerank_url()` AÇIK hata verir; sessiz bozulma yok.
+      # RAGINTEL_TEI_RERANK_URL: http://localhost:8085
 
       # --- DB: BURADA DEĞİL ---
       # RAGINTEL_DB_HOST/PORT/NAME/SCHEMA/USER/PASSWORD tamamı `.env.h200`'dedir.

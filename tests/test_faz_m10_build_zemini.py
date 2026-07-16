@@ -149,6 +149,32 @@ def test_compose_MAKINEYE_OZGU_DB_degeri_TASIMAZ():
         )
 
 
+def test_TEI_urli_rerank_backend_ile_BIRLIKTE_gider():
+    """`rerank_backend=passthrough` iken TEI URL'i vermek zararsız DEĞİL.
+
+    Kod, URL doluysa health check atar (runtime.health). TEI ayakta değilse "tei"
+    düşer ve sistem — rerank zaten çağrılmadığı için HİÇBİR işlev kaybı olmadan —
+    sürekli `degraded` görünür. URL boşken health "disabled" der ve degrade etmez
+    (M-4: yapılandırılmamış opsiyonel bileşen, arızalı bileşen değildir).
+    `deploy.sh` yalnızca `unhealthy`'de durduğu için bu yanlış alarm fark edilmeden
+    yaşardı. İkisi BİRLİKTE değişmeli.
+    """
+    from ragintel.config.settings import RetrievalConfig
+
+    if RetrievalConfig().rerank_backend != "passthrough":
+        pytest.skip("kod varsayılanı artık passthrough değil — bu testin zemini değişti")
+
+    for satir in (KOK / "docker-compose.h200.yml").read_text(encoding="utf-8").splitlines():
+        s = satir.strip()
+        if not s or s.startswith("#"):
+            continue
+        assert not s.startswith("RAGINTEL_TEI_RERANK_URL"), (
+            "compose TEI URL'i veriyor ama rerank_backend passthrough → TEI hiç "
+            "çağrılmaz, yalnızca health'i boşuna degraded yapar. TEI'ye geçiliyorsa "
+            "`retrieval.rerank_backend`'i DB'den 'tei' yapın (ikisi birlikte)."
+        )
+
+
 def test_deploy_zorunlu_sirlar_KODLA_ESLESIR():
     """deploy.sh'ın ön-doğrulaması, kodun GERÇEKTEN zorunlu tuttuklarıyla aynı olmalı.
 

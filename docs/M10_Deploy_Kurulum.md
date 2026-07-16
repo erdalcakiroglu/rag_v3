@@ -34,7 +34,7 @@ Bu, §5'teki test planıyla **ölçülerek** karara bağlanır — tahminle değ
 
 | kanal | ne durur | neden |
 |---|---|---|
-| `docker-compose.h200.yml` → `environment:` | **mimari/dağıtım sabitleri**: doğrudan Ollama (`localhost:11434/v1`), TEI, host-network | Repoda **dokümante** olmalı: "hangi mimariyle koşuyoruz" kod incelemesinde görünsün |
+| `docker-compose.h200.yml` → `environment:` | **mimari/dağıtım sabitleri**: doğrudan Ollama (`localhost:11434/v1`), host-network | Repoda **dokümante** olmalı: "hangi mimariyle koşuyoruz" kod incelemesinde görünsün |
 | `.env.h200` (repoya girmez) | **sırlar + makineye özgü bağlantı**: `RAGINTEL_DB_*`, Langfuse, API token | Makineden makineye değişir; parolayla aynı dosyada durması doğaldır |
 
 **DB neden compose'da DEĞİL:** compose'da `environment:` her zaman `env_file:`'ı
@@ -91,6 +91,7 @@ ağda çalışır.
 | **transformers 4.57.3'te kaldı** | 4.57.1'e düşürmek de arızayı gizliyor (H200'de denendi, build geçti) ama sebebi sürüm değil ÇAĞRI BİÇİMİ — 4.57.3+ geri geldiğinde arıza döner. Yerel dizin, sürümden bağımsız keser |
 | **bootstrap os.environ'u okur** | `.env` ÖNCELİKLİ, ortam YEDEK. İmajda `.env` yok → compose'un geçirdiği değerler görülmeliydi; görülmüyordu (bkz. §2) |
 | **`!README.md` istisnası** | `.dockerignore` INLINE YORUM TANIMAZ — `!README.md  # açıklama` deseni bozar, README.md dışlanır, `COPY` "not found" der. Yorum satırın ÜSTÜNDE |
+| **TEI URL'i compose'da KAPALI** | ÖLÇÜLDÜ: `retrieval.rerank_backend = "passthrough"` (DB) → TEI hiç çağrılmıyor. URL'i yine de vermek zararsız değil: kod URL doluysa health check atar, TEI ayakta olmadığı için sistem **işlev kaybı olmadan** sürekli `degraded` görünür — ve `deploy.sh` yalnızca `unhealthy`'de durduğu için bu yanlış alarm fark edilmeden yaşardı. URL boşken health `disabled` der, degrade ETMEZ. TEI'ye geçiş = URL + `rerank_backend` BİRLİKTE (test bunu kilitliyor) |
 | **pyproject'e dokunulmadı** | lokal geliştirme `pip install -e .` ile ingestion dahil kurulmaya devam eder; ayrım yalnızca imajda |
 | **`git_sha` health'te** | `deploy.sh` dağıttığı sürümle kıyaslar → cache'li/yanlış imaj sessizce eski kod sunamaz |
 | **build kendi kendini denetler** | `BUILD DOGRULAMA 1`: torch/docling yok + `/app/.env` sızmamış + tokenizer offline çalışıyor · `BUILD DOGRULAMA 2`: bootstrap os.environ'u gerçekten okuyor (sahte değerle). Kırıksa üretimde değil BUILD'de patlar |

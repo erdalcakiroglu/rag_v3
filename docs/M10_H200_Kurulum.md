@@ -8,8 +8,9 @@ tasarım kararları ve ölçümler için bkz. [M10_Deploy_Kurulum.md](M10_Deploy
 | Hedef | `ragintel-api` konteyneri, H200'ün üzerinde, **doğrudan Ollama**'ya (`:11434`) |
 | Dizin | `/opt/ragintel` |
 | Dal | `feat/h200-transition` |
-| Ağ | `network_mode: host` — Ollama/TEI `localhost`, DB ağda |
-| Kapsam DIŞI | Ollama, TEI, PostgreSQL kurulumu (hazır kabul edilir) · ingest imajı (docling'li, ayrı) |
+| Ağ | `network_mode: host` — Ollama `localhost`, DB ağda |
+| Rerank | **TEI kapalı** — `retrieval.rerank_backend = "passthrough"` (DB) |
+| Kapsam DIŞI | Ollama, PostgreSQL kurulumu (hazır kabul edilir) · ingest imajı (docling'li, ayrı) |
 
 ---
 
@@ -24,12 +25,14 @@ docker --version && docker compose version
 # Ollama ayakta ve modeller yerinde (qwen3.5:35b + bge-m3)
 curl -fsS http://localhost:11434/api/tags | grep -oE '"name":"[^"]+"'
 
-# TEI rerank
-curl -fsS http://localhost:8085/health && echo " TEI OK"
-
 # DB erişilebilir mi (adresi kendi değerinizle)
 nc -zv <DB_ADRES> 5432
 ```
+
+> **TEI GEREKMİYOR** — `retrieval.rerank_backend` DB'de `"passthrough"`. TEI hiç
+> çağrılmaz ve compose'da URL'i de **kapalıdır**. Kurmayın, aramayın.
+> Yalnızca `rerank_backend` DB'den `'tei'` yapılırsa gerekir (mimari karar);
+> o zaman TEI ayağa kaldırılır + compose'daki `RAGINTEL_TEI_RERANK_URL` satırı açılır.
 
 > Build **internet ister** (tokenizer + pip, ~5-10 dk, tek seferlik).
 > Runtime kapalı ağda çalışır — tokenizer imaja gömülüdür.
@@ -163,6 +166,9 @@ curl -s -X POST http://localhost:8000/api/ask \
 `status` değerleri: `healthy` · `degraded` (bir alt sistem düşük) · `warming`
 (ilk warm-up sürüyor, ~1 dk) · `unhealthy` (checks'e bakın).
 
+Beklenen `checks`: `db: ok` · `ollama: ok` · **`tei: disabled`** (URL kapalı —
+rerank passthrough; bu degrade ETMEZ) · `langfuse: enabled|disabled` · `warmup: ok`.
+
 ---
 
 ## 5. Sorun giderme — yaşanmış arızalar
@@ -178,6 +184,8 @@ curl -s -X POST http://localhost:8000/api/ask \
 | `git pull --ff-only` çakışıyor | sunucuda elle düzenleme | `git checkout -- .` (bkz. §1) |
 | health 180 sn yanıt vermedi | konteyner açılışta ölüyor | Log'a bakın ↓ |
 | `Container ... is restarting` | aynı — açılışta ölüyor, restart döngüsü | Log'a bakın ↓ |
+| `"status":"degraded"` + `checks.tei` `ok` değil | `RAGINTEL_TEI_RERANK_URL` dolu ama TEI ayakta değil. rerank `passthrough` olduğu için **işlev kaybı yok** — yalnızca yanlış alarm | compose'da o satır **kapalı** olmalı (`c14a95a` sonrası kapalı) → `tei: disabled` → `healthy` |
+| `curl: (7) ... port 8085: Connection refused` | TEI yok — **beklenen**, gerekmiyor | Yok sayın (bkz. §0) |
 
 ```bash
 docker compose -f docker-compose.h200.yml logs --tail 60 ragintel-api
