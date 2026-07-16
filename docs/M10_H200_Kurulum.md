@@ -96,9 +96,12 @@ RAGINTEL_LANGFUSE_HOST=http://127.0.0.1:3000
 RAGINTEL_LANGFUSE_PUBLIC_KEY=<pk>
 RAGINTEL_LANGFUSE_SECRET_KEY=<sk>
 
-# --- API auth (varsa) ---
-RAGINTEL_API_TOKEN=<token>
 ```
+
+> **API token'ı buraya YAZILMAZ.** `RAGINTEL_API_TOKEN` diye bir ayar **yoktur** —
+> kullanıcı token'ları DB'de yaşar (`ragintel.users.api_token_hash`, sha256).
+> Bkz. §4 "UI erişimi". (Bu satır bir zamanlar şablonda vardı: uydurmaydı,
+> kod onu hiç okumuyordu.)
 
 **Zorunlu üçlü:** `RAGINTEL_DB_HOST`, `RAGINTEL_DB_USER`, `RAGINTEL_DB_PASSWORD`.
 `deploy.sh` bunları build'den ÖNCE denetler ve eksikse **değerleri basmadan**
@@ -173,6 +176,57 @@ curl -s -X POST http://localhost:8000/api/ask \
 
 Beklenen `checks`: `db: ok` · `ollama: ok` · **`tei: disabled`** (URL kapalı —
 rerank passthrough; bu degrade ETMEZ) · `langfuse: enabled|disabled` · `warmup: ok`.
+
+### UI erişimi — yönetici ve chat ekranı
+
+| ekran | yol | yetki |
+|---|---|---|
+| Chat | `http://<h200>:8000/` | geçerli token (herhangi bir aktif kullanıcı) |
+| Yönetici | `http://<h200>:8000/admin` | token + **`is_admin`** |
+
+İkisi de token'ı `localStorage['ragintel_token']`'da tutar ve her isteğe
+`Authorization: Bearer <token>` ekler. Chat ekranı token yoksa `prompt()` ile
+sorar; yönetici ekranında üstteki alana yapıştırılır. **Fail-closed:** token yoksa
+veya geçersizse `401`; admin değilse `403`.
+
+**Token nereden gelir:** `.env`'den DEĞİL — `ragintel.users` tablosundan. Kod
+yalnızca `sha256(token)` saklar ([FAZ6_Sema.sql](FAZ6_Sema.sql)); düz metin ne
+DB'de ne log'da durur, dolayısıyla **kaybolan bir token geri alınamaz** — yenisi
+üretilir.
+
+Zaten bir kullanıcınız varsa (kontrol: `SELECT user_id, is_admin, active FROM
+ragintel.users;`) yalnızca token'ı yenilemeniz yeterli. Aşağıdaki komut token'ı
+**sizin ekranınızda** üretir ve uygulanacak SQL'i yazar:
+
+```bash
+python3 - <<'EOF'
+import secrets, hashlib
+raw = secrets.token_urlsafe(24)
+print("\nTOKEN — yalnızca ŞİMDİ görünür, güvenli saklayın:\n   ", raw)
+print("\nDB'ye uygulayın (psql):")
+print(f"   UPDATE ragintel.users SET api_token_hash='{hashlib.sha256(raw.encode()).hexdigest()}',")
+print(f"          updated_at=now() WHERE user_id='<user_id>';\n")
+EOF
+```
+
+> Token bir SIRDIR: ürettiğiniz değeri paylaşılan çıktıya/log'a/dokümana
+> yapıştırmayın. SQL'e yalnızca **hash** girer.
+
+Doğrulama (token'ı kendi kabuğunuzda değişkene alın, ekrana basmayın):
+
+```bash
+read -rs TOKEN                     # yapıştırın, Enter — ekranda görünmez
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8000/api/admin/users        # 200 bekleniyor (admin ise)
+```
+
+Yeni kullanıcı gerekiyorsa artık **elle SQL'e gerek yok** — admin token'ıyla:
+`POST /api/admin/users` token'ı üretip **tek kez** döndürür (yönetici ekranında
+"Kullanıcılar" bölümü).
+
+> **Ağ notu:** dev makinesi ile H200 farklı segmentte (Ollama `11434` için firewall
+> istisnası gerekmişti). Tarayıcıdan `:8000`'e erişemiyorsanız aynı istisna bu port
+> için de gerekir; sunucudan `curl localhost:8000` çalışıyorsa uygulama değil ağ sorunudur.
 
 ---
 
