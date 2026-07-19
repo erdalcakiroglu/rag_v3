@@ -84,10 +84,55 @@ services:
       # Şablon: docs/M10_H200_Kurulum.md §2 · eksikse deploy.sh açılıştan ÖNCE durur.
 
     healthcheck:
-      # /api/health: db + ollama + tei + warmup. Warming'de de 200 döner (status
+      # /api/health: db + ollama + tei + redis + warmup. Warming'de de 200 döner (status
       # gövdede) → healthcheck'i warm-up'a esir etmemek için gövdeye bakmıyoruz.
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
       interval: 30s
       timeout: 10s
       start_period: 120s   # ilk warm-up (tokenizer + embedder) için pay
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # M-10/0 EK — oturum-token cache'i (Redis). OPSİYONEL HIZLANDIRICI, DB kaynak-otoriter:
+  # uygulama Redis'i yalnız cache olarak kullanır; erişilemezse DB'ye düşer (fail-safe).
+  # Bu yüzden ragintel-api'de `depends_on: redis` YOK — app Redis'e ESİR değildir
+  # (Redis çökse de kimlik/istek yolu çalışmaya devam eder, yalnız her istekte DB'ye gider).
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7
+    container_name: ragintel-redis
+    restart: unless-stopped
+
+    # app da host-network → Redis'e localhost:6379'dan erişir (RAGINTEL_REDIS_URL).
+    network_mode: host
+
+    # Parola (requirepass) + app'in RAGINTEL_REDIS_URL'i .env.h200'dedir (repoda YOK).
+    # DİKKAT: compose `${...}` interpolasyonu .env.h200'ü GÖRMEZ (deploy.sh `--env-file`
+    # kullanmıyor — bilinçli). O yüzden parolayı KONTEYNER ENV'ine `env_file` ile veriyoruz
+    # ve `requirepass`'i konteyner-İÇİ shell expansion (`$$` → literal `$`) ile okuyoruz:
+    # parola ne compose'a, ne shell'e, ne repoya, ne de `docker inspect` argüman listesine
+    # LİTERAL olarak girer.
+    env_file:
+      - .env.h200
+
+    # Bu bir CACHE: `maxmemory 4gb` + `allkeys-lru` → bellek dolunca en eski oturumlar
+    # düşürülür (miss → DB fallback, işlev kaybı YOK). `appendonly no` + `save ""` → kalıcılık
+    # YOK (cache; AOF/RDB fork-stall'ı + disk maliyeti gereksiz). `--bind 127.0.0.1` →
+    # host-network'te yalnız loopback (dışarıya açılmaz).
+    command: >
+      sh -c 'exec redis-server
+      --requirepass "$$RAGINTEL_REDIS_PASSWORD"
+      --bind 127.0.0.1
+      --port 6379
+      --maxmemory 4gb
+      --maxmemory-policy allkeys-lru
+      --appendonly no
+      --save ""'
+
+    healthcheck:
+      # requirepass açıkken parolasız `ping` NOAUTH döner → auth'lu ping. Parola konteyner
+      # env'inden ($RAGINTEL_REDIS_PASSWORD); healthcheck argümanında literal parola yok.
+      test: ["CMD-SHELL", "redis-cli -a \"$$RAGINTEL_REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 30s
+      timeout: 5s
       retries: 3

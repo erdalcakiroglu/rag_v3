@@ -31,6 +31,7 @@ UI_TABS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("agent", "Agent", ("agent", "prompts")),
     ("eval", "Değerlendirme", ("eval", "eval_gates")),
     ("api", "API", ("api",)),
+    ("auth", "Kimlik & Erişim", ("auth",)),
 )
 
 # Grup başlıkları (TR). Eksikse grup adı kullanılır — kaybolmaz.
@@ -48,6 +49,7 @@ GROUP_LABELS: dict[str, str] = {
     "eval": "Eval Koşumu",
     "eval_gates": "Eval Eşikleri (CI)",
     "api": "API Zaman Aşımları",
+    "auth": "Self-Kayıt & Giriş",
 }
 
 _OTHER_TAB = ("other", "Diğer")

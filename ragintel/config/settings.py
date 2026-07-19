@@ -21,7 +21,7 @@ from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, Settings
 
 # Öncelik zincirinden yönetilen pipeline config grupları.
 PIPELINE_GROUPS = ("chunking", "embedding", "ingestion", "quality", "injection", "retrieval",
-                   "agent", "prompts", "pii", "eval_gates", "storage", "api", "eval")
+                   "agent", "prompts", "pii", "eval_gates", "storage", "api", "eval", "auth")
 
 # --------------------------------------------------------------------------
 # M-5: alan metadata'sı MODELDE yaşar (tek doğruluk kaynağı).
@@ -246,6 +246,22 @@ class TeiSettings(DotenvFirstSettings):
 
     def require_rerank_url(self) -> str:
         return _require(self.rerank_url, "RAGINTEL_TEI_RERANK_URL")
+
+
+class RedisSettings(DotenvFirstSettings):
+    """M-10/0 EK: oturum-token cache'i için Redis bağlantısı. Bağlantı bilgisi (parola dahil)
+    bootstrap katmanından — makineye özgü, .env.h200'de (repoda YOK). TEI ile aynı desen:
+    OPSİYONEL — boşsa cache devre dışı, resolver DB'ye düşer (Bearer yolu regresyonsuz)."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="RAGINTEL_REDIS_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # redis://:<parola>@localhost:6379/0  — boşsa cache YOK (opsiyonel hızlandırıcı).
+    url: str = Field(default="", alias="RAGINTEL_REDIS_URL")
 
 
 class LiteLLMSettings(DotenvFirstSettings):
@@ -1088,6 +1104,34 @@ class PromptsConfig(BaseModel):
         return self
 
 
+class AuthConfig(BaseModel):
+    """M-12: email+şifre self-kayıt politikası (panelden yönetilir — M-4/M-5 disiplini).
+
+    Bu grup YALNIZCA self-kayıt/giriş akışını yönetir; Bearer/servis token yolu bundan
+    bağımsızdır (config'e bakmadan çalışır — regresyonsuz)."""
+
+    allowed_email_domains: list[str] = Field(
+        default_factory=list,
+        description="Self-kayda İZİN VERİLEN email alan-adları (ör. 'sirket.com'). Büyük/küçük "
+                    "harf duyarsız. FAIL-CLOSED: liste BOŞSA hiçbir kayıt kabul edilmez (403) — "
+                    "yeni kayıt açmak için önce buraya en az bir alan-adı ekleyin. Mevcut "
+                    "admin/servis kullanıcıları token'la erişmeye devam eder (bu listeden etkilenmez).",
+    )
+    password_min_length: int = Field(
+        default=12, ge=8, le=128,
+        description="Self-kayıtta kabul edilen asgari şifre uzunluğu (karakter). Düşürmek zayıf "
+                    "şifreye izin verir; kayıt-zamanı doğrulanır (mevcut şifreleri etkilemez).",
+    )
+    session_cache_ttl_seconds: int = Field(
+        default=60, ge=1, le=3600,
+        description="Bearer token→kullanıcı çözümünün Redis'te önbelleklenme süresi (saniye). "
+                    "Redis yapılandırılmışsa geçerli — DB kaynak-otoriter, bu yalnızca hızlandırıcı. "
+                    "Düşürmek yetki değişiminin (scope/deaktive) yansıma gecikmesini azaltır; büyütmek "
+                    "DB yükünü azaltır. İptaller (deaktive/ret/çıkış) ANINDA invalidate edilir; bu süre "
+                    "yalnızca doğrudan-SQL yapılan değişiklikler için üst sınırdır. (Redis yoksa etkisiz.)",
+    )
+
+
 # group adı -> (model sınıfı)
 GROUP_MODELS: dict[str, type[BaseModel]] = {
     "chunking": ChunkingConfig,
@@ -1103,6 +1147,7 @@ GROUP_MODELS: dict[str, type[BaseModel]] = {
     "storage": StorageConfig,
     "api": ApiConfig,
     "eval": EvalConfig,
+    "auth": AuthConfig,
 }
 
 

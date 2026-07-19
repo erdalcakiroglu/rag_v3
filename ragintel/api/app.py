@@ -24,12 +24,17 @@ def build_default_runtime() -> RagRuntime:
     from langgraph.checkpoint.postgres import PostgresSaver
 
     from ..config.loader import load_config
-    from ..config.settings import DbSettings, LiteLLMSettings
+    from ..config.settings import DbSettings, LiteLLMSettings, RedisSettings
     from ..database import Database, make_db_reader
     from ..llm.gateway import LiteLLMGateway
+    from .session_cache import build_session_cache
 
     db = Database(DbSettings()).open()
     cfg = load_config(db_reader=make_db_reader(db))
+    # M-10/0: OPSİYONEL oturum cache'i. URL boşsa Null (DB'ye düşer, regresyonsuz).
+    # TTL config-first (app_config('auth').session_cache_ttl_seconds).
+    session_cache = build_session_cache(
+        RedisSettings().url, ttl_seconds=int(cfg.group("auth").session_cache_ttl_seconds))
     # Demo/provider-swap esnekliği: model/api_base OS env ile override edilebilir
     # (LiteLLMSettings .env-only olduğundan api_base'i açıkça geçiriyoruz).
     # Model önceliği: OS env RAGINTEL_AGENT_MODEL > .env RAGINTEL_LLM_MODEL > DB.
@@ -46,7 +51,8 @@ def build_default_runtime() -> RagRuntime:
         temperature=float(cfg.group("agent").temperature))
     cm = PostgresSaver.from_conn_string(DbSettings().conninfo())
     saver = cm.__enter__()
-    rt = RagRuntime(db=db, config=cfg, gateway=gateway, checkpointer=saver)
+    rt = RagRuntime(db=db, config=cfg, gateway=gateway, checkpointer=saver,
+                    session_cache=session_cache)
     rt._cm, rt._db = cm, db  # shutdown için
     return rt
 
@@ -148,6 +154,10 @@ def create_app(runtime: RagRuntime | None = None) -> FastAPI:
     @app.get("/api/health")
     def health():
         return rt().health()
+
+    # M-12 — Public kimlik uçları (/api/register + /api/login, admin guard YOK).
+    from .user_auth import register_auth_routes
+    register_auth_routes(app, rt)
 
     # FAZ 7 — Admin panel uçları (/admin sayfası + /api/admin/*, admin guard'lı).
     from .admin import register_admin_routes

@@ -65,6 +65,14 @@ dependencies = [
     # FAZ 7 öncü: servis katmanı (senkron /api/ask → FinalResponse) + UI.
     "fastapi==0.128.0",
     "uvicorn==0.40.0",
+    # M-12: email+şifre kimlik. Şifre hash'i argon2id (yavaş+salt+bellek-sert) — token'ın
+    # sha256'sinden AYRI (düşük-entropili şifre için sha256 yetmez). cffi bağımlı; torch/numpy
+    # pin matrisinden bağımsız, Windows+H200 wheel'i hazır.
+    "argon2-cffi==23.1.0",
+    # M-10/0 EK: oturum-token OPSİYONEL Redis cache'i (auth resolver → DB yerine Redis lookup).
+    # DB kaynak-otoriter; Redis yoksa/erişilemezse DB'ye düşer (Bearer yolu regresyonsuz).
+    # Saf-Python wheel; torch/numpy matrisinden bağımsız.
+    "redis==5.2.1",
 ]
 
 [project.optional-dependencies]

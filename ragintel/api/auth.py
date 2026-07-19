@@ -34,27 +34,40 @@ class UserResolver(Protocol):
 
 
 class DbUserResolver:
-    """`ragintel.users` üzerinden token→user_ctx. LDAP resolver bunun yerine geçebilir."""
+    """`ragintel.users` üzerinden token→user_ctx. LDAP resolver bunun yerine geçebilir.
 
-    def __init__(self, db):
+    M-10/0: OPSİYONEL Redis cache (hızlandırıcı). DB kaynak-otoriter — cache miss/arıza
+    → DB. YALNIZCA pozitif çözüm cache'lenir (rastgele token'lar cache'i şişirmesin;
+    geçersiz token her seferinde DB'de reddedilir)."""
+
+    def __init__(self, db, cache=None):
         self.db = db
+        from .session_cache import NullSessionCache
+        self.cache = cache or NullSessionCache()
 
     def resolve(self, token: str | None) -> dict:
         if not token or not token.strip():
             raise Unauthorized("Authorization Bearer token gerekli")
+        token_hash = hash_token(token.strip())
+        cached = self.cache.get(token_hash)
+        if cached is not None:
+            return cached
         with self.db.connection() as conn:
-            user = user_repo.get_active_user_by_token_hash(conn, hash_token(token.strip()))
+            user = user_repo.get_active_user_by_token_hash(conn, token_hash)
         if user is None:
-            # Token değerini LOGLAMA (hash bile) — yalnızca reddi kaydet.
+            # Token değerini LOGLAMA (hash bile) — yalnızca reddi kaydet. Negatif SONUÇ
+            # cache'lenmez (bilinçli: iptal edilen token TTL süresince geçerli kalmasın).
             _LOG.warning("auth_rejected")
             raise Unauthorized("Geçersiz veya pasif token")
-        return {
+        ctx = {
             "user_id": user["user_id"],
             "tenant_id": user["tenant_id"],
             "roles": user["roles"],
             "allowed_doc_scopes": user["allowed_doc_scopes"],
             "is_admin": bool(user.get("is_admin", False)),  # FAZ 7
         }
+        self.cache.put(token_hash, ctx)
+        return ctx
 
 
 class Forbidden(Exception):

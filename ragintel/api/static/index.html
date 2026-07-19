@@ -58,10 +58,52 @@
   .fig{margin:0;border:1px solid var(--line);border-radius:6px;padding:6px;background:#0d1117;max-width:300px}
   .fig img{display:block;max-width:100%;height:auto;border-radius:4px}
   .fig figcaption{color:var(--mut);font-size:11px;margin-top:5px;overflow-wrap:anywhere}
+  /* M-12 — giriş/kayıt ekranı + hesap alanı */
+  .acct{float:right;font-weight:400;font-size:13px;color:var(--mut)}
+  .acct button{color:var(--acc);cursor:pointer;background:none;border:none;font-size:13px;padding:0}
+  .overlay{position:fixed;inset:0;background:rgba(0,0,0,.62);display:flex;align-items:center;justify-content:center;z-index:50;padding:16px}
+  .overlay.hidden{display:none}
+  .authbox{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:24px;width:370px;max-width:94vw}
+  .authbox h2{margin:0 0 4px;font-size:19px} .authbox .sub{color:var(--mut);font-size:13px;margin-bottom:18px}
+  .authtabs{display:flex;gap:8px;margin-bottom:16px}
+  .authtabs button{flex:1;padding:9px;border:1px solid var(--line);background:#0d1117;color:var(--txt);border-radius:8px;cursor:pointer;font-size:14px}
+  .authtabs button.on{border-color:var(--acc);color:var(--acc)}
+  .authbox label{display:block;font-size:12px;color:var(--mut);margin:11px 0 4px}
+  .authbox input{width:100%;padding:10px 12px;background:#0d1117;border:1px solid var(--line);border-radius:8px;color:var(--txt);font-size:14px}
+  .authbox .go{width:100%;margin-top:18px;padding:11px;background:var(--acc);color:#fff;border:0;border-radius:8px;font-weight:600;cursor:pointer}
+  .authbox .go:disabled{opacity:.5;cursor:wait}
+  .authmsg{margin-top:12px;font-size:13px;white-space:pre-wrap} .authmsg.err{color:var(--lo)} .authmsg.ok{color:var(--hi)}
+  .authalt{margin-top:16px;text-align:center;font-size:12px}
+  .authalt button{color:var(--mut);cursor:pointer;text-decoration:underline;background:none;border:none;font-size:12px}
 </style>
 </head>
 <body>
-<header>ragintel <small>kurumsal doküman asistanı — FAZ 7 öncü</small></header>
+<header>ragintel <small>kurumsal doküman asistanı — FAZ 7 öncü</small><span class="acct" id="acct"></span></header>
+
+<!-- M-12: giriş/kayıt ekranı (token yoksa açılır). Token-yapıştırma yolu altta gizli tutulur. -->
+<div id="auth" class="overlay hidden">
+  <div class="authbox">
+    <h2>ragintel</h2><div class="sub">Kurumsal doküman asistanı — devam etmek için giriş yapın</div>
+    <div class="authtabs">
+      <button id="tab-login" class="on" onclick="authTab('login')">Giriş</button>
+      <button id="tab-reg" onclick="authTab('register')">Kayıt Ol</button>
+    </div>
+    <div id="pane-login">
+      <label>Email</label><input id="li_email" type="email" autocomplete="username">
+      <label>Şifre</label><input id="li_pw" type="password" autocomplete="current-password">
+      <button class="go" id="li_go" onclick="doLogin()">Giriş yap</button>
+    </div>
+    <div id="pane-register" style="display:none">
+      <label>Ad Soyad</label><input id="rg_name" autocomplete="name">
+      <label>Email</label><input id="rg_email" type="email" autocomplete="username">
+      <label>Şifre</label><input id="rg_pw" type="password" autocomplete="new-password">
+      <button class="go" id="rg_go" onclick="doRegister()">Kayıt ol</button>
+    </div>
+    <div id="authmsg" class="authmsg"></div>
+    <div class="authalt"><button onclick="tokenLogin()">Token ile giriş (yönetici / servis)</button></div>
+  </div>
+</div>
+
 <main>
   <form class="ask" id="askForm">
     <input id="q" placeholder="Sorunuzu yazın… (ör. Karbon vergisini ilk uygulayan ülke hangisidir?)" autocomplete="off">
@@ -91,6 +133,59 @@ function promptToken(){
   return false;
 }
 
+// ---- M-12: email+şifre giriş/kayıt (FAZ 6 Bearer'ın üstünde) ---------------
+function authTab(which){
+  document.getElementById('pane-login').style.display = which==='login'?'block':'none';
+  document.getElementById('pane-register').style.display = which==='register'?'block':'none';
+  document.getElementById('tab-login').classList.toggle('on', which==='login');
+  document.getElementById('tab-reg').classList.toggle('on', which==='register');
+  authMsg('');
+}
+function authMsg(t, ok){ const m=document.getElementById('authmsg'); m.textContent=t||''; m.className='authmsg'+(t?(ok?' ok':' err'):''); }
+function showAuth(show){ document.getElementById('auth').classList.toggle('hidden', !show); }
+function renderAcct(){
+  const uid=localStorage.getItem('ragintel_user'); const a=document.getElementById('acct');
+  a.innerHTML = uid ? `${esc(uid)} · <button onclick="logout()">çıkış</button>`
+                    : `<button onclick="showAuth(true)">Giriş</button>`;
+}
+async function doLogin(){
+  const email=document.getElementById('li_email').value.trim(), pw=document.getElementById('li_pw').value;
+  if(!email||!pw){ authMsg('Email ve şifre girin.'); return; }
+  const b=document.getElementById('li_go'); b.disabled=true;
+  try{
+    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({email, password:pw})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){ authMsg(j.detail||'Giriş başarısız.'); return; }   // 401 nötr / 403 pending·disabled
+    localStorage.setItem('ragintel_token', j.token);
+    localStorage.setItem('ragintel_user', j.user_id);
+    document.getElementById('li_pw').value='';
+    authMsg(''); showAuth(false); renderAcct();
+  }catch(e){ authMsg('Ağ hatası — tekrar deneyin.'); }
+  finally{ b.disabled=false; }
+}
+async function doRegister(){
+  const full_name=document.getElementById('rg_name').value.trim();
+  const email=document.getElementById('rg_email').value.trim(), pw=document.getElementById('rg_pw').value;
+  if(!full_name||!email||!pw){ authMsg('Tüm alanları doldurun.'); return; }
+  const b=document.getElementById('rg_go'); b.disabled=true;
+  try{
+    const r=await fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({full_name, email, password:pw})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){ authMsg(j.detail||'Kayıt başarısız.'); return; }    // 403 allowlist / 400 politika
+    document.getElementById('rg_pw').value='';
+    authMsg(j.message||'Kaydınız alındı; yönetici onayından sonra giriş yapabilirsiniz.', true);
+  }catch(e){ authMsg('Ağ hatası — tekrar deneyin.'); }
+  finally{ b.disabled=false; }
+}
+function logout(){ localStorage.removeItem('ragintel_token'); localStorage.removeItem('ragintel_user'); renderAcct(); showAuth(true); }
+function tokenLogin(){ if(promptToken()){ localStorage.setItem('ragintel_user','(token)'); showAuth(false); renderAcct(); } }
+
+// Açılış: hesap alanını çiz; token yoksa giriş ekranını göster.
+renderAcct();
+if(!localStorage.getItem('ragintel_token')) showAuth(true);
+
 async function ask(question){
   question=(question||'').trim(); if(!question) return;
   qEl.value=question; btn.disabled=true; btn.textContent='…';
@@ -98,9 +193,9 @@ async function ask(question){
   try{
     const r = await fetch('/api/ask',{method:'POST',headers:authHeaders(),
       body:JSON.stringify({question, session_id:sessionId})});
-    if(r.status===401){ // token yok/geçersiz → sor ve tekrar dene
-      out.innerHTML='<div class="card err">Kimlik doğrulama gerekli.</div>';
-      if(promptToken()){ btn.disabled=false; return ask(question); } return;
+    if(r.status===401){ // token yok/geçersiz/oturum düşmüş → giriş ekranını aç
+      out.innerHTML='<div class="card err">Oturum gerekli — lütfen giriş yapın.</div>';
+      localStorage.removeItem('ragintel_user'); renderAcct(); showAuth(true); return;
     }
     if(!r.ok){ const t=await r.text(); out.innerHTML=`<div class="card err">Hata ${r.status}: ${esc(t)}</div>`; return; }
     sessionId = r.headers.get('X-Session-Id') || sessionId;

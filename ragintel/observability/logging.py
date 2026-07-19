@@ -20,13 +20,28 @@ from structlog.contextvars import (
 _CONFIGURED = False
 
 
+# M-12: anahtar-ADI sır çağrıştıran alanlar tamamen redakte edilir (değeri loglanmaz).
+# Kemer+askı: uçlar şifreyi zaten event_dict'e koymaz, ama yanlışlıkla eklenirse burada tutulur.
+_SECRET_KEY_HINTS = ("password", "passwd", "pwd", "secret", "token", "authorization", "api_key")
+_REDACTED = "***"
+
+
+def _looks_secret(key: str) -> bool:
+    k = key.lower()
+    return any(h in k for h in _SECRET_KEY_HINTS)
+
+
 def _pii_scrub_processor(logger, method_name, event_dict):
-    """FAZ 6 P2: log kayıtlarındaki string değerlerde TCKN'yi maskeler (PII log'a SIZMAZ).
-    Lazy import — guardrails paketi ↔ logging dairesel import'unu önler."""
+    """FAZ 6 P2 + M-12: (1) anahtar-adı sır olan alanları redakte eder (şifre/token log'a
+    SIZMAZ); (2) kalan string değerlerde TCKN'yi maskeler. Lazy import — guardrails paketi
+    ↔ logging dairesel import'unu önler."""
     from ..guardrails.pii import PiiPolicy, mask_pii
 
     pol = PiiPolicy(mask_tckn=True, mask_dates=False)  # log'da yalnızca TCKN scrub
     for key, val in list(event_dict.items()):
+        if _looks_secret(key):
+            event_dict[key] = _REDACTED          # M-12: sır değeri asla log'a
+            continue
         if isinstance(val, str) and len(val) >= 11:
             masked, n = mask_pii(val, pol)
             if n:

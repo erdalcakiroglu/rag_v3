@@ -100,6 +100,13 @@ RAGINTEL_LANGFUSE_HOST=http://127.0.0.1:3000
 RAGINTEL_LANGFUSE_PUBLIC_KEY=<pk>
 RAGINTEL_LANGFUSE_SECRET_KEY=<sk>
 
+# --- Redis oturum-cache'i (M-10/0 EK, OPSİYONEL) — H200-YEREL, DB-sunucu Redis'i DEĞİL ---
+# İki satır BİRLİKTE gider: PASSWORD compose'daki redis servisinin `requirepass`'ini
+# besler; URL de app'in bağlanacağı adres (parolayı İÇERİR). Boş bırakırsanız cache
+# devre dışı kalır (app her istekte DB'ye gider — regresyonsuz). Parola üret: openssl rand -hex 24
+RAGINTEL_REDIS_PASSWORD=<redis-parolasi>
+RAGINTEL_REDIS_URL=redis://:<redis-parolasi>@localhost:6379/0
+
 ```
 
 > **API token'ı buraya YAZILMAZ.** `RAGINTEL_API_TOKEN` diye bir ayar **yoktur** —

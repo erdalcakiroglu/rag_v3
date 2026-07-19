@@ -56,12 +56,16 @@ class AskResult:
 class RagRuntime:
     def __init__(self, *, db, config: EffectiveConfig, gateway, checkpointer,
                  service=None, context_builder=None, registry=None, langfuse: LangfuseSettings | None = None,
-                 resolver=None):
+                 resolver=None, session_cache=None):
         self.db = db
         self.cfg = config
         self.log = get_logger("api.runtime")
+        # M-10/0: OPSİYONEL oturum-token cache'i (Redis). Yoksa Null (DB'ye düşer).
+        # Uçlar iptal için `rt().session_cache.invalidate_user(...)` çağırır.
+        from .session_cache import NullSessionCache
+        self.session_cache = session_cache or NullSessionCache()
         # FAZ 6 AuthN: Bearer token → user_ctx. LDAP resolver (FAZ 9) buraya enjekte edilir.
-        self.resolver = resolver or DbUserResolver(db)
+        self.resolver = resolver or DbUserResolver(db, cache=self.session_cache)
         self.injection = InjectionScanner(config)
         self.max_q = int(config.group("agent").max_question_chars)
         self.langfuse = langfuse or LangfuseSettings()
@@ -264,6 +268,14 @@ class RagRuntime:
                   "tei": (self._check_http(tei_url.rstrip("/") + "/health", api_cfg.health_timeout)
                           if tei_url else "disabled"),
                   "langfuse": "enabled" if self.langfuse.enabled else "disabled"}
+        # M-10/0: oturum cache'i (Redis). TEI deseni: yapılandırılmamışsa "disabled"
+        # (degrade ETMEZ — opsiyonel hızlandırıcı); yapılandırılmış ama erişilemezse "down"
+        # (DB'ye düşülür, akış sürer → derive_health_status redis'i dikkate ALMAZ).
+        _sc = getattr(self, "session_cache", None)
+        if _sc is None or not getattr(_sc, "enabled", False):
+            checks["redis"] = "disabled"
+        else:
+            checks["redis"] = "ok" if _sc.ping() else "down"
         warm = self.is_warm
         checks["warmup"] = "ok" if warm else "warming"
         base = derive_health_status(checks)

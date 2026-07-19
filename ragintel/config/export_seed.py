@@ -26,7 +26,12 @@ from .loader import EffectiveConfig
 from .settings import GROUP_MODELS, PIPELINE_GROUPS
 
 # Seed'e giren davranışsal gruplar (açık allowlist). Bootstrap/secret buraya GİRMEZ.
-SEEDABLE_GROUPS: tuple[str, ...] = PIPELINE_GROUPS
+# M-12: 'auth' PIPELINE_GROUPS'ta (loader tipler, panelden yönetilir) ama SEED'e GİRMEZ:
+# güvenlik politikası operasyoneldir (allowlist/şifre-uzunluğu admin'in kararı; boş-allowlist
+# fail-closed varsayılanı bilinçlidir) — davranışsal defaults değil. Ayrıca password_min_length
+# adı secret-marker'a takılırdı (yanlış-pozitif). Seed = pipeline davranışı, güvenlik değil.
+_SEED_EXCLUDED: tuple[str, ...] = ("auth",)
+SEEDABLE_GROUPS: tuple[str, ...] = tuple(g for g in PIPELINE_GROUPS if g not in _SEED_EXCLUDED)
 
 # Bir seedable alan adı bunlardan birini içeriyorsa bootstrap/secret sızıntısı sayılır.
 # NOT: "token" bilinçli olarak YOK — davranışsal `max_tokens`/`overlap_tokens` ile

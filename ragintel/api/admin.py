@@ -190,6 +190,7 @@ def register_admin_routes(app, rt) -> None:
         with rt().db.connection() as conn:
             if user_repo.set_scopes(conn, user_id, scopes) == 0:
                 raise HTTPException(404, f"Kullanıcı yok: {user_id}")
+        rt().session_cache.invalidate_user(user_id)  # yeni scope ANINDA yansısın (cache bayat kalmasın)
         return {"status": "ok", "user_id": user_id, "allowed_doc_scopes": scopes}
 
     @app.post("/api/admin/users/{user_id}/active")
@@ -202,7 +203,35 @@ def register_admin_routes(app, rt) -> None:
         with rt().db.connection() as conn:
             if user_repo.set_active(conn, user_id, active) == 0:
                 raise HTTPException(404, f"Kullanıcı yok: {user_id}")
+        rt().session_cache.invalidate_user(user_id)  # deaktive → oturum ANINDA geçersiz (TTL beklenmez)
         return {"status": "ok", "user_id": user_id, "active": active}
+
+    # -- M-12: self-kayıt onay/ret (pending → active+scope | disabled) ---------
+    @app.post("/api/admin/users/{user_id}/approve")
+    def approve_user(user_id: str, scopes: list[str] = Body(..., embed=True),
+                     authorization: str | None = Header(default=None)):
+        """Pending self-kayıt kullanıcısını onaylar: status=active + scope atar (giriş açılır).
+        Yalnız pending kullanıcıyı etkiler (zaten aktif/servis kullanıcısını değiştirmez)."""
+        _admin(authorization)
+        with rt().db.connection() as conn:
+            if user_repo.approve_user(conn, user_id, scopes) == 0:
+                raise HTTPException(404, f"Onay bekleyen kullanıcı yok: {user_id}")
+        rt().session_cache.invalidate_user(user_id)
+        return {"status": "ok", "user_id": user_id, "user_status": "active",
+                "allowed_doc_scopes": scopes}
+
+    @app.post("/api/admin/users/{user_id}/reject")
+    def reject_user(user_id: str, authorization: str | None = Header(default=None)):
+        """Self-kayıt reddi/askıya alma: status=disabled + active=false (giriş+Bearer kapanır)."""
+        ctx = _admin(authorization)
+        # Kendi hesabını reddetme/kilitleme koruması (self-deaktive korumasıyla simetrik).
+        if user_id == ctx["user_id"]:
+            raise HTTPException(400, "Kendi hesabınızı reddedemezsiniz")
+        with rt().db.connection() as conn:
+            if user_repo.reject_user(conn, user_id) == 0:
+                raise HTTPException(404, f"Kullanıcı yok: {user_id}")
+        rt().session_cache.invalidate_user(user_id)  # ret/askı → varsa oturum ANINDA kapanır
+        return {"status": "ok", "user_id": user_id, "user_status": "disabled"}
 
     # -- 3) DOKÜMAN & QC ------------------------------------------------------
     @app.get("/api/admin/files")
