@@ -159,6 +159,10 @@ def create_app(runtime: RagRuntime | None = None) -> FastAPI:
     from .user_auth import register_auth_routes
     register_auth_routes(app, rt)
 
+    # M-13 — Konuşma geçmişi uçları (Bearer auth, sahiplik fail-closed).
+    from .conversations import register_conversation_routes
+    register_conversation_routes(app, rt)
+
     # FAZ 7 — Admin panel uçları (/admin sayfası + /api/admin/*, admin guard'lı).
     from .admin import register_admin_routes
     register_admin_routes(app, rt)

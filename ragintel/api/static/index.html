@@ -75,10 +75,31 @@
   .authmsg{margin-top:12px;font-size:13px;white-space:pre-wrap} .authmsg.err{color:var(--lo)} .authmsg.ok{color:var(--hi)}
   .authalt{margin-top:16px;text-align:center;font-size:12px}
   .authalt button{color:var(--mut);cursor:pointer;text-decoration:underline;background:none;border:none;font-size:12px}
+  /* M-13 — sohbet paneli (sol liste + mesaj akışı) */
+  .sbtoggle{background:none;border:none;color:var(--mut);cursor:pointer;font-size:18px;margin-right:10px;vertical-align:middle}
+  .layout{display:flex;align-items:flex-start}
+  #sidebar{position:sticky;top:0;height:100vh;width:264px;flex:0 0 264px;border-right:1px solid var(--line);
+           background:#12181f;display:flex;flex-direction:column;overflow:hidden}
+  #sidebar.hidden{display:none}
+  .sb-head{padding:12px}
+  #newchat{width:100%;padding:10px;background:var(--acc);color:#fff;border:0;border-radius:8px;font-weight:600;cursor:pointer}
+  #convlist{flex:1;overflow:auto;padding:0 8px 12px}
+  .conv{display:flex;align-items:center;gap:6px;padding:9px 10px;border-radius:8px;cursor:pointer;font-size:13.5px}
+  .conv:hover{background:#1a222c} .conv.on{background:#1f2a36}
+  .conv .t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .conv .del{opacity:0;border:none;background:none;color:var(--mut);cursor:pointer;font-size:14px;padding:0 2px}
+  .conv:hover .del{opacity:1} .conv .del:hover{color:var(--lo)}
+  .sb-empty{color:var(--mut);font-size:12.5px;padding:10px 12px}
+  main{flex:1;min-width:0}
+  #out{max-width:900px;margin:0 auto}
+  .msg{max-width:900px;margin:14px auto 0;padding:11px 16px;border-radius:10px;white-space:pre-wrap;line-height:1.5}
+  .msg.user{background:#1f2a36;border:1px solid var(--line)}
+  .msg.asst{background:var(--panel);border:1px solid var(--line)}
+  .msg .role{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
 </style>
 </head>
 <body>
-<header>ragintel <small>kurumsal doküman asistanı — FAZ 7 öncü</small><span class="acct" id="acct"></span></header>
+<header><button class="sbtoggle" onclick="toggleSidebar()" title="Sohbetler">☰</button>ragintel <small>kurumsal doküman asistanı — FAZ 7 öncü</small><span class="acct" id="acct"></span></header>
 
 <!-- M-12: giriş/kayıt ekranı (token yoksa açılır). Token-yapıştırma yolu altta gizli tutulur. -->
 <div id="auth" class="overlay hidden">
@@ -104,16 +125,26 @@
   </div>
 </div>
 
-<main>
-  <form class="ask" id="askForm">
-    <input id="q" placeholder="Sorunuzu yazın… (ör. Karbon vergisini ilk uygulayan ülke hangisidir?)" autocomplete="off">
-    <button id="askBtn" type="submit">Sor</button>
-  </form>
-  <div id="out"></div>
-</main>
+<div class="layout">
+  <!-- M-13: sohbet listesi (sol panel) -->
+  <aside id="sidebar">
+    <div class="sb-head"><button id="newchat" onclick="newChat()">＋ Yeni sohbet</button></div>
+    <div id="convlist"></div>
+  </aside>
+  <main>
+    <form class="ask" id="askForm">
+      <input id="q" placeholder="Sorunuzu yazın… (ör. Karbon vergisini ilk uygulayan ülke hangisidir?)" autocomplete="off">
+      <button id="askBtn" type="submit">Sor</button>
+    </form>
+    <div id="out"></div>
+  </main>
+</div>
 <script>
 const out = document.getElementById('out'), qEl = document.getElementById('q'), btn = document.getElementById('askBtn');
 let sessionId = localStorage.getItem('ragintel_session') || null;
+let cardSeq = 0;   // M-13: her yanıt kartına benzersiz ön-ek (kaynak/tablo id çakışması olmasın)
+const el = h => { const t=document.createElement('template'); t.innerHTML=h.trim(); return t.content.firstElementChild; };
+const scrollBottom = () => window.scrollTo(0, document.body.scrollHeight);
 
 function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
 function md(s){return esc(s).replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/`([^`]+)`/g,'<code>$1</code>');}
@@ -160,7 +191,7 @@ async function doLogin(){
     localStorage.setItem('ragintel_token', j.token);
     localStorage.setItem('ragintel_user', j.user_id);
     document.getElementById('li_pw').value='';
-    authMsg(''); showAuth(false); renderAcct();
+    authMsg(''); showAuth(false); renderAcct(); loadConversations();
   }catch(e){ authMsg('Ağ hatası — tekrar deneyin.'); }
   finally{ b.disabled=false; }
 }
@@ -182,56 +213,63 @@ async function doRegister(){
 async function logout(){
   // Önce sunucudaki oturumu sonlandır (Redis'ten sil), sonra yereli temizle.
   try{ await fetch('/api/logout',{method:'POST',headers:authHeaders()}); }catch(e){}
-  localStorage.removeItem('ragintel_token'); localStorage.removeItem('ragintel_user'); renderAcct(); showAuth(true);
+  localStorage.removeItem('ragintel_token'); localStorage.removeItem('ragintel_user');
+  sessionId=null; localStorage.removeItem('ragintel_session');
+  out.innerHTML=''; document.getElementById('convlist').innerHTML='';
+  renderAcct(); showAuth(true);
 }
-function tokenLogin(){ if(promptToken()){ localStorage.setItem('ragintel_user','(token)'); showAuth(false); renderAcct(); } }
+function tokenLogin(){ if(promptToken()){ localStorage.setItem('ragintel_user','(token)'); showAuth(false); renderAcct(); loadConversations(); } }
 
-// Açılış: hesap alanını çiz; token yoksa giriş ekranını göster.
+// Açılış: hesap alanını çiz; token yoksa giriş ekranını göster, varsa sohbetleri yükle.
 renderAcct();
-if(!localStorage.getItem('ragintel_token')) showAuth(true);
+if(!localStorage.getItem('ragintel_token')) showAuth(true); else loadConversations();
 
 async function ask(question){
   question=(question||'').trim(); if(!question) return;
-  qEl.value=question; btn.disabled=true; btn.textContent='…';
-  out.innerHTML='<div class="card">Yanıt hazırlanıyor…</div>';
+  qEl.value=''; btn.disabled=true; btn.textContent='…';
+  out.appendChild(el(`<div class="msg user"><div class="role">Siz</div>${esc(question)}</div>`));
+  const card = el('<div class="card">Yanıt hazırlanıyor…</div>'); out.appendChild(card); scrollBottom();
   try{
     const r = await fetch('/api/ask',{method:'POST',headers:authHeaders(),
       body:JSON.stringify({question, session_id:sessionId})});
     if(r.status===401){ // token yok/geçersiz/oturum düşmüş → giriş ekranını aç
-      out.innerHTML='<div class="card err">Oturum gerekli — lütfen giriş yapın.</div>';
+      card.className='card err'; card.textContent='Oturum gerekli — lütfen giriş yapın.';
       localStorage.removeItem('ragintel_user'); renderAcct(); showAuth(true); return;
     }
-    if(!r.ok){ const t=await r.text(); out.innerHTML=`<div class="card err">Hata ${r.status}: ${esc(t)}</div>`; return; }
+    if(!r.ok){ const t=await r.text(); card.className='card err'; card.textContent=`Hata ${r.status}: ${t}`; return; }
     sessionId = r.headers.get('X-Session-Id') || sessionId;
     if(sessionId) localStorage.setItem('ragintel_session', sessionId);
     const injected = r.headers.get('X-Injection-Flagged')==='1';
-    render(await r.json(), injected);
-  }catch(err){ out.innerHTML=`<div class="card err">Ağ hatası: ${esc(String(err))}</div>`; }
-  finally{ btn.disabled=false; btn.textContent='Sor'; }
+    card.innerHTML = answerCardHTML(await r.json(), injected, ++cardSeq);
+    loadConversations();   // yeni sohbet / last_at listede yansısın
+  }catch(err){ card.className='card err'; card.textContent='Ağ hatası: '+String(err); }
+  finally{ btn.disabled=false; btn.textContent='Sor'; scrollBottom(); }
 }
 
-function render(resp, injected){
+// Yanıt kartının İÇ HTML'i (kart konteyneri ask() tarafından). `seq` benzersiz ön-ek:
+// aynı akışta birden çok yanıtın tablo/görsel id'leri ÇAKIŞMASIN (M-2/M-7 kapları kart-yerel).
+function answerCardHTML(resp, injected, seq){
   const c = resp.confidence||'low';
   const label = {high:'yüksek güven',medium:'orta güven',low:'düşük güven'}[c]||c;
-  let h = `<div class="card"><span class="badge b-${c}">${label}</span>`;
+  let h = `<span class="badge b-${c}">${label}</span>`;
   if(injected) h += `<div class="warn">⚠ Soruda şüpheli kalıp işaretlendi (reddedilmedi; kayda geçti).</div>`;
   h += `<div class="answer">${md(resp.answer)}</div>`;
   if(resp.sources && resp.sources.length){
     h += `<h3>Kaynaklar</h3>`;
     resp.sources.forEach(s=>{
+      const uid = seq+'_'+s.n;              // kart-yerel benzersiz id
       const loc = s.page!=null ? `s.${s.page}` : '';
       // M-2: yalnızca tablo-kökenli kaynakta düğme + tablo kabı. Diğerleri AYNEN eski görünüm.
       const tr = s.table_ref;
-      const btn = tr ? `<button class="tbtn" onclick="showTable(${s.n},${tr.table_id},${num(tr.row_start)},${num(tr.row_end)},event)">Tabloyu görüntüle</button>` : '';
-      const box = tr ? `<div id="tbl-${s.n}"></div>` : '';
-      // M-7: alıntının geldiği SAYFADAKİ görseller. Görseli olmayan kaynakta hiçbir
-      // şey çıkmaz (eski görünüm birebir korunur).
+      const btn = tr ? `<button class="tbtn" onclick="showTable('${uid}',${tr.table_id},${num(tr.row_start)},${num(tr.row_end)},event)">Tabloyu görüntüle</button>` : '';
+      const box = tr ? `<div id="tbl-${uid}"></div>` : '';
+      // M-7: alıntının geldiği SAYFADAKİ görseller.
       const figs = (s.figures && s.figures.length)
-        ? `<button class="tbtn" onclick="showFigures(${s.n},event)">Kaynağın görselleri (${s.figures.length})</button>
-           <div id="fig-${s.n}" class="figbox"></div>` : '';
+        ? `<button class="tbtn" onclick="showFigures('${uid}',event)">Kaynağın görselleri (${s.figures.length})</button>
+           <div id="fig-${uid}" class="figbox"></div>` : '';
       h += `<div class="src" onclick="this.classList.toggle('open')"><b>[${s.n}]</b> ${esc(s.file_name)} ${loc}
              ${s.section?('· '+esc(s.section)):''}<div class="q">“${esc(s.quote)}”</div>${btn}${figs}${box}</div>`;
-      if(s.figures && s.figures.length) FIGS[s.n] = s.figures;
+      if(s.figures && s.figures.length) FIGS[uid] = s.figures;
     });
   } else {
     // FAZ 5: reddedilen yanıtta kaynak GÖSTERİLMEZ (citation değil). İncelenen ama cevabı
@@ -255,11 +293,11 @@ function render(resp, injected){
   }
   const tid = (resp.meta&&resp.meta.trace_id)||'';
   h += `<div class="fb"><span>Bu yanıt yardımcı oldu mu?</span>
-        <button id="up" onclick="feedback(1,'${tid}',this)">👍</button>
-        <button id="down" onclick="feedback(-1,'${tid}',this)">👎</button><span id="fbmsg"></span></div>`;
+        <button onclick="feedback(1,'${tid}',this)">👍</button>
+        <button onclick="feedback(-1,'${tid}',this)">👎</button><span class="fbmsg"></span></div>`;
   const m = resp.meta||{};
-  h += `<div class="meta">tur: ${m.iterations} · token: ${m.tokens} · model: ${esc(m.model||'')} · trace: ${esc((tid||'').slice(0,12))}</div></div>`;
-  out.innerHTML = h;
+  h += `<div class="meta">tur: ${m.iterations} · token: ${m.tokens} · model: ${esc(m.model||'')} · trace: ${esc((tid||'').slice(0,12))}</div>`;
+  return h;
 }
 
 // ---- M-2: yapısal tablo gösterimi -----------------------------------------
@@ -340,9 +378,10 @@ async function showTable(n, tableId, rowStart, rowEnd, ev){
   }
 }
 
-async function feedback(rating, traceId, el){
-  document.querySelectorAll('.fb button').forEach(b=>b.classList.remove('on')); el.classList.add('on');
-  const msg=document.getElementById('fbmsg');
+async function feedback(rating, traceId, btnEl){
+  const card = btnEl.closest('.card');                 // geri bildirim KART-YEREL (birden çok yanıt)
+  card.querySelectorAll('.fb button').forEach(b=>b.classList.remove('on')); btnEl.classList.add('on');
+  const msg = card.querySelector('.fbmsg');
   try{
     const r=await fetch('/api/feedback',{method:'POST',headers:authHeaders(),
       body:JSON.stringify({session_id:sessionId,trace_id:traceId,rating})});
@@ -350,6 +389,45 @@ async function feedback(rating, traceId, el){
     msg.textContent = j.recorded ? ' — teşekkürler, kaydedildi' : ` — (${j.status})`;
   }catch(e){ msg.textContent=' — gönderilemedi'; }
 }
+
+// ---- M-13: sohbet listesi / yükle / yeni / sil (sol panel) -----------------
+async function loadConversations(){
+  const lst = document.getElementById('convlist');
+  try{
+    const r = await fetch('/api/conversations',{headers:authHeaders()});
+    if(!r.ok){ return; }
+    const {conversations} = await r.json();
+    if(!conversations.length){ lst.innerHTML='<div class="sb-empty">Henüz sohbet yok.</div>'; return; }
+    lst.innerHTML='';
+    conversations.forEach(cv=>{
+      const it = el(`<div class="conv ${cv.conversation_id===sessionId?'on':''}"><span class="t" title="${esc(cv.title)}">${esc(cv.title)}</span><button class="del" title="Sil">✕</button></div>`);
+      it.querySelector('.t').onclick = ()=>openConversation(cv.conversation_id);
+      it.querySelector('.del').onclick = (e)=>{ e.stopPropagation(); delConversation(cv.conversation_id); };
+      lst.appendChild(it);
+    });
+  }catch(e){}
+}
+async function openConversation(id){
+  try{
+    const r = await fetch('/api/conversations/'+encodeURIComponent(id),{headers:authHeaders()});
+    if(!r.ok){ if(r.status===401) showAuth(true); return; }   // 404 = yok/başkasının (sahiplik)
+    const {messages} = await r.json();
+    sessionId = id; localStorage.setItem('ragintel_session', id);
+    out.innerHTML='';
+    // Geçmiş SALT-OKUMA transcript (checkpoint'ten değil, conversation_messages'tan).
+    messages.forEach(m=> out.appendChild(el(
+      `<div class="msg ${m.role==='user'?'user':'asst'}"><div class="role">${m.role==='user'?'Siz':'Asistan'}</div>${m.role==='user'?esc(m.content):md(m.content)}</div>`)));
+    loadConversations(); scrollBottom();
+  }catch(e){}
+}
+function newChat(){ sessionId=null; localStorage.removeItem('ragintel_session'); out.innerHTML=''; loadConversations(); qEl.focus(); }
+async function delConversation(id){
+  if(!confirm('Bu sohbeti sil?')) return;
+  try{ await fetch('/api/conversations/'+encodeURIComponent(id),{method:'DELETE',headers:authHeaders()}); }catch(e){}
+  if(id===sessionId){ sessionId=null; localStorage.removeItem('ragintel_session'); out.innerHTML=''; }
+  loadConversations();
+}
+function toggleSidebar(){ document.getElementById('sidebar').classList.toggle('hidden'); }
 </script>
 </body>
 </html>

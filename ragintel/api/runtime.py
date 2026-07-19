@@ -157,8 +157,26 @@ class RagRuntime:
                 final = self._error_response(trace_id, t0, type(exc).__name__)
         self._enrich_table_refs(final)
         self._enrich_figures(final, user_ctx)   # M-7: kaynağın sayfasındaki görseller
+        # M-13: konuşma geçmişi (best-effort — başarısızlık cevabı ÇÖKERTMEZ; şema
+        # uygulanmadıysa sessizce atlar). scope SNAPSHOT salt bilgidir (yetki değil).
+        self._record_history(session_id, user_ctx, q, final, trace_id)
         return AskResult(session_id=session_id, final_response=final,
                          injection_flagged=inj.flagged, trace_id=trace_id)
+
+    def _record_history(self, session_id: str, user_ctx: dict, question: str,
+                        final: dict, trace_id: str) -> None:
+        from ..database import conversation_repo
+        try:
+            answer = str((final or {}).get("answer") or "")
+            with self.db.connection() as conn:
+                if not conversation_repo.conversations_ready(conn):
+                    return
+                conversation_repo.record_turn(
+                    conn, conversation_id=session_id, user_id=user_ctx["user_id"],
+                    question=question, answer=answer,
+                    scopes=list(user_ctx.get("allowed_doc_scopes") or []), trace_id=trace_id)
+        except Exception as exc:
+            self.log.warning("history_record_failed", session_id=session_id, error=str(exc)[:120])
 
     # -- M-2: kaynak zenginleştirme (additive) ---------------------------------
     def _enrich_table_refs(self, final: dict) -> None:
