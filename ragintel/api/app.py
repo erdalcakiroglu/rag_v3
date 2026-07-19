@@ -27,14 +27,14 @@ def build_default_runtime() -> RagRuntime:
     from ..config.settings import DbSettings, LiteLLMSettings, RedisSettings
     from ..database import Database, make_db_reader
     from ..llm.gateway import LiteLLMGateway
-    from .session_cache import build_session_cache
+    from .session_store import build_session_store
 
     db = Database(DbSettings()).open()
     cfg = load_config(db_reader=make_db_reader(db))
-    # M-10/0: OPSİYONEL oturum cache'i. URL boşsa Null (DB'ye düşer, regresyonsuz).
-    # TTL config-first (app_config('auth').session_cache_ttl_seconds).
-    session_cache = build_session_cache(
-        RedisSettings().url, ttl_seconds=int(cfg.group("auth").session_cache_ttl_seconds))
+    # M-12 Redis eki: login oturumlarının Redis deposu. URL boşsa Null (login çalışmaz;
+    # admin DB token yolu sürer). TTL config-first (app_config('auth').session_ttl_seconds).
+    session_store = build_session_store(
+        RedisSettings().url, ttl_seconds=int(cfg.group("auth").session_ttl_seconds))
     # Demo/provider-swap esnekliği: model/api_base OS env ile override edilebilir
     # (LiteLLMSettings .env-only olduğundan api_base'i açıkça geçiriyoruz).
     # Model önceliği: OS env RAGINTEL_AGENT_MODEL > .env RAGINTEL_LLM_MODEL > DB.
@@ -52,7 +52,7 @@ def build_default_runtime() -> RagRuntime:
     cm = PostgresSaver.from_conn_string(DbSettings().conninfo())
     saver = cm.__enter__()
     rt = RagRuntime(db=db, config=cfg, gateway=gateway, checkpointer=saver,
-                    session_cache=session_cache)
+                    session_store=session_store)
     rt._cm, rt._db = cm, db  # shutdown için
     return rt
 

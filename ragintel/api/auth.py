@@ -34,40 +34,44 @@ class UserResolver(Protocol):
 
 
 class DbUserResolver:
-    """`ragintel.users` üzerinden token→user_ctx. LDAP resolver bunun yerine geçebilir.
+    """Bearer token → user_ctx. İKİ YOL (M-12 Redis eki, güvenlik sözleşmesi):
 
-    M-10/0: OPSİYONEL Redis cache (hızlandırıcı). DB kaynak-otoriter — cache miss/arıza
-    → DB. YALNIZCA pozitif çözüm cache'lenir (rastgele token'lar cache'i şişirmesin;
-    geçersiz token her seferinde DB'de reddedilir)."""
+      1) LOGIN oturumu → Redis session store (email+şifre girişinden). Bulununca çözülür
+         ve TTL SLIDING tazelenir. Redis down/miss → 2'ye düşer.
+      2) ADMIN/SERVİS token → DB `api_token_hash`. Redis'ten BAĞIMSIZ.
 
-    def __init__(self, db, cache=None):
+    Sonuç: Redis down iken login token'ları 401 alır (DB'de yoklar) ama admin DB yolu
+    SAĞLAM kalır. Login session Redis'e YAZILIR (create), DB'ye değil; DB token'ları
+    ise Redis'e cache'lenmez. LDAP resolver bu sınıfın yerine geçebilir."""
+
+    def __init__(self, db, store=None):
         self.db = db
-        from .session_cache import NullSessionCache
-        self.cache = cache or NullSessionCache()
+        from .session_store import NullSessionStore
+        self.store = store or NullSessionStore()
 
     def resolve(self, token: str | None) -> dict:
         if not token or not token.strip():
             raise Unauthorized("Authorization Bearer token gerekli")
         token_hash = hash_token(token.strip())
-        cached = self.cache.get(token_hash)
-        if cached is not None:
-            return cached
+        # 1) Redis LOGIN oturumu (varsa çöz + sliding). Redis down → None → DB'ye düş.
+        sess = self.store.get(token_hash)
+        if sess is not None:
+            return {k: sess.get(k) for k in
+                    ("user_id", "tenant_id", "roles", "allowed_doc_scopes", "is_admin")}
+        # 2) DB ADMIN/SERVİS token (Redis'e YAZILMAZ — login session değil).
         with self.db.connection() as conn:
             user = user_repo.get_active_user_by_token_hash(conn, token_hash)
         if user is None:
-            # Token değerini LOGLAMA (hash bile) — yalnızca reddi kaydet. Negatif SONUÇ
-            # cache'lenmez (bilinçli: iptal edilen token TTL süresince geçerli kalmasın).
+            # Token değerini LOGLAMA (hash bile) — yalnızca reddi kaydet.
             _LOG.warning("auth_rejected")
             raise Unauthorized("Geçersiz veya pasif token")
-        ctx = {
+        return {
             "user_id": user["user_id"],
             "tenant_id": user["tenant_id"],
             "roles": user["roles"],
             "allowed_doc_scopes": user["allowed_doc_scopes"],
             "is_admin": bool(user.get("is_admin", False)),  # FAZ 7
         }
-        self.cache.put(token_hash, ctx)
-        return ctx
 
 
 class Forbidden(Exception):

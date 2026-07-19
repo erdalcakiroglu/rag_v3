@@ -190,7 +190,7 @@ def register_admin_routes(app, rt) -> None:
         with rt().db.connection() as conn:
             if user_repo.set_scopes(conn, user_id, scopes) == 0:
                 raise HTTPException(404, f"Kullanıcı yok: {user_id}")
-        rt().session_cache.invalidate_user(user_id)  # yeni scope ANINDA yansısın (cache bayat kalmasın)
+        rt().session_store.invalidate_user(user_id)  # yeni scope ANINDA yansısın (cache bayat kalmasın)
         return {"status": "ok", "user_id": user_id, "allowed_doc_scopes": scopes}
 
     @app.post("/api/admin/users/{user_id}/active")
@@ -203,7 +203,7 @@ def register_admin_routes(app, rt) -> None:
         with rt().db.connection() as conn:
             if user_repo.set_active(conn, user_id, active) == 0:
                 raise HTTPException(404, f"Kullanıcı yok: {user_id}")
-        rt().session_cache.invalidate_user(user_id)  # deaktive → oturum ANINDA geçersiz (TTL beklenmez)
+        rt().session_store.invalidate_user(user_id)  # deaktive → oturum ANINDA geçersiz (TTL beklenmez)
         return {"status": "ok", "user_id": user_id, "active": active}
 
     # -- M-12: self-kayıt onay/ret (pending → active+scope | disabled) ---------
@@ -216,7 +216,7 @@ def register_admin_routes(app, rt) -> None:
         with rt().db.connection() as conn:
             if user_repo.approve_user(conn, user_id, scopes) == 0:
                 raise HTTPException(404, f"Onay bekleyen kullanıcı yok: {user_id}")
-        rt().session_cache.invalidate_user(user_id)
+        rt().session_store.invalidate_user(user_id)
         return {"status": "ok", "user_id": user_id, "user_status": "active",
                 "allowed_doc_scopes": scopes}
 
@@ -230,7 +230,7 @@ def register_admin_routes(app, rt) -> None:
         with rt().db.connection() as conn:
             if user_repo.reject_user(conn, user_id) == 0:
                 raise HTTPException(404, f"Kullanıcı yok: {user_id}")
-        rt().session_cache.invalidate_user(user_id)  # ret/askı → varsa oturum ANINDA kapanır
+        rt().session_store.invalidate_user(user_id)  # ret/askı → varsa oturum ANINDA kapanır
         return {"status": "ok", "user_id": user_id, "user_status": "disabled"}
 
     # -- 3) DOKÜMAN & QC ------------------------------------------------------

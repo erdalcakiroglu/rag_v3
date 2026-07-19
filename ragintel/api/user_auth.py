@@ -15,13 +15,13 @@ from __future__ import annotations
 
 import secrets
 
-from fastapi import HTTPException
+from fastapi import Header, HTTPException
 from pydantic import BaseModel, Field
 
 from ..database import user_repo
 from ..observability.logging import get_logger
 from . import passwords
-from .auth import hash_token
+from .auth import bearer_token, hash_token
 
 _LOG = get_logger("api.user_auth")
 
@@ -101,12 +101,26 @@ def register_auth_routes(app, rt) -> None:
                                          "giriş yapabilirsiniz.")
             if user["status"] != "active" or not user["active"]:
                 raise HTTPException(403, "Hesabınız devre dışı. Yöneticinizle iletişime geçin.")
-            # Oturum aç: opak token üret, HASH'ini api_token_hash'e yaz (mevcut Bearer yolu).
-            raw = secrets.token_urlsafe(24)
-            user_repo.set_session_token(conn, user["user_id"], hash_token(raw))
-        # Token rotasyonu: bu kullanıcının ESKİ (artık geçersiz) token'ı cache'te kalmasın.
-        rt().session_cache.invalidate_user(user["user_id"])
+
+        # Oturum Redis'te YAŞAR (DB api_token_hash'e YAZILMAZ). Redis down/yok ise oturum
+        # kurulamaz → 503 (spec: Redis down = login çalışmaz; admin DB yolu ayrı, etkilenmez).
+        raw = secrets.token_urlsafe(24)
+        ctx = {"user_id": user["user_id"], "tenant_id": "default", "roles": ["user"],
+               "allowed_doc_scopes": user["allowed_doc_scopes"],
+               "is_admin": bool(user.get("is_admin", False))}
+        if not rt().session_store.create(hash_token(raw), ctx):
+            _LOG.warning("login_session_store_unavailable", user_id=user["user_id"])
+            raise HTTPException(503, "Oturum servisi şu an kullanılamıyor, biraz sonra tekrar deneyin.")
         _LOG.info("login_ok", user_id=user["user_id"])
         return {"status": "ok", "token": raw, "user_id": user["user_id"],
-                "is_admin": bool(user.get("is_admin", False)),
+                "is_admin": ctx["is_admin"],
                 "note": "Bu token Authorization: Bearer olarak gönderilir; güvenli saklayın."}
+
+    @app.post("/api/logout")
+    def logout(authorization: str | None = Header(default=None)):
+        """Kendi login oturumunu sonlandırır (Redis'ten siler). Token yoksa/DB token ise
+        no-op (admin/servis token'ları Redis'te değil; onları admin deaktive eder)."""
+        token = bearer_token(authorization)
+        if token:
+            rt().session_store.delete(hash_token(token))
+        return {"status": "ok"}

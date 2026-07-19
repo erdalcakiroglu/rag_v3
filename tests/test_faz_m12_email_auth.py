@@ -126,6 +126,13 @@ def store(monkeypatch):
             return 1
         return 0
 
+    def set_scopes(conn, user_id, scopes):
+        r = STORE.get(user_id)
+        if r:
+            r["allowed_doc_scopes"] = list(scopes)
+            return 1
+        return 0
+
     def approve_user(conn, user_id, scopes):
         r = STORE.get(user_id)
         if r and r["status"] == "pending":
@@ -157,7 +164,8 @@ def store(monkeypatch):
     for name, fn in dict(
         email_auth_ready=email_auth_ready, email_exists=email_exists,
         register_pending_user=register_pending_user, get_auth_user_by_email=get_auth_user_by_email,
-        set_session_token=set_session_token, approve_user=approve_user, reject_user=reject_user,
+        set_session_token=set_session_token, set_scopes=set_scopes,
+        approve_user=approve_user, reject_user=reject_user,
         get_active_user_by_token_hash=get_active_user_by_token_hash, list_users=list_users,
     ).items():
         monkeypatch.setattr(ur, name, fn)
@@ -179,13 +187,31 @@ class _FakeCfg:
         return self._auth
 
 
+class _FakeRedis:
+    def __init__(self):
+        self._s = {}; self._sets = {}
+    def get(self, k): return self._s.get(k)
+    def setex(self, k, t, v): self._s[k] = v
+    def sadd(self, k, *v): self._sets.setdefault(k, set()).update(v)
+    def srem(self, k, *v): self._sets.get(k, set()).difference_update(v)
+    def smembers(self, k): return set(self._sets.get(k, set()))
+    def expire(self, k, t): pass
+    def delete(self, *ks):
+        for k in ks: self._s.pop(k, None); self._sets.pop(k, None)
+    def ping(self): return True
+    def pipeline(self): return self
+    def execute(self): return []
+
+
 class _FakeRuntime:
     def __init__(self, domains, minlen=12):
-        from ragintel.api.session_cache import NullSessionCache
+        from ragintel.api.session_store import RedisSessionStore
         self.db = _FakeDb()
         self.cfg = _FakeCfg(domains, minlen)
-        self.session_cache = NullSessionCache()   # gerçek RagRuntime hep sağlar (M-10/0)
-        self.resolver = DbUserResolver(self.db)   # GERÇEK resolver → fake user_repo
+        # M-12 Redis eki: login oturumları Redis'te. Store'u resolver İLE PAYLAŞ (login
+        # yazar, resolver okur) — gerçek RagRuntime de aynı store'u paylaştırır.
+        self.session_store = RedisSessionStore(_FakeRedis(), ttl_seconds=28800)
+        self.resolver = DbUserResolver(self.db, store=self.session_store)
 
     def warm_up_async(self):
         pass
@@ -193,7 +219,10 @@ class _FakeRuntime:
 
 def _client(domains=("firma.com",), minlen=12):
     from ragintel.api.app import create_app
-    return TestClient(create_app(runtime=_FakeRuntime(list(domains), minlen)))
+    rt = _FakeRuntime(list(domains), minlen)
+    c = TestClient(create_app(runtime=rt))
+    c.rt = rt   # testler resolver/session_store'a erişebilsin
+    return c
 
 
 # --- kayıt: allowlist + fail-closed + pending + scope=[] ----------------------
@@ -243,8 +272,9 @@ def test_login_pending_is_forbidden_no_session(store):
     with _client() as c:
         c.post("/api/register", json={"full_name": "Ali", "email": "a@firma.com", "password": "uzun-sifre-123"})
         r = c.post("/api/login", json={"email": "a@firma.com", "password": "uzun-sifre-123"})
+        # pending → 403; hiçbir oturum oluşmadı (Redis store boş)
+        assert not c.rt.session_store._r._s
     assert r.status_code == 403 and "onay bekliyor" in r.json()["detail"]
-    assert store["a@firma.com"]["api_token_hash"] is None      # oturum açılmadı
 
 
 def test_login_wrong_password_and_unknown_email_are_identical_neutral(store):
@@ -256,43 +286,80 @@ def test_login_wrong_password_and_unknown_email_are_identical_neutral(store):
     assert wrong.json()["detail"] == unknown.json()["detail"]   # enumeration nötr (aynı mesaj)
 
 
-# --- onay → giriş → oturum token'ı resolver'la çözülür -----------------------
+# --- onay → giriş → oturum Redis session store'da; resolver'la çözülür -------
 def _approve(c, user_id, scopes):
     return c.post(f"/api/admin/users/{user_id}/approve",
                   json={"scopes": scopes}, headers={"Authorization": "Bearer ADMINTOK"})
 
 
-def test_approve_then_login_issues_working_session_token(store):
+def test_approve_then_login_creates_working_redis_session(store):
     with _client() as c:
         c.post("/api/register", json={"full_name": "Ali", "email": "a@firma.com", "password": "uzun-sifre-123"})
         assert _approve(c, "a@firma.com", ["muhasebe"]).status_code == 200
         r = c.post("/api/login", json={"email": "a@firma.com", "password": "uzun-sifre-123"})
-    assert r.status_code == 200
-    tok = r.json()["token"]
-    assert store["a@firma.com"]["status"] == "active"
-    assert store["a@firma.com"]["api_token_hash"] == hash_token(tok)   # sha256 saklandı (düz değil)
+        assert r.status_code == 200
+        tok = r.json()["token"]
+        # Oturum REDIS'te (DB api_token_hash'e YAZILMADI) ve resolver onunla çözer.
+        assert store["a@firma.com"]["status"] == "active"
+        assert store["a@firma.com"]["api_token_hash"] is None
+        assert c.rt.session_store.get(hash_token(tok)) is not None
+        assert c.rt.resolver.resolve(tok)["allowed_doc_scopes"] == ["muhasebe"]
+
+
+def test_login_fails_when_session_store_unavailable(store):
+    """Redis down → oturum kurulamaz → login 503 (spec: Redis down = login çalışmaz)."""
+    from ragintel.api.session_store import RedisSessionStore
+
+    class _Broken:
+        def __getattr__(self, _):
+            def b(*a, **k): raise RuntimeError("down")
+            return b
+
+    with _client() as c:
+        c.rt.session_store = RedisSessionStore(_Broken())   # login create → False
+        c.post("/api/register", json={"full_name": "Ali", "email": "a@firma.com", "password": "uzun-sifre-123"})
+        _approve(c, "a@firma.com", ["muhasebe"])
+        r = c.post("/api/login", json={"email": "a@firma.com", "password": "uzun-sifre-123"})
+    assert r.status_code == 503
 
 
 def test_bidirectional_scope_isolation_via_login_path(store):
     """Kabul: onaylı-scope kullanıcı SADECE kendi scope'unu taşır; başkasınınkini GÖRMEZ.
-    Oturum token'ı mevcut resolver'la çözülür → user_ctx.allowed_doc_scopes doğru olmalı."""
-    resolver = DbUserResolver(_FakeDb())
+    Oturum Redis'te; runtime'ın resolver'ıyla çözülür → allowed_doc_scopes doğru olmalı."""
     with _client() as c:
-        # iki kullanıcı, iki farklı scope
         c.post("/api/register", json={"full_name": "A", "email": "a@firma.com", "password": "uzun-sifre-aaa"})
         c.post("/api/register", json={"full_name": "B", "email": "b@firma.com", "password": "uzun-sifre-bbb"})
         _approve(c, "a@firma.com", ["muhasebe"])
         _approve(c, "b@firma.com", ["insan-kaynaklari"])
         tok_a = c.post("/api/login", json={"email": "a@firma.com", "password": "uzun-sifre-aaa"}).json()["token"]
         tok_b = c.post("/api/login", json={"email": "b@firma.com", "password": "uzun-sifre-bbb"}).json()["token"]
-
-    ctx_a = resolver.resolve(tok_a)
-    ctx_b = resolver.resolve(tok_b)
+        ctx_a = c.rt.resolver.resolve(tok_a)
+        ctx_b = c.rt.resolver.resolve(tok_b)
     assert ctx_a["allowed_doc_scopes"] == ["muhasebe"]
     assert ctx_b["allowed_doc_scopes"] == ["insan-kaynaklari"]
     # ÇİFT-YÖNLÜ: her kullanıcı ötekinin scope'unu taşımaz (fail-closed izolasyon).
     assert "insan-kaynaklari" not in ctx_a["allowed_doc_scopes"]
     assert "muhasebe" not in ctx_b["allowed_doc_scopes"]
+
+
+def test_logout_and_scope_change_invalidate_redis_session(store):
+    """Logout kendi oturumunu siler; scope değişimi kullanıcının oturumlarını invalidate eder."""
+    with _client() as c:
+        c.post("/api/register", json={"full_name": "Ali", "email": "a@firma.com", "password": "uzun-sifre-123"})
+        _approve(c, "a@firma.com", ["muhasebe"])
+        tok = c.post("/api/login", json={"email": "a@firma.com", "password": "uzun-sifre-123"}).json()["token"]
+        assert c.rt.resolver.resolve(tok)                      # oturum geçerli
+        # logout → oturum silinir → resolver 401
+        c.post("/api/logout", headers={"Authorization": "Bearer " + tok})
+        from ragintel.api.auth import Unauthorized
+        with pytest.raises(Unauthorized):
+            c.rt.resolver.resolve(tok)
+        # yeni login + scope değişimi → invalidate
+        tok2 = c.post("/api/login", json={"email": "a@firma.com", "password": "uzun-sifre-123"}).json()["token"]
+        c.post("/api/admin/users/a@firma.com/scopes", json={"scopes": ["yeni"]},
+               headers={"Authorization": "Bearer ADMINTOK"})
+        with pytest.raises(Unauthorized):
+            c.rt.resolver.resolve(tok2)                        # scope değişti → oturum düştü
 
 
 def test_rejected_pending_cannot_login(store):

@@ -1122,13 +1122,13 @@ class AuthConfig(BaseModel):
         description="Self-kayıtta kabul edilen asgari şifre uzunluğu (karakter). Düşürmek zayıf "
                     "şifreye izin verir; kayıt-zamanı doğrulanır (mevcut şifreleri etkilemez).",
     )
-    session_cache_ttl_seconds: int = Field(
-        default=60, ge=1, le=3600,
-        description="Bearer token→kullanıcı çözümünün Redis'te önbelleklenme süresi (saniye). "
-                    "Redis yapılandırılmışsa geçerli — DB kaynak-otoriter, bu yalnızca hızlandırıcı. "
-                    "Düşürmek yetki değişiminin (scope/deaktive) yansıma gecikmesini azaltır; büyütmek "
-                    "DB yükünü azaltır. İptaller (deaktive/ret/çıkış) ANINDA invalidate edilir; bu süre "
-                    "yalnızca doğrudan-SQL yapılan değişiklikler için üst sınırdır. (Redis yoksa etkisiz.)",
+    session_ttl_seconds: int = Field(
+        default=28800, ge=60, le=604800,   # 8 saat; sınır 7 gün
+        description="Login (email+şifre) oturumunun Redis'teki yaşam süresi (saniye) — SLIDING: "
+                    "hareketsizlik zaman aşımı, mutlak değil (her istekte tazelenir). Değişiklik YENİ "
+                    "oturumlardan itibaren geçerli (config startup'ta yüklenir → restart gerekir). "
+                    "Redis restart = tüm oturumlar düşer, yeniden login (kalıcılık yok). Admin/servis "
+                    "DB token'larını ETKİLEMEZ (onlar Redis'e bakmaz).",
     )
 
 

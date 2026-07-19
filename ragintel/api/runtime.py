@@ -42,6 +42,10 @@ def derive_health_status(checks: dict) -> str:
         return "unhealthy"
     if checks.get("tei") not in ("ok", "disabled"):
         return "degraded"
+    # M-12 Redis eki: yapılandırılmış ama erişilemez Redis → DEGRADED (login/oturum yolu çökük;
+    # admin DB token yolu aktif). "disabled" (yapılandırılmamış) degrade ETMEZ.
+    if checks.get("redis") == "down":
+        return "degraded"
     return "healthy"
 
 
@@ -56,16 +60,16 @@ class AskResult:
 class RagRuntime:
     def __init__(self, *, db, config: EffectiveConfig, gateway, checkpointer,
                  service=None, context_builder=None, registry=None, langfuse: LangfuseSettings | None = None,
-                 resolver=None, session_cache=None):
+                 resolver=None, session_store=None):
         self.db = db
         self.cfg = config
         self.log = get_logger("api.runtime")
-        # M-10/0: OPSİYONEL oturum-token cache'i (Redis). Yoksa Null (DB'ye düşer).
-        # Uçlar iptal için `rt().session_cache.invalidate_user(...)` çağırır.
-        from .session_cache import NullSessionCache
-        self.session_cache = session_cache or NullSessionCache()
+        # M-12 Redis eki: login oturumlarının Redis deposu. Yoksa Null (login çalışmaz;
+        # admin DB token yolu sürer). Uçlar login/logout/iptal için `rt().session_store`'u kullanır.
+        from .session_store import NullSessionStore
+        self.session_store = session_store or NullSessionStore()
         # FAZ 6 AuthN: Bearer token → user_ctx. LDAP resolver (FAZ 9) buraya enjekte edilir.
-        self.resolver = resolver or DbUserResolver(db, cache=self.session_cache)
+        self.resolver = resolver or DbUserResolver(db, store=self.session_store)
         self.injection = InjectionScanner(config)
         self.max_q = int(config.group("agent").max_question_chars)
         self.langfuse = langfuse or LangfuseSettings()
@@ -268,14 +272,14 @@ class RagRuntime:
                   "tei": (self._check_http(tei_url.rstrip("/") + "/health", api_cfg.health_timeout)
                           if tei_url else "disabled"),
                   "langfuse": "enabled" if self.langfuse.enabled else "disabled"}
-        # M-10/0: oturum cache'i (Redis). TEI deseni: yapılandırılmamışsa "disabled"
-        # (degrade ETMEZ — opsiyonel hızlandırıcı); yapılandırılmış ama erişilemezse "down"
-        # (DB'ye düşülür, akış sürer → derive_health_status redis'i dikkate ALMAZ).
-        _sc = getattr(self, "session_cache", None)
-        if _sc is None or not getattr(_sc, "enabled", False):
+        # M-12 Redis eki: login oturum deposu. Yapılandırılmamışsa "disabled" (degrade ETMEZ —
+        # login opsiyonel, admin DB token yolu var). Yapılandırılmış ama erişilemezse "down" →
+        # derive_health_status DEGRADED yapar (login yolu gerçekten çökük; admin yolu aktif).
+        _ss = getattr(self, "session_store", None)
+        if _ss is None or not getattr(_ss, "enabled", False):
             checks["redis"] = "disabled"
         else:
-            checks["redis"] = "ok" if _sc.ping() else "down"
+            checks["redis"] = "ok" if _ss.ping() else "down"
         warm = self.is_warm
         checks["warmup"] = "ok" if warm else "warming"
         base = derive_health_status(checks)
@@ -285,8 +289,14 @@ class RagRuntime:
         # M-10/0: HANGİ KOD koşuyor? İmaja build'de gömülür (Dockerfile ARG GIT_SHA).
         # deploy.sh bunu dağıttığı sürümle kıyaslar → yanlış/cache'li imaj sessizce
         # eski kodu sunamaz. Konteyner dışında (lokal koşum) "unknown" döner.
-        return {"status": status, "checks": checks,
-                "git_sha": os.environ.get("RAGINTEL_GIT_SHA", "unknown")}
+        result = {"status": status, "checks": checks,
+                  "git_sha": os.environ.get("RAGINTEL_GIT_SHA", "unknown")}
+        # M-12 Redis eki: Redis down iken hangi yolun etkilendiğini AÇIKÇA söyle.
+        if checks.get("redis") == "down":
+            result["redis_note"] = ("Redis erişilemiyor: login/oturum yolu etkilendi "
+                                    "(yeni giriş + mevcut oturumlar çözülemez); admin/servis "
+                                    "DB token yolu aktif.")
+        return result
 
     def _check_db(self) -> str:
         try:

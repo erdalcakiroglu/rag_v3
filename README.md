@@ -209,3 +209,10 @@ python -m ragintel.report ingestion
 
 ------------------
 select * from ragintel.v_config_flat  -- parametreleri gorelim.
+
+
+# Ragintel container restart etme (h200)
+
+docker restart ragintel-api
+# ~2 dk warm-up sonra:
+curl -s http://localhost:8000/api/health | grep -o '"status":"[a-z]*"'   # → "healthy"

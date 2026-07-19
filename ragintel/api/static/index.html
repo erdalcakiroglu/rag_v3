@@ -179,7 +179,11 @@ async function doRegister(){
   }catch(e){ authMsg('Ağ hatası — tekrar deneyin.'); }
   finally{ b.disabled=false; }
 }
-function logout(){ localStorage.removeItem('ragintel_token'); localStorage.removeItem('ragintel_user'); renderAcct(); showAuth(true); }
+async function logout(){
+  // Önce sunucudaki oturumu sonlandır (Redis'ten sil), sonra yereli temizle.
+  try{ await fetch('/api/logout',{method:'POST',headers:authHeaders()}); }catch(e){}
+  localStorage.removeItem('ragintel_token'); localStorage.removeItem('ragintel_user'); renderAcct(); showAuth(true);
+}
 function tokenLogin(){ if(promptToken()){ localStorage.setItem('ragintel_user','(token)'); showAuth(false); renderAcct(); } }
 
 // Açılış: hesap alanını çiz; token yoksa giriş ekranını göster.
