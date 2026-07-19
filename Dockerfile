@@ -87,6 +87,7 @@ RUN python -c "\
 import os, sys; \
 assert not os.path.exists('/app/.env'), 'GUVENLIK: .env imaja sizmis (.dockerignore bozuk)'; \
 import ragintel.api.app; \
+import ragintel.api.user_auth, ragintel.api.passwords, ragintel.api.session_cache, redis; \
 yasak = [m for m in ('torch', 'docling', 'cv2') if m in sys.modules]; \
 assert not yasak, f'YASAK modul imajda yuklendi: {yasak}'; \
 from ragintel.ingestion.chunking.tokenizer import tokenizer_kaynagi; \

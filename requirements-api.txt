@@ -66,3 +66,11 @@ openai==2.44.0
 # --- servis ---
 fastapi==0.128.0
 uvicorn==0.40.0
+
+# --- M-12 kimlik + M-10/0 oturum cache (SORGU tarafı — create_app runtime'da ŞART) ---
+# argon2-cffi: email+şifre login şifre hash'i (argon2id). user_auth→passwords→argon2
+#   create_app'te LAZY import; build'de değil ama RUNTIME'da zorunlu (yoksa /api/* açılmaz).
+# redis: opsiyonel oturum-token cache'i. RAGINTEL_REDIS_URL boşsa import edilmez, ama
+#   yapılandırılınca session_cache onu lazy import eder → imajda bulunmalı.
+argon2-cffi==23.1.0
+redis==5.2.1
