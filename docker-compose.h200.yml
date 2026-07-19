@@ -103,7 +103,11 @@ services:
     container_name: ragintel-redis
     restart: unless-stopped
 
-    # app da host-network → Redis'e localhost:6379'dan erişir (RAGINTEL_REDIS_URL).
+    # app da host-network → Redis'e localhost:6380'den erişir (RAGINTEL_REDIS_URL).
+    # PORT 6380 (6379 DEĞİL): H200'de 6379'u Langfuse'un kendi redis'i (langfuse-redis-1)
+    # host'a map'lemiş durumda (ölçüldü 2026-07-19; Langfuse dokümanı "host'a açılmaz"
+    # dese de pratikte açık). Aynı porta iki redis bind edemez → bizimki 6380'de yaşar,
+    # Langfuse 6379'da kalır. RAGINTEL_REDIS_URL de .env.h200'de :6380 olmalı.
     network_mode: host
 
     # Parola (requirepass) + app'in RAGINTEL_REDIS_URL'i .env.h200'dedir (repoda YOK).
@@ -123,7 +127,7 @@ services:
       sh -c 'exec redis-server
       --requirepass "$$RAGINTEL_REDIS_PASSWORD"
       --bind 127.0.0.1
-      --port 6379
+      --port 6380
       --maxmemory 4gb
       --maxmemory-policy allkeys-lru
       --appendonly no
@@ -132,7 +136,8 @@ services:
     healthcheck:
       # requirepass açıkken parolasız `ping` NOAUTH döner → auth'lu ping. Parola konteyner
       # env'inden ($RAGINTEL_REDIS_PASSWORD); healthcheck argümanında literal parola yok.
-      test: ["CMD-SHELL", "redis-cli -a \"$$RAGINTEL_REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      # -p 6380: sunucu bu portta (Langfuse 6379'da olduğu için).
+      test: ["CMD-SHELL", "redis-cli -p 6380 -a \"$$RAGINTEL_REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
       interval: 30s
       timeout: 5s
       retries: 3

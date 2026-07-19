@@ -238,6 +238,19 @@ def test_compose_healthcheck_uses_authenticated_ping():
     assert "redis-cli" in code and "ping" in code and "$$RAGINTEL_REDIS_PASSWORD" in code
 
 
+def test_compose_redis_server_and_healthcheck_ports_agree():
+    """Sunucu `--port N` ile healthcheck `-p N` AYNI olmalı; aksi halde healthcheck
+    yanlış porta ping atıp 'yalan' söyler. (H200'de 6379 Langfuse'da → 6380 kullanılıyor.)"""
+    import re
+    code = "\n".join(_compose_code_lines())
+    server_port = re.search(r"--port\s+(\d+)", code)
+    hc_port = re.search(r"redis-cli\s+-p\s+(\d+)", code)
+    assert server_port and hc_port, "compose'da redis --port veya healthcheck -p bulunamadı"
+    assert server_port.group(1) == hc_port.group(1), (
+        f"redis sunucu portu ({server_port.group(1)}) healthcheck portuyla "
+        f"({hc_port.group(1)}) uyuşmuyor — healthcheck yanlış porta ping atar.")
+
+
 def test_redis_url_is_NOT_in_deploy_zorunlu_sirlar():
     """Redis OPSİYONEL → ZORUNLU_SIRLAR'a girmez (yoksa dağıtımı boşuna bloklardı)."""
     import re

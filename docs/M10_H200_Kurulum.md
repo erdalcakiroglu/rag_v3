@@ -104,8 +104,10 @@ RAGINTEL_LANGFUSE_SECRET_KEY=<sk>
 # İki satır BİRLİKTE gider: PASSWORD compose'daki redis servisinin `requirepass`'ini
 # besler; URL de app'in bağlanacağı adres (parolayı İÇERİR). Boş bırakırsanız cache
 # devre dışı kalır (app her istekte DB'ye gider — regresyonsuz). Parola üret: openssl rand -hex 24
+# PORT 6380 (6379 DEĞİL): H200'de 6379'u Langfuse'un redis'i tutuyor — çakışmasın diye
+# bizim redis 6380'de. İki port da (compose --port ve buradaki URL) 6380 olmalı.
 RAGINTEL_REDIS_PASSWORD=<redis-parolasi>
-RAGINTEL_REDIS_URL=redis://:<redis-parolasi>@localhost:6379/0
+RAGINTEL_REDIS_URL=redis://:<redis-parolasi>@localhost:6380/0
 
 ```
 
