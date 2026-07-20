@@ -18,15 +18,17 @@ OUT="$(docker exec -i -e TOKA="$TOKA" -e KABUL_BASE="$API" -e N="$N" ragintel-ap
 echo "$OUT"
 
 echo ""
-echo "==> Sunucu logları: tool-call JSON parse / exception (gateway json.loads patlaması)"
+echo "==> Sunucu logları: tool-call parse hatası + retry ateşleme"
 LOGS="$(docker logs --since "$START" ragintel-api 2>&1)"
 PARSE_ERR="$(echo "$LOGS" | grep -icE 'JSONDecode|invalid character|failed to parse JSON' || true)"
+RETRY_FIRED="$(echo "$LOGS" | grep -icE 'tool_call_parse_error' || true)"    # (3) retry ateşledi
 ASK_FAIL="$(echo "$LOGS" | grep -icE 'api_ask_failed' || true)"
-echo "   JSONDecode/parse-hata log satırı : $PARSE_ERR"
-echo "   api_ask_failed log satırı         : $ASK_FAIL"
-if [ "$PARSE_ERR" -gt 0 ] || [ "$ASK_FAIL" -gt 0 ]; then
-  echo "   --- örnek hatalı log satırları ---"
-  echo "$LOGS" | grep -iE 'JSONDecode|invalid character|failed to parse JSON|api_ask_failed' | head -4
+echo "   parse-hata (JSONDecode/failed to parse)   : $PARSE_ERR"
+echo "   tool_call_parse_error (retry ateşledi)    : $RETRY_FIRED   ← model bozuk JSON üretti, retry devreye girdi"
+echo "   api_ask_failed (retry TÜKENDİ → fallback) : $ASK_FAIL"
+if [ "$PARSE_ERR" -gt 0 ] || [ "$RETRY_FIRED" -gt 0 ] || [ "$ASK_FAIL" -gt 0 ]; then
+  echo "   --- örnek log satırları ---"
+  echo "$LOGS" | grep -iE 'tool_call_parse_error|JSONDecode|invalid character|failed to parse JSON|api_ask_failed' | head -5
 fi
 
 # python özet satırı: CLEAN=.. EXCFB=.. HTTPERR=.. N=..
@@ -49,11 +51,15 @@ PY
 
 echo ""
 echo "############ VERDICT ############"
-if [ "${CLEAN:-0}" = "$N" ] && [ "$PARSE_ERR" -eq 0 ] && [ "$ASK_FAIL" -eq 0 ]; then
-  echo "✅ ${N}/${N} TEMİZ (CLEAN=$CLEAN, JSON-parse-hata=0) → suçlu WebUI'ydi (doğrudan-Ollama taşıması ÇÖZDÜ)."
+if [ "$RETRY_FIRED" -eq 0 ] && [ "$PARSE_ERR" -eq 0 ] && [ "${CLEAN:-0}" = "$N" ]; then
+  echo "✅ ${N}/${N} TEMİZ + parse-hata=0 → model bozuk JSON HİÇ üretmedi → suçlu WebUI'ydi (taşıma ÇÖZDÜ)."
   echo "   → M-9.1 AÇILIR."
+elif [ "${CLEAN:-0}" = "$N" ] && [ "$ASK_FAIL" -eq 0 ]; then
+  echo "🟡 ${N}/${N} CLEAN AMA retry ateşledi ($RETRY_FIRED kez) → model HÂLÂ bozuk JSON üretiyor,"
+  echo "   (3) RETRY hepsini KURTARDI (fallback=0). Sistem güvenilir → M-9.1 açılabilir; ANCAK kök=model."
+  echo "   → qwen3.6 / grammar-constrained iyileştirmesi hâlâ değerli (veriyle karar)."
 else
-  echo "⚠ HÂLÂ KIRIK — CLEAN=$CLEAN/$N, EXC_FALLBACK=$EXCFB, HTTP_ERR=$HTTPERR, log JSON-parse-hata=$PARSE_ERR, api_ask_failed=$ASK_FAIL."
-  echo "   → suçlu Ollama/model. Ollama sürüm + qwen3.6 denemesi AYRI KARAR (Erdal'a gelir)."
+  echo "⚠ KIRIK — CLEAN=$CLEAN/$N, EXC_FALLBACK=$EXCFB (retry TÜKENDİ), retry_ateşleme=$RETRY_FIRED."
+  echo "   → suçlu Ollama/model; retry yetmiyor. qwen3.6 denemesi + Ollama grammar KARARI (Erdal'a)."
 fi
-echo "   (Latency ve koşum tablosu yukarıda — ilk proxy'siz ölçüm.)"
+echo "   (Latency + koşum tablosu yukarıda — ilk proxy'siz ölçüm; retry_ateşleme = ham model kusuru göstergesi.)"
