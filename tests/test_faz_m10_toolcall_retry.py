@@ -91,18 +91,32 @@ def test_config_defaults():
     assert s.toolcall_retries == 2 and s.toolcall_retry_temperature == 0.5
 
 
-def test_retry_perturbs_temperature_on_retry_only(monkeypatch):
-    """PERTÜRBASYON: ilk çağrı temp=0 (karne zemini); retry temp=retry_temperature (farklı üretim)."""
+def test_perturbation_is_last_resort_seal_preserved_until_last(monkeypatch):
+    """PERTÜRBASYON SON ÇARE (Erdal sıralaması): deneme-1 temp=0 (mühür), ara denemeler
+    temp=0 (düz retry, Ollama non-determinizmi), YALNIZ son deneme temp=retry_temp.
+    tc_retries=2 → sıcaklık dizisi [0, 0, 0.5]."""
+    seq = _patch(monkeypatch, _Seq([RuntimeError(PARSE_MSG), RuntimeError(PARSE_MSG), _resp({"answer": "ok"})]))
+    out = _gw(retries=2, retry_temp=0.5).complete(messages=[{"role": "user", "content": "q"}], tools=[])
+    assert [k["temperature"] for k in seq.kwargs_log] == [0.0, 0.0, 0.5]   # mühür, düz-retry, SON pertürbasyon
+    assert out.perturbation_rescued is True                # temp>0 kurtardı → M-9 mührü DIŞI
+    assert out.sampling_temperature == 0.5
+
+
+def test_temp0_retry_rescue_not_marked_as_perturbed(monkeypatch):
+    """İlk retry temp=0'da (Ollama non-determinizmi) kurtarırsa → pertürbasyon DEĞİL;
+    yanıt temp=0 üretildi → M-9 mührü İÇİNDE (perturbation_rescued=False)."""
     seq = _patch(monkeypatch, _Seq([RuntimeError(PARSE_MSG), _resp({"answer": "ok"})]))
-    _gw(retry_temp=0.5).complete(messages=[{"role": "user", "content": "q"}], tools=[])
-    assert seq.kwargs_log[0]["temperature"] == 0.0        # ilk deneme: NORMAL (temp=0)
-    assert seq.kwargs_log[1]["temperature"] == 0.5        # retry: PERTÜRBE (temp>0)
+    out = _gw(retries=2, retry_temp=0.5).complete(messages=[{"role": "user", "content": "q"}], tools=[])
+    assert seq.kwargs_log[1]["temperature"] == 0.0        # ilk retry HÂLÂ temp=0 (pertürbe DEĞİL)
+    assert out.perturbation_rescued is False
+    assert out.sampling_temperature == 0.0
 
 
 def test_retry_temp_zero_disables_perturbation(monkeypatch):
-    seq = _patch(monkeypatch, _Seq([RuntimeError(PARSE_MSG), _resp({"answer": "ok"})]))
-    _gw(retry_temp=0.0).complete(messages=[{"role": "user", "content": "q"}], tools=[])
-    assert seq.kwargs_log[1]["temperature"] == 0.0        # retry_temp=0 → düz retry (temp=0 kalır)
+    seq = _patch(monkeypatch, _Seq([RuntimeError(PARSE_MSG), RuntimeError(PARSE_MSG), _resp({"answer": "ok"})]))
+    out = _gw(retries=2, retry_temp=0.0).complete(messages=[{"role": "user", "content": "q"}], tools=[])
+    assert [k["temperature"] for k in seq.kwargs_log] == [0.0, 0.0, 0.0]  # pertürbasyon tümüyle kapalı
+    assert out.perturbation_rescued is False
 
 
 # --------------------------------------------------------------- 1. hata → 2. temiz → PASS

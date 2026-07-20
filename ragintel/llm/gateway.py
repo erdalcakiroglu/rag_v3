@@ -95,6 +95,12 @@ class LLMResponse:
     completion_tokens: int      # Ollama eval_count (LiteLLM passthrough)
     raw_message: dict           # LiteLLM/OpenAI biçimli assistant mesajı (geçmiş için)
     timing: LLMTiming | None = None
+    # M-10/0: kazanan denemenin örnekleme sıcaklığı. Normalde base (0.0 = deterministik);
+    # yalnız SON-ÇARE pertürbasyon kurtardıysa retry_temperature (>0).
+    sampling_temperature: float = 0.0
+    # M-10/0: bu yanıt temp>0 pertürbasyonuyla mı kurtarıldı? True ise DETERMİNİSTİK
+    # üretilmedi → M-9 tekrarlanabilirlik iddiasından AYRIŞIR (karne/gözlem işaretler).
+    perturbation_rescued: bool = False
 
     @property
     def total_tokens(self) -> int:
@@ -218,6 +224,7 @@ class LiteLLMGateway:
         #         yükselt → runtime.ask fallback'i (mevcut davranış). Her deneme AÇIK loglanır.
         tc_retries = int(getattr(self.settings, "toolcall_retries", 2))
         retry_temp = float(getattr(self.settings, "toolcall_retry_temperature", 0.5))
+        base_temp = float(self.temperature)
         resp = message = None
         tool_calls: list[ToolCall] = []
         latency_ms = 0.0
@@ -230,16 +237,30 @@ class LiteLLMGateway:
                 break
             except Exception as exc:
                 if is_toolcall_parse_error(exc) and tc_attempt < tc_retries:
-                    # PERTÜRBASYON: sonraki deneme temp>0 ile FARKLI üretsin (temp=0 → aynı bozuk
-                    # çıktı, kurtarmaz). retry_temp=0 ise devre dışı (düz retry).
-                    if retry_temp > 0:
+                    # PERTÜRBASYON SIRALAMASI (Erdal kararı): mühür ÖNCE, pertürbasyon SON ÇARE.
+                    #   deneme-1 (tc_attempt=0): temp=base (0) — M-9 karne mührü.
+                    #   ara denemeler:           temp=base (0) — DÜZ retry; Ollama temp=0'da bile
+                    #                             non-deterministik (kendi düzelebilir) → mühür KORUNUR.
+                    #   SON deneme:               temp=retry_temp — yalnız burada pertürbe (retry_temp>0).
+                    # Böylece temp=0 mührü olabildiğince uzun korunur; temp>0 en son çıkıştır.
+                    if (tc_attempt + 1 == tc_retries) and retry_temp > 0:
                         kwargs["temperature"] = retry_temp
                     _LOG.warning("tool_call_parse_error", attempt=tc_attempt + 1,
                                  max_retries=tc_retries, model=self.model,
-                                 retry_temperature=(retry_temp if retry_temp > 0 else self.temperature),
+                                 next_temperature=float(kwargs["temperature"]),
+                                 perturbed_next=(float(kwargs["temperature"]) > base_temp),
                                  error=type(exc).__name__, detail=str(exc)[:200])
                     continue
                 raise
+
+        # M-10/0 META: kazanan deneme temp>0 (pertürbasyon) ile mi geldi? Öyleyse bu yanıt
+        # DETERMİNİSTİK üretilmedi → M-9 tekrarlanabilirlik iddiasından AYRIŞIR. temp=0 ile
+        # (mühür ya da düz-retry; Ollama non-determinizmi) gelen yanıt İŞARETLENMEZ.
+        sampling_temperature = float(kwargs["temperature"])
+        perturbation_rescued = sampling_temperature > base_temp
+        if perturbation_rescued:
+            _LOG.warning("tool_call_perturbation_rescue", model=self.model,
+                         sampling_temperature=sampling_temperature)
 
         usage = getattr(resp, "usage", None)
         prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
@@ -260,6 +281,8 @@ class LiteLLMGateway:
         set_span_attributes(
             **{f"llm.{k}": v for k, v in timing.as_dict().items()},
             **({"llm.tokens_per_sec": tok_per_s} if tok_per_s is not None else {}),
+            **{"llm.sampling_temperature": sampling_temperature,
+               "llm.perturbation_rescued": perturbation_rescued},
         )
 
         return LLMResponse(
@@ -269,6 +292,8 @@ class LiteLLMGateway:
             completion_tokens=completion_tokens,
             raw_message=_sanitize_assistant_message(message),
             timing=timing,
+            sampling_temperature=sampling_temperature,
+            perturbation_rescued=perturbation_rescued,
         )
 
 
