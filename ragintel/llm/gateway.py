@@ -41,6 +41,18 @@ def is_retryable(exc: Exception) -> bool:
     )
 
 
+def is_toolcall_parse_error(exc: Exception) -> bool:
+    """Model'in BOZUK tool-call JSON'u → parse hatası. İki tezahür:
+      - json.JSONDecodeError (litellm ham string arguments'ı geçtiğinde, gateway json.loads'ı).
+      - Ollama/litellm 'failed to parse JSON: invalid character …' (Ollama Go parser'ı modelin
+        çıktısını tool_call'a çeviremeyince 500 → litellm InternalServerError).
+    Bu hata RATE-LIMIT değil, MODEL çıktısı sorunudur → ayrı (tool-call) retry politikası."""
+    if isinstance(exc, json.JSONDecodeError):
+        return True
+    s = str(exc).lower()
+    return "failed to parse json" in s or "invalid character" in s
+
+
 def retry_wait_seconds(exc: Exception, attempt: int, *, base: float = 2.0, cap: float = 60.0) -> float:
     """Retry-After ipucu varsa ona uy (küçük tampon); yoksa üstel backoff."""
     m = _RETRY_HINT.search(str(exc))
@@ -147,9 +159,36 @@ class LiteLLMGateway:
         # Ölçüldü: set edilmeyince uç 0.8'e düşüyor, fallback varyansının kök kaynağı buydu.
         self.temperature = temperature
 
-    def complete(self, *, messages: list[dict], tools: list[dict]) -> LLMResponse:
+    def _completion(self, kwargs: dict):
+        """litellm.completion + rate-limit/geçici hata retry (backoff). PARSE hatası burada
+        RETRY EDİLMEZ — dış tool-call döngüsüne bırakılır (ayrı politika)."""
         import litellm
 
+        for attempt in range(self.settings.max_retries + 1):
+            t0 = time.perf_counter()
+            try:
+                resp = litellm.completion(**kwargs)
+                return resp, (time.perf_counter() - t0) * 1000.0
+            except Exception as exc:
+                if (attempt < self.settings.max_retries and is_retryable(exc)
+                        and not is_toolcall_parse_error(exc)):
+                    wait = retry_wait_seconds(exc, attempt)
+                    _LOG.warning("llm_retry", attempt=attempt + 1, wait=round(wait, 1),
+                                 error=type(exc).__name__)
+                    time.sleep(wait)
+                    continue
+                raise
+
+    @staticmethod
+    def _parse_tool_calls(message) -> list[ToolCall]:
+        out: list[ToolCall] = []
+        for tc in message.tool_calls or []:
+            raw_args = tc.function.arguments or "{}"
+            args = raw_args if isinstance(raw_args, dict) else json.loads(raw_args)  # bozuk → JSONDecodeError
+            out.append(ToolCall(id=tc.id, name=tc.function.name, arguments=args))
+        return out
+
+    def complete(self, *, messages: list[dict], tools: list[dict]) -> LLMResponse:
         kwargs: dict = {
             "model": f"{self.settings.provider}/{self.model}",
             "messages": messages,
@@ -172,31 +211,29 @@ class LiteLLMGateway:
         if self.settings.api_key:
             kwargs["api_key"] = self.settings.api_key
 
-        # Rate-limit/geçici hata → Retry-After'a uyan backoff'lu retry (maliyet/ratelimit gözetimi).
-        resp = None
+        # M-10/0 KATMANLI RETRY:
+        #   iç  → rate-limit/geçici hata (max_retries, backoff) — PARSE hatası HARİÇ.
+        #   dış → tool-call JSON PARSE hatası (toolcall_retries) — model bozuk JSON üretmiş;
+        #         non-deterministik üretim → yeniden çağırınca geçerli gelebilir. Tükenirse
+        #         yükselt → runtime.ask fallback'i (mevcut davranış). Her deneme AÇIK loglanır.
+        tc_retries = int(getattr(self.settings, "toolcall_retries", 2))
+        resp = message = None
+        tool_calls: list[ToolCall] = []
         latency_ms = 0.0
-        for attempt in range(self.settings.max_retries + 1):
-            t0 = time.perf_counter()
+        for tc_attempt in range(tc_retries + 1):
             try:
-                resp = litellm.completion(**kwargs)
-                latency_ms = (time.perf_counter() - t0) * 1000.0
+                resp, latency_ms = self._completion(kwargs)
+                message = resp.choices[0].message
+                tool_calls = self._parse_tool_calls(message)
+                _assert_not_silently_empty(message, tool_calls, model=self.model)
                 break
             except Exception as exc:
-                if attempt < self.settings.max_retries and is_retryable(exc):
-                    wait = retry_wait_seconds(exc, attempt)
-                    _LOG.warning("llm_retry", attempt=attempt + 1, wait=round(wait, 1),
-                                 error=type(exc).__name__)
-                    time.sleep(wait)
+                if is_toolcall_parse_error(exc) and tc_attempt < tc_retries:
+                    _LOG.warning("tool_call_parse_error", attempt=tc_attempt + 1,
+                                 max_retries=tc_retries, model=self.model,
+                                 error=type(exc).__name__, detail=str(exc)[:200])
                     continue
                 raise
-        message = resp.choices[0].message
-        tool_calls: list[ToolCall] = []
-        for tc in message.tool_calls or []:
-            raw_args = tc.function.arguments or "{}"
-            args = raw_args if isinstance(raw_args, dict) else json.loads(raw_args)
-            tool_calls.append(ToolCall(id=tc.id, name=tc.function.name, arguments=args))
-
-        _assert_not_silently_empty(message, tool_calls, model=self.model)
 
         usage = getattr(resp, "usage", None)
         prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)

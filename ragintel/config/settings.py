@@ -283,6 +283,11 @@ class LiteLLMSettings(DotenvFirstSettings):
     # Rate-limit/geçici hata için Retry-After'a uyan backoff'lu retry sayısı
     # (Groq free-tier TPM/günlük kap gözetimi; RAGINTEL_LLM_MAX_RETRIES).
     max_retries: int = 5
+    # M-10/0: tool-call JSON parse hatası (model bozuk JSON üretti → Ollama/litellm
+    # "failed to parse JSON") için AYRI retry — model-agnostik dayanıklılık katmanı.
+    # LLM üretimi non-deterministik → tekrar denemede geçerli JSON gelebilir. Rate-limit
+    # retry'sinden BAĞIMSIZ (RAGINTEL_LLM_TOOLCALL_RETRIES). 0 → kapalı (yalnız fallback).
+    toolcall_retries: int = 2
     # Provider-swap kolaylığı (ADR-003 ek): model adını .env'den de override et
     # (RAGINTEL_LLM_MODEL). Boşsa config-first DB app_config('agent').model kazanır.
     # Öncelik (build_default_runtime): OS env RAGINTEL_AGENT_MODEL > .env RAGINTEL_LLM_MODEL > DB.
