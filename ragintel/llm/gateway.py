@@ -217,6 +217,7 @@ class LiteLLMGateway:
         #         non-deterministik üretim → yeniden çağırınca geçerli gelebilir. Tükenirse
         #         yükselt → runtime.ask fallback'i (mevcut davranış). Her deneme AÇIK loglanır.
         tc_retries = int(getattr(self.settings, "toolcall_retries", 2))
+        retry_temp = float(getattr(self.settings, "toolcall_retry_temperature", 0.5))
         resp = message = None
         tool_calls: list[ToolCall] = []
         latency_ms = 0.0
@@ -229,8 +230,13 @@ class LiteLLMGateway:
                 break
             except Exception as exc:
                 if is_toolcall_parse_error(exc) and tc_attempt < tc_retries:
+                    # PERTÜRBASYON: sonraki deneme temp>0 ile FARKLI üretsin (temp=0 → aynı bozuk
+                    # çıktı, kurtarmaz). retry_temp=0 ise devre dışı (düz retry).
+                    if retry_temp > 0:
+                        kwargs["temperature"] = retry_temp
                     _LOG.warning("tool_call_parse_error", attempt=tc_attempt + 1,
                                  max_retries=tc_retries, model=self.model,
+                                 retry_temperature=(retry_temp if retry_temp > 0 else self.temperature),
                                  error=type(exc).__name__, detail=str(exc)[:200])
                     continue
                 raise

@@ -39,19 +39,23 @@ def _resp(args):
 
 
 class _Seq:
-    """Sıralı davranış: her çağrı ya Exception fırlatır ya sahte yanıt döner."""
+    """Sıralı davranış: her çağrı ya Exception fırlatır ya sahte yanıt döner; kwargs kaydeder."""
     def __init__(self, behaviors):
-        self.behaviors = behaviors; self.calls = 0
+        self.behaviors = behaviors; self.calls = 0; self.kwargs_log = []
     def __call__(self, **kwargs):
+        self.kwargs_log.append(kwargs)
         b = self.behaviors[min(self.calls, len(self.behaviors) - 1)]; self.calls += 1
         if isinstance(b, BaseException):
             raise b
         return b
 
 
-def _gw(retries=2):
-    return LiteLLMGateway(model="qwen3.5:35b",
-                          settings=LiteLLMSettings(toolcall_retries=retries, api_base="http://x", provider="openai"))
+def _gw(retries=2, retry_temp=0.5):
+    return LiteLLMGateway(
+        model="qwen3.5:35b",
+        settings=LiteLLMSettings(toolcall_retries=retries, toolcall_retry_temperature=retry_temp,
+                                 api_base="http://x", provider="openai"),
+        temperature=0.0)
 
 
 def _patch(monkeypatch, seq):
@@ -82,8 +86,23 @@ def test_is_toolcall_parse_error_detects_signatures():
     assert is_toolcall_parse_error(ValueError("random")) is False
 
 
-def test_config_default_is_2():
-    assert LiteLLMSettings().toolcall_retries == 2
+def test_config_defaults():
+    s = LiteLLMSettings()
+    assert s.toolcall_retries == 2 and s.toolcall_retry_temperature == 0.5
+
+
+def test_retry_perturbs_temperature_on_retry_only(monkeypatch):
+    """PERTÜRBASYON: ilk çağrı temp=0 (karne zemini); retry temp=retry_temperature (farklı üretim)."""
+    seq = _patch(monkeypatch, _Seq([RuntimeError(PARSE_MSG), _resp({"answer": "ok"})]))
+    _gw(retry_temp=0.5).complete(messages=[{"role": "user", "content": "q"}], tools=[])
+    assert seq.kwargs_log[0]["temperature"] == 0.0        # ilk deneme: NORMAL (temp=0)
+    assert seq.kwargs_log[1]["temperature"] == 0.5        # retry: PERTÜRBE (temp>0)
+
+
+def test_retry_temp_zero_disables_perturbation(monkeypatch):
+    seq = _patch(monkeypatch, _Seq([RuntimeError(PARSE_MSG), _resp({"answer": "ok"})]))
+    _gw(retry_temp=0.0).complete(messages=[{"role": "user", "content": "q"}], tools=[])
+    assert seq.kwargs_log[1]["temperature"] == 0.0        # retry_temp=0 → düz retry (temp=0 kalır)
 
 
 # --------------------------------------------------------------- 1. hata → 2. temiz → PASS

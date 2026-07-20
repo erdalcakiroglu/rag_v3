@@ -288,6 +288,11 @@ class LiteLLMSettings(DotenvFirstSettings):
     # LLM üretimi non-deterministik → tekrar denemede geçerli JSON gelebilir. Rate-limit
     # retry'sinden BAĞIMSIZ (RAGINTEL_LLM_TOOLCALL_RETRIES). 0 → kapalı (yalnız fallback).
     toolcall_retries: int = 2
+    # M-10/0: PERTÜRBASYON — düz retry temp=0'da AYNI bozuk çıktıyı verir (ölçüldü: deterministik,
+    # kurtarmaz). Retry DENEMELERİNDE (ilk çağrı DEĞİL) bu sıcaklık kullanılır → model FARKLI
+    # üretir → geçerli JSON şansı. NORMAL yol temp=0 kalır (karne zemini/M-9 mührü korunur —
+    # pertürbasyon yalnız zaten-fallback olacak istekte). 0.0 → pertürbasyon kapalı (düz retry).
+    toolcall_retry_temperature: float = 0.5
     # Provider-swap kolaylığı (ADR-003 ek): model adını .env'den de override et
     # (RAGINTEL_LLM_MODEL). Boşsa config-first DB app_config('agent').model kazanır.
     # Öncelik (build_default_runtime): OS env RAGINTEL_AGENT_MODEL > .env RAGINTEL_LLM_MODEL > DB.
