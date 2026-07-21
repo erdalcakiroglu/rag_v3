@@ -33,8 +33,21 @@ Gateway'de tool-call parse hatasına **ayrı retry** (`RAGINTEL_LLM_TOOLCALL_RET
 
 Retry vergisi **küçük**: yalnız 3/20, sadece p95 kuyruğunu (57s) şişiriyor. Medyan ~27s + min 23.8s = **BASE tek-çağrı maliyeti** (qwen3.5:35b ~24-27s/generation) — retry değil. Base yavaşlık **ayrı** bir perf konusu (reasoning-token üretimi şüphesi; bkz M-15 backlog). Grammar-constrained (C) bunu **çözmez**.
 
-## Backlog: (C) grammar-constrained kök çözüm (ön-verisi hazır)
+## (C) grammar-constrained kök çözüm — PoC SONUCU: ELENDİ (latency)
 
-Ollama `format`=JSON şeması ile `submit_answer` → temp=0'da bozuk JSON İMKANSIZ. Ollama tool-call argümanlarını `format`'la kısıtlamıyor → submit_answer'ı tool-call yolundan `format`-CONTENT üretimine taşımak gerek (agent rework, ayrı dilim). **PoC ön-veri betiği: `scripts/c_grammar_poc.{py,sh}`** — doğrudan `/api/chat` + format=submit şeması + temp=0 ×20, TR özel-ad quote'lu bağlamda. KAPI: `VALID=20/20` → grammar çözer, (C) greenlight; `VALID<20` → grammar yetmiyor, kod yazmadan pivot. **(C) değeri = kökü (bozuk JSON) silmek + deterministik garanti + p95 kuyruğunu kesmek** — base latency değil; retry maskesi güvenilirliği taşıdığı için **acil değil**.
+**PoC koşuldu (2026-07-20, `scripts/c_grammar_poc.sh qwen3.5:35b 20`): VALID=5/20, JSON_INVALID=0,
+SCHEMA_BAD=0, HTTP_ERR=15.** Kritik okuma: grammar **correctness'te başarılı** — tamamlanan 5
+üretimde 0 bozuk JSON, 0 şema-dışı, yazar-doğru 5/5. **HTTP_ERR=15 = hepsi `ReadTimeout` (180s).**
+Grammar-constrained decoding **feci yavaş**: min=57.8s, medyan=180s (timeout tavanı), max=180s →
+retry çözümünün base ~27s'ine göre **2-6× yavaş, kullanılamaz**.
+
+**Muhtemel kök (GBNF patolojisi):** `submit_answer` şemasında `citations[]` **sınırsız dizi**;
+grammar + temp=0 greedy decode citation nesnelerini durmadan üretip tıkanıyor (şema kaynaklı,
+model değil). **Karar: (C) bu haliyle NO-GO — correctness değil LATENCY nedeniyle.** Retry çözümü
+(20/20, base ~27s) açık ara üstün; gs-012 zaten çözülü, pivot'a gerek yok.
+
+**Gelecek ipucu (backlog, mimara gider):** grammar *correctness* çalışıyor; tek blokör sınırsız
+`citations[]`. `maxItems` ile şemayı sınırlayıp tekrar ölçmek ucuz bir prob — greenlight değil,
+yalnız açık kapı.
 
 **Karar:** gs-012 (bozuk tool-call JSON → fallback) canlıda **KABUL EDİLDİ** — correctness çözüldü (20/20, fallback=0, M-9 mührü korunuyor). Kök = model (~%15 bozuk JSON), katmanlı retry maskeliyor. Sistem üretim-güvenilir → **M-9.1 açılabilir**. (C) grammar iyileştirmesi backlog'da (veriyle karar).
