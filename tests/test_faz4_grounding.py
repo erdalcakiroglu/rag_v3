@@ -112,6 +112,38 @@ def test_compose_response_builds_final_contract():
     assert res["meta"]["trace_id"] == "abc123"
 
 
+def test_compose_declining_text_forces_no_sources():
+    """M-16 FIX-2: cevap metni 'bulunamadı' diyorsa (validate GEÇSE bile) sources=[] ZORLA →
+    'bulunamadı DEDİ ama cite etti' (border_declined_cited) honesty ihlali kökten biter."""
+    state = {
+        "draft_answer": "Bu bilgi dokümanlarda bulunmamaktadır.",
+        "citations": [{"claim": "bulunmamaktadır", "chunk_id": 10, "quote": "emisyonu fiyatlar"}],
+        "retrieved": [_chunk(10, "Karbon vergisi emisyonu fiyatlar ve davranışı değiştirir.")],
+        "validation": {"passed": True, "coverage": 1.0, "issues": []},   # validate GEÇTİ
+        "retry_count": 0,
+        "budget": {"iteration": 2, "tokens_used": 100, "max_iterations": 4, "max_tokens": 16000, "deadline_ts": 0.0},
+    }
+    res = compose_response(state, config=_cfg(), trace_id="dec1")
+    assert res["confidence"] == "low"          # metin reddi → low'a zorlanır
+    assert res["sources"] == []                # KAYNAK İLİŞTİRİLMEZ (honesty)
+    assert [s["chunk_id"] for s in res["meta"]["reviewed_sources"]] == [10]   # incelenen → reviewed
+
+
+def test_compose_normal_answer_keeps_sources():
+    """FIX-2 regresyon kalkanı: reddetmeyen normal cevap kaynaklarını KORUR."""
+    state = {
+        "draft_answer": "Karbon vergisini ilk uygulayan ülke Finlandiya'dır [1].",
+        "citations": [{"claim": "Finlandiya", "chunk_id": 10, "quote": "emisyonu fiyatlar"}],
+        "retrieved": [_chunk(10, "Karbon vergisi emisyonu fiyatlar ve davranışı değiştirir.")],
+        "validation": {"passed": True, "coverage": 1.0, "issues": []},
+        "retry_count": 0,
+        "budget": {"iteration": 2, "tokens_used": 100, "max_iterations": 4, "max_tokens": 16000, "deadline_ts": 0.0},
+    }
+    res = compose_response(state, config=_cfg(), trace_id="ok1")
+    assert res["confidence"] == "high"
+    assert [s["chunk_id"] for s in res["sources"]] == [10]
+
+
 def test_fallback_response_is_low_confidence():
     state = {
         "citations": [{"claim": "Yanıt", "chunk_id": 10, "quote": "emisyonu fiyatlar"}],

@@ -21,6 +21,22 @@ def _confidence(state: dict, *, high_threshold: float) -> str:
     return "low"
 
 
+# M-16 FIX-2: "bulunamadı" (reddetme) metinsel imzaları. harness._NOTFOUND_MARKERS ile SENKRON
+# tutulmalı — aynı tanım → uygulamanın reddi ⇔ eval'in "declined" saydığı durum. Reddeden bir
+# cevaba KAYNAK İLİŞTİRİLMEZ (sources=[]): "bulunamadı DEDİ ama cite etti" (border_declined_cited)
+# honesty ihlali kökten biter ve coverage eşiğinden BAĞIMSIZ olur (fallback yolu zaten sources=[]).
+DECLINE_MARKERS = (
+    "bulunmamaktadır", "bulunamadı", "bulunmuyor", "bulunmamakta", "mevcut değil",
+    "yer almamaktadır", "güvenilir yanıt üretilemedi", "dokümanlarda bulunm",
+    "belgelerde bulunm", "bilgi bulunm", "yanıt üretilemedi",
+)
+
+
+def _text_declines(answer: str | None) -> bool:
+    a = (answer or "").lower()
+    return any(m in a for m in DECLINE_MARKERS)
+
+
 # M-3(b): LLM'in yanıt metnine serpiştirdiği `[k]` işaretleri hiçbir sözleşmeye bağlı
 # DEĞİL (prompt `[n]` biçimini hiç tanımlamıyor) — model 1 citation verip metinde "[2]"
 # yazabiliyor. Bu yüzden model işaretlerine GÜVENMİYORUZ: hepsini söküp, kaynak listesinden
@@ -119,7 +135,12 @@ def compose_response(
     examined, numbering = _sources(citations, retrieved)
 
     confidence = _confidence(state, high_threshold=float(agent_cfg.confidence_high_coverage_threshold))
-    is_declined = declined if declined is not None else (confidence == "low")
+    # M-16 FIX-2: validate GEÇSE bile cevap metni "bulunamadı" diyorsa reddetme say → sources=[]
+    # (aşağıda). Böylece coverage eşiğinden bağımsız olarak reddeden cevap kaynak uydurmaz.
+    if declined is not None:
+        is_declined = declined
+    else:
+        is_declined = confidence == "low" or _text_declines(state.get("draft_answer"))
     if is_declined:
         confidence = "low"
 
