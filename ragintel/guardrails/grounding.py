@@ -28,11 +28,32 @@ from ..text import normalize_for_quote
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 _WORD = re.compile(r"[^\W\d_]+|\d+", re.UNICODE)  # kelime VEYA sayı (noktalama hariç, Türkçe dahil)
 
+# M-16 FIX-1: coverage paydasına GİRMEYEN "iddia taşımayan" cümle işaretçileri.
+# YOKLUK/RED fragmanı stem'leri — YALNIZ negatif biçimler (pozitif "bulunmaktadır"=VAR yakalanMAZ:
+# "bulunmamak" ⊄ "bulunmaktadır"). Yokluğu alıntılayacak chunk olmadığından bu cümleler iddia sayılmaz.
+_DECLINE_FRAGMENTS = (
+    "bulunmamak", "bulunmuyor", "bulunamad", "mevcut değil",
+    "yer almamak", "yer almıyor", "üretilemedi", "belirtilmemiş", "belirsiz",
+)
+
 
 def _sentences(text: str | None) -> list[str]:
     if not text or not text.strip():
         return []
     return [part.strip() for part in _SENTENCE_SPLIT.split(text.strip()) if part.strip()]
+
+
+def _is_claim_sentence(sentence: str, sentence_norm: str) -> bool:
+    """Cümle coverage PAYDASINA girer mi? İddia taşımıyorsa HAYIR — haksız yere coverage'ı
+    düşürmesin (M-16 FIX-1). İddia DEĞİL sayılan iki tip: (a) yokluk/red fragmanı (decline
+    stem), (b) askıda '[1]' gibi gerçek kelime içermeyen (yalnız sayı/işaret) cümle. Uydurma
+    POZİTİF iddia bundan etkilenmez: kelimelidir ve decline-fragmansızdır → paydada kalır,
+    kapsanmazsa coverage'ı düşürür (anti-halüsinasyon korunur)."""
+    low = sentence.lower()
+    if any(frag in low for frag in _DECLINE_FRAGMENTS):
+        return False
+    # Gerçek kelime (≥2 harf, sayı değil) yoksa iddia değil (askıda "[1]" / noktalama).
+    return any((not t.isdigit()) and len(t) >= 2 for t in _tokens(sentence_norm))
 
 
 def _tokens(norm: str) -> list[str]:
@@ -117,15 +138,19 @@ def validate_grounding(
             valid_claims.append(claim_norm)
 
     sentences = _sentences(draft_answer)
-    if not sentences:
+    # M-16 FIX-1: payda = yalnız İDDİA taşıyan cümleler (askıda işaret/dolgu ve yokluk/red
+    # fragmanları hariç — ön-veri: gs-002/012/022/023'te bunlar coverage'ı haksız düşürüyordu).
+    # İddia cümlesi HİÇ yoksa (pür red/dolgu) coverage=0 → validate FAIL → fallback (temiz red).
+    claim_sentences = [s for s in sentences if _is_claim_sentence(s, normalize_for_quote(s))]
+    if not claim_sentences:
         coverage = 0.0
     else:
         covered = sum(
             1
-            for sentence in sentences
+            for sentence in claim_sentences
             if any(_claim_covers_sentence(claim, normalize_for_quote(sentence)) for claim in valid_claims)
         )
-        coverage = covered / len(sentences)
+        coverage = covered / len(claim_sentences)
     if coverage < float(coverage_threshold):
         issues.append(f"low_coverage:{coverage:.3f}")
     if context_chunks and draft_answer and "bulunamad" in draft_answer.lower():

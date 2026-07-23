@@ -73,6 +73,67 @@ def test_validate_grounding_accepts_faithful_paraphrase():
     assert res["coverage"] == 1.0
 
 
+def test_fix1_decline_fragment_excluded_from_coverage_denominator():
+    """M-16 FIX-1: yokluk/red fragmanı ('…bulunmamaktadır') coverage PAYDASINA girmez →
+    doğru negatif-olgu cevabı haksız fallback olmaz. (ön-veri gs-002/023 deseni)"""
+    res = validate_grounding(
+        draft_answer="Karbon vergisini ilk uygulayan ülke Finlandiya olmuştur. "
+                     "Diğer ülkeler hakkında bilgi bulunmamaktadır.",
+        citations=[{"claim": "İlk uygulayan ülke Finlandiya.", "chunk_id": 10,
+                    "quote": "ilk uygulayan ülke 1990 yılında Finlandiya olmuştur"}],
+        context_chunks=[_chunk(10, "Karbon vergisini ilk uygulayan ülke 1990 yılında Finlandiya olmuştur.")],
+        coverage_threshold=0.7,
+    )
+    assert res["passed"] is True          # FIX-1 öncesi 0.5 (fail); sonrası claim-cümle 1/1
+    assert res["coverage"] == 1.0
+
+
+def test_fix1_dangling_marker_sentence_excluded():
+    """Askıda '[1]' tek-başına cümle (tok<3) paydaya girmez (ön-veri gs-012 S3)."""
+    res = validate_grounding(
+        draft_answer="Karbon vergisi emisyonu fiyatlar. [1]",
+        citations=[{"claim": "emisyonu fiyatlar", "chunk_id": 10, "quote": "emisyonu fiyatlar"}],
+        context_chunks=[_chunk(10, "Karbon vergisi emisyonu fiyatlar ve davranışı değiştirir.")],
+        coverage_threshold=0.7,
+    )
+    assert res["passed"] is True
+    assert res["coverage"] == 1.0
+
+
+def test_fix1_does_not_mask_uncited_positive_claim():
+    """Anti-halüsinasyon kalkanı: iddia taşıyan POZİTİF ama atıfsız cümle HÂLÂ coverage'ı
+    düşürür (decline fragmanı yok, içerik-token'lı → paydada kalır)."""
+    res = validate_grounding(
+        draft_answer="Türkiye 2020 yılında yüzde doksan karbon vergisi uygulamıştır.",
+        citations=[],
+        context_chunks=[_chunk(10, "Karbon vergisi emisyonu fiyatlar.")],
+        coverage_threshold=0.7,
+    )
+    assert res["passed"] is False
+    assert res["coverage"] == 0.0
+
+
+def test_fix1_pure_decline_answer_is_zero_coverage():
+    """Sadece red/dolgu cümlesi → iddia cümlesi yok → coverage 0 (validate FAIL → fallback,
+    temiz reddetme). 'bulunmaktadır' (VAR, pozitif) yanlışlıkla red sayılmaz kontrolü de var."""
+    res = validate_grounding(
+        draft_answer="Bu bilgi dokümanlarda bulunmamaktadır.",
+        citations=[{"claim": "x", "chunk_id": 10, "quote": "emisyonu fiyatlar"}],
+        context_chunks=[_chunk(10, "Karbon vergisi emisyonu fiyatlar.")],
+        coverage_threshold=0.7,
+    )
+    assert res["coverage"] == 0.0
+    # pozitif "bulunmaktadır" (=VAR) decline sanılmamalı → iddia cümlesi sayılır, kapsanır
+    res2 = validate_grounding(
+        draft_answer="Karbon vergisi Finlandiya'da bulunmaktadır.",
+        citations=[{"claim": "Finlandiya'da bulunmaktadır", "chunk_id": 10,
+                    "quote": "Finlandiya'da karbon vergisi bulunmaktadır"}],
+        context_chunks=[_chunk(10, "Karbon vergisi Finlandiya'da bulunmaktadır ve etkilidir.")],
+        coverage_threshold=0.7,
+    )
+    assert res2["passed"] is True and res2["coverage"] == 1.0
+
+
 def test_validate_grounding_tolerates_malformed_citations():
     # Gerçek (küçük) modeller str/eksik-alan citation üretebilir → crash YOK.
     res = validate_grounding(
