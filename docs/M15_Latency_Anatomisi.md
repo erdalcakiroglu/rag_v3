@@ -82,7 +82,7 @@ o metin okunmadan çöpe gidiyor. 14 çağrıda ~8.000 karakter ≈ **2.793 toke
 
 ---
 
-## 4. Ön-ek (KV cache) kırılması — açık kalem
+## 4. Ön-ek (KV cache) kırılması — KAPANDI: cache VAR
 
 Ajan turlar arası prompt ön-ekini **iki yerden** bozuyor:
 
@@ -94,18 +94,30 @@ Ajan turlar arası prompt ön-ekini **iki yerden** bozuyor:
 Ön-ek sabitlenirse tur başına ~1.7 s, soru başına ~3.5 s kazanç olur ve **üretilen token
 hiç değişmez** (çıktı bit bit aynı). **Ama yalnızca Ollama bu yolda ön-ek cache'i yapıyorsa.**
 
-**Prob durumu (`m15_prefix_cache_probe.py`) — SONUÇSUZ:**
+**Prob sonucu (`m15_prefix_cache_probe.py`, ~4.5k token'lık bağlam, `num_predict=1`):**
 
-| deney | prompt_eval_count | süre |
-|---|---|---|
-| A) soğuk | 4545 | 1305 ms (3482 tok/s) |
-| B) aynı mesajlar | **4545** | 591 ms (7687 tok/s) |
-| C) yalnız sayaç değişik | — | **bekleniyor** |
-| D) append-only | — | **bekleniyor** |
+| # | deney | prompt-eval | A'ya oran |
+|---|---|---|---|
+| A | soğuk (ilk kez) | 1412 ms (3219 tok/s) | — |
+| B | birebir aynı mesajlar | **596 ms** | **%42** |
+| D | **append-only** (ön-ek sabit, sona ek) | **683 ms** | **%48** |
+| C0 | sayaç=2 (slotu doldur, kontrol) | 1310 ms | %93 |
+| C | sayaç=1 (yalnız SAYI değişti) | 1297 ms | **%92** |
 
-B'de `prompt_eval_count` **aynı kaldı**, yalnız süre 2.2× düştü. Bu cache'i kanıtlamaz —
-ilk çağrının ısınma maliyeti de aynı görüntüyü verir. **Ayırt edici deney C'dir:** yalnız
-bir sayı değiştiğinde süre yine ~591 ms'ye düşüyorsa cache yok, ısınma var.
+**Okuma:**
+- **Cache VAR.** B'nin hızlanması ısınma değil: C0 hemen B'nin ardında çalıştı ve **1310 ms**'e
+  geri çıktı. Isınma olsaydı C0 da hızlı olurdu.
+- **Sayaç cache'i öldürüyor.** Sistem mesajının sonundaki tek hane değişince maliyet
+  %92'ye dönüyor — ön-ek ilk bloktan itibaren kırılıyor (`agent.py:129`).
+- **Append-only kazandırıyor:** ön-ek korunup sona mesaj eklendiğinde %48.
+
+**Metodoloji notu (kendi hatam):** ilk koşumda D, C0/C'den *sonra* geliyordu ve "%103,
+kazandırmıyor" çıktı. Sebep: **Ollama varsayılanda tek slot tutar**; araya giren farklı bir
+prompt cache'i eziyor. D, B'nin hemen ardına alınınca %48'e düştü. İlk sonuç geçersizdi.
+
+**Bunun operasyonel bedeli:** tek slot, §5'teki eşzamanlılık bulgusuyla birleşir — iki
+kullanıcı dönüşümlü istek atarsa birbirinin ön-ekini eziyor ve kol-2'nin kazancı **tek
+kullanıcıda** geçerli kalıyor.
 
 ---
 
@@ -123,18 +135,27 @@ Kapasite planlaması ayrı bir iş kalemi.
 
 | kol | beklenen kazanç | kalite riski |
 |---|---|---|
-| 1. Atılan serbest metni kes (prompt kuralı) | ~1.7 s/soru | **Düşük** — ürün çıktısına hiç girmiyor |
-| 2. Ön-ek disiplini (sayacı taşı + append-only bağlam) | ~3.5 s/soru | **Düşük ama koşullu** — C/D probu cache'i doğrularsa; sayacın konumu davranışı etkileyebilir |
+| 1. Atılan serbest metni kes (prompt kuralı) | ~1.7 s/soru | **Düşük** — ürün çıktısına hiç girmiyor; ama `reasoning_effort='none'` açıkken bu prose modelin fiilî not defteri olabilir → karne karar verir |
+| 2. Ön-ek disiplini (sayacı taşı **+** append-only bağlam) | ~2.3 s/soru | **Orta** — append-only, `_apply_budget`'ın tahliye politikasını değiştirmeyi gerektirir (retrieval politikası) |
 | 3. `quote` uzunluk sınırı | ~1 s/soru | **Orta** — `fabricated_quote` kalkanına dokunur |
 | 4. Tur sayısını azaltma | büyük | **Yüksek** — M-16 kazanımına en yakın tehdit, son çare |
 | — | `claim` kısaltma | **ELENDİ** — coverage paydasının çapası |
 
-1+2 ≈ 5 s/soru → p95 21 → ~16 s. Hedefe yakın, **garanti değil.**
+**Kol-2 aritmetiği:** ilk tur her hâlükârda tam eval (~1.75 s). Kalan ~2.5 tur %48'e inerse
+4.4 s → 2.1 s. Kazanç ≈ **2.3 s/soru**, üretilen token değişmeden.
 
-Cache probu (C/D) olumsuz çıkarsa 2. kol düşer, elde ~1.7 s kalır, p95 ~19 s'de takılır ve
-**P95 < 15 s bu model/donanımla ulaşılamaz** demektir. O durumda dürüst çıktı hedefi revize
-etmektir: daha küçük/hızlı model (kalite karnesiyle), streaming ile algılanan gecikme, ya da
-hedefi p50'ye çevirmek (13.3 s — zaten altında).
+**Kol-2 tek parça değildir:** sayacı sistem mesajından çıkarmak TEK BAŞINA neredeyse hiçbir
+şey kazandırmaz — sayacın hemen ardındaki bağlam bloğu zaten her tur yeniden render ediliyor
+(§4, `prompt_tok` monoton değil). Sayaç taşıma, append-only'nin **önkoşuludur**; ikisi
+birlikte uygulanmalı. Append-only ise `context_builder._apply_budget`'ın "en düşük skorluyu
+at" tahliyesini "en yeniyi at"a çevirmeyi gerektirir — bu bir **retrieval politikası
+değişikliğidir**, salt optimizasyon değil. Ayrı bir karar kalemi olarak ayrı karneyle gider.
+
+**Hedefe dürüst bakış:** 1 + 2 ≈ **4 s/soru** → p95 21.1 → **~17 s**. İki düşük-riskli kol
+birlikte bile **P95 < 15 s'e ulaşmıyor.** Kalan ~2 s yalnızca **tur sayısına** dokunarak
+kapanır (ort. 3.5 tur) — ki bu M-16 kazanımına en yakın tehdittir ve ayrı yetki ister.
+Alternatif dürüst çıkışlar: daha küçük/hızlı model (kalite karnesiyle), streaming ile
+algılanan gecikmeyi düşürmek, ya da hedefi p50'ye çevirmek (13.3 s — zaten altında).
 
 **Kısıt (değişmez):** her fix k=3 karne-korumalı. Latency düşerken faithfulness /
 context_precision / honesty / fallback **sabit** kalmazsa fix geri alınır (M-16 kazanımı

@@ -115,8 +115,27 @@ citation ile desteklenmeli; destekleyemeyeceğin cümleyi YAZMA.
 - Bütçe farkındalığı: kalan iterasyon sınırlıdır; gereksiz tool çağrısından kaçın.
 """
 
+# v4 — M-15 kol-1: LATENCY. Ölçüldü (n=15, 3 temiz koşum): üretilen karakterin %34.3'ü
+# serbest metin ve bunun %24.9'u ATILIYOR — model tool'u çağırırken bir yandan cevabın tam
+# prose'unu yazıyor, `agent_node` tool_calls dalına girdiği için o metin hiç okunmuyor.
+# 14 çağrıda ~8000 karakter ≈ 2793 token ≈ 25s / 15 soru (~1.7s/soru).
+#
+# TEK DEĞİŞKEN GARANTİSİ: gövde v1'den PROGRAMATİK türetilir — tek bir satır eklenir,
+# kalan her karakter v1 ile birebir aynıdır (bkz. test_faz4_prompt_v4_tek_degisken).
+#
+# RİSK (karne bunun için koşulur): `reasoning_effort='none'` açık olduğundan bu atılan
+# prose modelin fiilî not defteri olabilir. Kesmek gecikmeyi düşürürken cevap kalitesini
+# de düşürebilir. Kabul koşulu: latency düşerken faith/prec/honesty/fallback SABİT.
+_V4_ANCHOR = "- `quote` KOPYALA-YAPIŞTIR olmalı:"
+_V4_RULE = (
+    "- Tool çağıracaksan YANINDA düz metin YAZMA: o turda yalnızca tool çağrısını üret; "
+    "açıklama, özet ya da taslak cevap yazma (bu metin okunmaz, yalnızca gecikme ekler).\n"
+)
+SYSTEM_PROMPT_V4 = DEFAULT_SYSTEM_PROMPT.replace(_V4_ANCHOR, _V4_RULE + _V4_ANCHOR, 1)
+
 # Kod-içi versiyon kaydı (DB seed kaynağı + fallback). DB (app_config prompts) kazanır.
-PROMPT_VERSIONS = {"v1": DEFAULT_SYSTEM_PROMPT, "v2": SYSTEM_PROMPT_V2, "v3": SYSTEM_PROMPT_V3}
+PROMPT_VERSIONS = {"v1": DEFAULT_SYSTEM_PROMPT, "v2": SYSTEM_PROMPT_V2,
+                   "v3": SYSTEM_PROMPT_V3, "v4": SYSTEM_PROMPT_V4}
 
 
 def load_system_prompt(cfg: EffectiveConfig) -> str:
