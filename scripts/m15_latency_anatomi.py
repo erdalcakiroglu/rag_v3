@@ -28,6 +28,7 @@ import time
 GOLDEN = os.environ.get("GOLDEN", "v0.1")
 MODEL = os.environ.get("POC_MODEL") or os.environ.get("RAGINTEL_LLM_MODEL") or "qwen3.5:35b"
 N = int(os.environ.get("N", "5"))
+PER_CAT = int(os.environ.get("PER_CAT", "1"))   # kategori başına kaç soru (örneklem genişletme)
 
 # --- 1) litellm.completion sarmalayıcı (ölçüm noktası) -----------------------
 import litellm  # noqa: E402
@@ -98,10 +99,11 @@ try:
         records = harness.repo.list_golden_records(conn, GOLDEN)
     # Kategori çeşitliliği: her kategoriden en fazla 1, N tane (tek tip soruya bakıp
     # genelleme yapmamak için — M-10'daki tek-soru ölçümünün tuzağı buydu).
-    picked, seen_cat = [], set()
+    picked, cat_n = [], {}
     for r in records:
-        if r["category"] not in seen_cat:
-            picked.append(r); seen_cat.add(r["category"])
+        c = r["category"]
+        if cat_n.get(c, 0) < PER_CAT:
+            picked.append(r); cat_n[c] = cat_n.get(c, 0) + 1
         if len(picked) >= N:
             break
 
@@ -149,6 +151,22 @@ try:
           f"gen_tok: p50={_pct(gen_tok,.5):.0f} max={max(gen_tok) if gen_tok else 0}")
     print(f"(a) reasoning_chars: toplam={sum(reason)} max={max(reason) if reason else 0} "
           f"→ {'DÜŞÜNME KAPALI (token yakmıyor)' if sum(reason) == 0 else 'HÂLÂ DÜŞÜNÜYOR — (a) ADAY'}")
+
+    # --- AYKIRI ANATOMİSİ: yavaş soruyu YAVAŞLATAN ne? tur mu, üretim mi? -------
+    # (HTTP koşumunda tek soru 24.3s'ye çıkmıştı; sebep tur sayısı varyansı mı?)
+    print("\n############ EN YAVAŞ 3 SORU — neden yavaş? ############")
+    print(f"{'id':<12} {'sn':>6} {'çağrı':>5} {'iter':>4} {'retry':>5} {'gen_tok':>8} {'prompt_tok_max':>14}")
+    for r in sorted(rows, key=lambda x: -x["total_ms"])[:3]:
+        cs = r["calls"]
+        print(f"{r['rec']['id']:<12} {r['total_ms']/1000:>6.1f} {len(cs):>5} "
+              f"{str(r['row'].get('iterations')):>4} {str(r['row'].get('retry_count', '-')):>5} "
+              f"{sum(c['completion_tokens'] for c in cs):>8} "
+              f"{max((c['prompt_tokens'] for c in cs), default=0):>14}")
+    if n_calls:
+        per_call = sum(c_all) / len(c_all) / 1000
+        print(f"  → ortalama tur maliyeti {per_call:.1f}s; çağrı sayısı {min(n_calls)}→{max(n_calls)} "
+              f"aralığında ⇒ tek fazladan tur ≈ +{per_call:.1f}s "
+              f"(soru-başı varyansın ana kaynağı buysa hedef 'tur azaltma'dır, 'çağrı hızlandırma' değil)")
 
     # --- (b) A/B NATIVE PROB: tool şemasının gerçek token maliyeti ------------
     print("\n############ (b) TOOL ŞEMASI A/B (native /api/chat) ############")
