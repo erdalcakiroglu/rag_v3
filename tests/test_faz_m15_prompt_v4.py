@@ -55,6 +55,27 @@ def test_v4_rule_targets_tool_turns_not_final_answer():
         assert keep in SYSTEM_PROMPT_V4, keep
 
 
+def test_switch_script_constants_match_prompts_module():
+    """Anahtar betiği v4'ü CANLI DB gövdesinden türetir (imaj eski olabilir diye kodu
+    import etmez). O yüzden kural metni iki yerde yaşıyor — burada kilitlenir, yoksa
+    DB'ye yazılan v4 ile git'teki v4 sessizce ayrışır."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "m15_prompt_v4_switch.py"
+    spec = importlib.util.spec_from_file_location("m15_switch", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    from ragintel.agents.prompts import _V4_ANCHOR
+
+    assert mod.V4_RULE == _V4_RULE
+    assert mod.V4_ANCHOR == _V4_ANCHOR
+    assert mod.EXPECTED_BASE == V4_BASE
+    # Betiğin türetmesi, kodun türetmesiyle birebir aynı sonucu vermeli.
+    assert mod.derive_v4(PROMPT_VERSIONS[V4_BASE]) == SYSTEM_PROMPT_V4
+
+
 def test_v4_registered_and_others_untouched():
     assert PROMPT_VERSIONS["v4"] is SYSTEM_PROMPT_V4
     assert PROMPT_VERSIONS["v1"] is DEFAULT_SYSTEM_PROMPT      # v1 gövdesi değişmedi
