@@ -16,10 +16,11 @@ REDDEDİLİR — aksi hâlde karnedeki fark "tek satır"a değil, taban kayması
 
 DİKKAT: config konteyner AÇILIŞINDA dondurulur → yazdıktan sonra RESTART şart.
 
-KULLANIM (H200'de):
-  docker exec -i ragintel-api python -u scripts/m15_prompt_v4_switch.py --target v4
-  docker exec -i ragintel-api python -u scripts/m15_prompt_v4_switch.py --target v4 --apply
-  docker exec -i ragintel-api python -u scripts/m15_prompt_v4_switch.py --target v2 --apply
+KULLANIM (H200'de): `scripts/` konteyner imajında YOKTUR — betik stdin'den beslenir,
+argümanlar `-`'den sonra gelir (diğer M-15 betikleriyle aynı desen):
+  docker exec -i ragintel-api python -u - --target v4         < scripts/m15_prompt_v4_switch.py
+  docker exec -i ragintel-api python -u - --target v4 --apply < scripts/m15_prompt_v4_switch.py
+  docker exec -i ragintel-api python -u - --target v2 --apply < scripts/m15_prompt_v4_switch.py
 """
 
 from __future__ import annotations
