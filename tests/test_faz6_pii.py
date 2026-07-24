@@ -75,3 +75,37 @@ def test_log_scrub_masks_tckn():
 def test_log_scrub_leaves_clean_untouched():
     ev = _pii_scrub_processor(None, "info", {"event": "ok", "n": 5, "msg": "temiz mesaj"})
     assert ev == {"event": "ok", "n": 5, "msg": "temiz mesaj"}
+
+
+# --- M-15: token SAYAÇLARI görünür, SIRLAR hâlâ redakte (iki yön de kilitli) ---
+def test_log_scrub_keeps_numeric_token_counters_visible():
+    """Latency anatomisi bu sayılara bağlı; 'token' ipucu bunları '***' yapıyordu."""
+    ev = _pii_scrub_processor(None, "info", {
+        "event": "llm_call_timing", "prompt_tokens": 5100, "completion_tokens": 312,
+        "tokens_per_sec": 41.7, "eval_count": 312,
+    })
+    assert ev["prompt_tokens"] == 5100 and ev["completion_tokens"] == 312
+    assert ev["tokens_per_sec"] == 41.7 and ev["eval_count"] == 312
+
+
+def test_log_scrub_still_redacts_real_secrets():
+    """M-12 kalkanı DARALMADI: sır alanları (string) aynen redakte."""
+    ev = _pii_scrub_processor(None, "info", {
+        "event": "x", "password": "hunter2", "api_key": "sk-abc", "token": "eyJhbGci",
+        "authorization": "Bearer xyz", "db_password": "p", "refresh_token": "r",
+    })
+    for k in ("password", "api_key", "token", "authorization", "db_password", "refresh_token"):
+        assert ev[k] == "***", k
+
+
+def test_log_scrub_metric_exemption_is_narrow():
+    """Muafiyet yalnız (birebir ad ∩ sayı) — string değer veya listede olmayan ad KAÇMAZ."""
+    ev = _pii_scrub_processor(None, "info", {
+        "event": "x",
+        "prompt_tokens": "sk-gizli",      # allowlist'te AMA string → sır muamelesi
+        "session_token_count": 5,          # sayı AMA birebir ad değil → redakte
+        "max_tokens": True,                # bool int alt sınıfı — sayaç sayılmaz
+    })
+    assert ev["prompt_tokens"] == "***"
+    assert ev["session_token_count"] == "***"
+    assert ev["max_tokens"] == "***"

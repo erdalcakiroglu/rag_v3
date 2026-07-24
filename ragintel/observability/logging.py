@@ -25,10 +25,30 @@ _CONFIGURED = False
 _SECRET_KEY_HINTS = ("password", "passwd", "pwd", "secret", "token", "authorization", "api_key")
 _REDACTED = "***"
 
+# M-15: "token" ipucunun YAN HASARI — token SAYAÇLARI da redakte ediliyordu
+# (`prompt_tokens`/`completion_tokens`/`tokens_per_sec` log'da "***"), bu yüzden
+# latency anatomisi (prompt-eval mi üretim mi baskın?) ÖLÇÜLEMİYORDU.
+# Muafiyet KASITLI OLARAK DAR: (1) anahtar adı bu listede BİREBİR olacak,
+# (2) değeri SAYI olacak. Sır bir string'tir; sayaç bir sayıdır — iki koşul da
+# sağlanmadıkça redaksiyon aynen sürer (M-12 kalkanı daralmaz).
+_METRIC_KEY_ALLOWLIST = frozenset({
+    "prompt_tokens", "completion_tokens", "total_tokens", "reasoning_tokens",
+    "tokens_used", "max_tokens", "tokens_per_sec", "token_count", "prompt_eval_count",
+    "eval_count",
+})
+
 
 def _looks_secret(key: str) -> bool:
     k = key.lower()
     return any(h in k for h in _SECRET_KEY_HINTS)
+
+
+def _is_metric(key: str, val: Any) -> bool:
+    """Sır ipucuna takılan ama aslında SAYAÇ olan alan mı? (bkz `_METRIC_KEY_ALLOWLIST`)
+    `bool` bilinçli olarak dışlanır — `int` alt sınıfıdır ama sayaç değildir."""
+    return (key.lower() in _METRIC_KEY_ALLOWLIST
+            and isinstance(val, (int, float))
+            and not isinstance(val, bool))
 
 
 def _pii_scrub_processor(logger, method_name, event_dict):
@@ -39,7 +59,7 @@ def _pii_scrub_processor(logger, method_name, event_dict):
 
     pol = PiiPolicy(mask_tckn=True, mask_dates=False)  # log'da yalnızca TCKN scrub
     for key, val in list(event_dict.items()):
-        if _looks_secret(key):
+        if _looks_secret(key) and not _is_metric(key, val):
             event_dict[key] = _REDACTED          # M-12: sır değeri asla log'a
             continue
         if isinstance(val, str) and len(val) >= 11:
