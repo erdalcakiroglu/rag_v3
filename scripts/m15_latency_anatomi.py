@@ -36,6 +36,38 @@ import litellm  # noqa: E402
 from ragintel.eval import harness  # noqa: E402
 from ragintel.llm.gateway import _build_timing, _reasoning_of  # noqa: E402
 
+def _gen_breakdown(msg) -> dict:
+    """Modelin ÜRETTİĞİ karakterleri hedefe göre ayırır.
+
+    Gecikme ≈ tur × üretim olduğu için 'üretimi kısalt' fix'i ancak token'ın NEREYE
+    gittiği bilinirse hedeflenebilir. `quote` prompt gereği KOPYALA-YAPIŞTIR
+    (prompts.py:23) — yani bağlamda ZATEN duran metni yeniden yazdırıyoruz; payı
+    büyükse burası kaliteyi bozmadan kısaltılabilecek tek yer.
+    """
+    out = {"answer": 0, "quote": 0, "claim": 0, "search_args": 0, "text": 0, "n_cit": 0}
+    out["text"] = len(getattr(msg, "content", None) or "")
+    for tc in (getattr(msg, "tool_calls", None) or []):
+        fn = getattr(tc, "function", None)
+        raw = getattr(fn, "arguments", "") or ""
+        name = getattr(fn, "name", "") or ""
+        if name != "submit_answer":
+            out["search_args"] += len(raw)          # arama sorgusu: küçük olmalı
+            continue
+        try:
+            a = json.loads(raw)
+        except (ValueError, TypeError):
+            out["answer"] += len(raw)               # bozuk JSON → hepsini cevaba say
+            continue
+        out["answer"] += len(str(a.get("answer") or ""))
+        cits = a.get("citations") or []
+        out["n_cit"] += len(cits)
+        for c in cits if isinstance(cits, list) else []:
+            if isinstance(c, dict):
+                out["quote"] += len(str(c.get("quote") or ""))
+                out["claim"] += len(str(c.get("claim") or ""))
+    return out
+
+
 CALLS: list[dict] = []
 LAST_TOOLS: list = []          # (b) A/B probu için gerçek tool şeması
 _orig_completion = litellm.completion
@@ -50,8 +82,8 @@ def _recording_completion(**kwargs):
     usage = getattr(resp, "usage", None)
     timing = _build_timing(resp, wall_ms)
     tools = kwargs.get("tools") or []
-    if tools:
-        LAST_TOOLS[:] = tools
+    if len(tools) >= len(LAST_TOOLS):      # EN GENİŞ şema saklanır: son çağrı tools=1
+        LAST_TOOLS[:] = tools              # (zorlanmış submit_answer) → A/B'yi küçük gösteriyordu
     CALLS.append({
         "wall_ms": round(wall_ms, 1),
         "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
@@ -67,6 +99,8 @@ def _recording_completion(**kwargs):
         "n_messages": len(kwargs.get("messages") or []),
         # (c) üretim
         "has_tool_calls": bool(getattr(msg, "tool_calls", None)),
+        # (c) ÜRETİLEN TOKEN NEREYE GİDİYOR? cevap metni / quote / claim / arama argümanı
+        "gen_break": _gen_breakdown(msg),
         # native süre dökümü LiteLLM'den geçiyor mu?
         "native": {k: v for k, v in timing.as_dict().items() if k != "latency_ms"},
     })
@@ -168,6 +202,27 @@ try:
               f"aralığında ⇒ tek fazladan tur ≈ +{per_call:.1f}s "
               f"(soru-başı varyansın ana kaynağı buysa hedef 'tur azaltma'dır, 'çağrı hızlandırma' değil)")
 
+    # --- (c) ÜRETİM KIRILIMI: token nereye gidiyor? --------------------------
+    gb = {k: sum(c["gen_break"][k] for r in rows for c in r["calls"])
+          for k in ("answer", "quote", "claim", "search_args", "text", "n_cit")}
+    chars = gb["answer"] + gb["quote"] + gb["claim"] + gb["search_args"] + gb["text"]
+    print("\n############ (c) ÜRETİLEN TOKEN NEREYE GİDİYOR? ############")
+    if chars:
+        for k, label in (("answer", "cevap metni"), ("quote", "quote (KOPYA — bağlamda zaten var)"),
+                         ("claim", "claim (cevabın tekrarı)"), ("search_args", "arama argümanı"),
+                         ("text", "serbest metin")):
+            print(f"  {label:<38} {gb[k]:>7} krk  %{100*gb[k]/chars:4.1f}")
+        print(f"  toplam {chars} karakter, {gb['n_cit']} citation "
+              f"(~{chars/max(sum(gen_tok),1):.1f} krk/token)")
+        kopya = gb["quote"] + gb["claim"]
+        print(f"  → KOPYA PAYI (quote+claim) = %{100*kopya/chars:.1f}  "
+              f"≈ {kopya/max(chars,1)*sum(gen_tok):.0f} token ≈ "
+              f"{kopya/max(chars,1)*sum(gen_tok)/75:.1f}s (75 tok/s varsayımıyla)")
+        print("  OKUMA: kopya payı yüksekse → quote'u KISALT (tek cümle/uzunluk sınırı) "
+              "veya chunk_id+offset'e çevir; ikisi de cevabın İÇERİĞİNİ değiştirmez.")
+    else:
+        print("  (üretim kırılımı toplanamadı)")
+
     # --- (b) A/B NATIVE PROB: tool şemasının gerçek token maliyeti ------------
     print("\n############ (b) TOOL ŞEMASI A/B (native /api/chat) ############")
     base = (os.environ.get("RAGINTEL_LLM_API_BASE") or "").rstrip("/")
@@ -183,9 +238,9 @@ try:
 
         msgs = [{"role": "user", "content": "Karbon vergisi nedir? Tek cümle."}]
 
-        def _native(with_tools: bool):
-            body = {"model": model, "messages": msgs, "stream": False,
-                    "options": {"temperature": 0, "num_predict": 1}}
+        def _native(with_tools: bool, n_predict: int = 1, prompt: list | None = None):
+            body = {"model": model, "messages": prompt or msgs, "stream": False,
+                    "options": {"temperature": 0, "num_predict": n_predict}}
             if with_tools and LAST_TOOLS:
                 body["tools"] = LAST_TOOLS
             req = urllib.request.Request(f"{base}/api/chat",
@@ -217,6 +272,21 @@ try:
             else:
                 print("  (tool şeması yakalanamadı — ajan hiç tools göndermemiş?)")
             print(f"  ham anahtarlar: {sorted(k for k in off if 'count' in k or 'duration' in k)}")
+
+            # --- HAM DECODE HIZI: 'üretim' fix'inin tavanı buna bağlı ---------
+            # Ajan ölçümünden ~75 tok/s türettik. Donanımın gerçek tavanı buysa
+            # üretimi KISALTMAKTAN başka çare yok; tavan çok yüksekse sunucu
+            # ayarı (batch/flash-attn) prompt'a HİÇ dokunmadan kazanç verir.
+            print("\n############ HAM DECODE HIZI (tek akış, tool yok) ############")
+            long_p = [{"role": "user", "content": "1'den 120'ye kadar say, aralarına virgül koy."}]
+            d = _native(False, n_predict=256, prompt=long_p)
+            ev_c, ev_ns = d.get("eval_count") or 0, d.get("eval_duration") or 0
+            if ev_c and ev_ns:
+                print(f"  eval_count={ev_c} eval={round(ev_ns/1e6)}ms → {ev_c/(ev_ns/1e9):.1f} tok/s")
+                print(f"  ajan ölçümünden türetilen ~75 tok/s ile karşılaştır → "
+                      f"{'AJAN YOLU YAVAŞ (istek/ayar farkı ara)' if ev_c/(ev_ns/1e9) > 110 else 'TAVAN BU — çare üretimi KISALTMAK'}")
+            else:
+                print("  (eval alanları gelmedi)")
         except (urllib.error.URLError, OSError, ValueError) as e:
             print(f"  ERİŞİLEMEDİ ({type(e).__name__}: {e}) — native kırılım YOK.")
             print("  Bu durumda (b) yalnız prompt_tokens üzerinden okunur (yukarıda).")
