@@ -5,105 +5,218 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ragintel — Doküman Asistanı</title>
 <style>
-  :root { --bg:#0f1419; --panel:#1a222c; --line:#2a3542; --txt:#e6edf3; --mut:#9fb0c0;
-          --acc:#4a9eff; --hi:#2ea043; --me:#d29922; --lo:#f85149; }
+  /* ------------------------------------------------------------------------
+     CSS DEĞİŞKENİ DİSİPLİNİ (Önyüz Brief §7): renk/ölçü/tipografi SABİT HEX
+     olarak gömülmez, hepsi buradaki değişkenlere bağlanır. Sonraki aşamada
+     tema/font tercihi eklemek = bu bloğu override etmek; yeniden yazım yok.
+     ------------------------------------------------------------------------ */
+  :root {
+    /* renk */
+    --bg:#0f1419; --bg-sunken:#0d1117; --panel:#1a222c; --panel-2:#1f2a36;
+    --line:#2a3542; --line-soft:#222c37;
+    --txt:#e6edf3; --txt-answer:#e6ebf5; --mut:#9fb0c0;
+    --acc:#4a9eff; --acc-soft:rgba(74,158,255,.12); --acc-mid:rgba(74,158,255,.16);
+    --hi:#2ea043; --me:#d29922; --lo:#f85149; --ok:#3fb950;
+    --hi-bg:rgba(46,160,67,.18); --me-bg:rgba(210,153,34,.18); --lo-bg:rgba(248,81,73,.18);
+    --warn-bg:rgba(210,153,34,.14);
+    --shadow:0 8px 28px rgba(0,0,0,.38);
+    /* tipografi */
+    --font-ui:-apple-system,Segoe UI,Roboto,sans-serif;
+    --font-answer:Georgia,"Iowan Old Style","Times New Roman",serif;
+    --font-mono:ui-monospace,SFMono-Regular,Consolas,monospace;
+    --fs-ui:15px; --fs-answer:15.5px; --fs-small:13px; --fs-meta:12px;
+    --lh-ui:1.55; --lh-answer:1.72;
+    /* ölçü */
+    --col:720px;          /* mesaj/kart genişliği */
+    --measure:640px;      /* cevap sütunu — satır başına ~65-72 karakter */
+    --sidebar-w:264px;
+    --ta-max:180px;       /* composer max ~8 satır, sonrası kendi içinde kayar */
+    --radius:12px; --radius-sm:8px;
+    --t-move:240ms;       /* boş→sohbet geçişi (brief: 200-300ms) */
+  }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--txt); font:15px/1.55 -apple-system,Segoe UI,Roboto,sans-serif; }
-  header { padding:14px 20px; border-bottom:1px solid var(--line); font-weight:600; }
+  html,body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--txt);
+         font:var(--fs-ui)/var(--lh-ui) var(--font-ui);
+         display:flex; flex-direction:column; overflow:hidden; }
+  header { flex:0 0 auto; padding:14px 20px; border-bottom:1px solid var(--line); font-weight:600; }
   header small { color:var(--mut); font-weight:400; margin-left:8px; }
-  main { max-width:900px; margin:0 auto; padding:20px; }
-  .ask { display:flex; gap:8px; }
-  .ask input { flex:1; padding:12px 14px; background:var(--panel); border:1px solid var(--line);
-               border-radius:8px; color:var(--txt); font-size:15px; }
-  .ask button { padding:12px 20px; background:var(--acc); color:#fff; border:0; border-radius:8px;
-                font-weight:600; cursor:pointer; }
-  .ask button:disabled { opacity:.5; cursor:wait; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:18px; margin-top:18px; }
-  .badge { display:inline-block; padding:2px 10px; border-radius:20px; font-size:12px; font-weight:700; }
-  .b-high{background:rgba(46,160,67,.18);color:var(--hi)} .b-medium{background:rgba(210,153,34,.18);color:var(--me)}
-  .b-low{background:rgba(248,81,73,.18);color:var(--lo)}
-  .answer { margin:12px 0; white-space:pre-wrap; }
-  .answer code{background:#0d1117;padding:1px 5px;border-radius:4px}
-  h3 { font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:var(--mut); margin:16px 0 8px; }
-  .src { border-left:3px solid var(--acc); padding:6px 10px; margin:6px 0; cursor:pointer; border-radius:0 6px 6px 0;
-         background:#0d1117; }
-  .src:hover{background:#131c26} .src .q{display:none;color:var(--mut);font-style:italic;margin-top:6px}
-  .src.open .q{display:block}
-  .src.reviewed{border-left-color:var(--mut);cursor:default;opacity:.85;font-size:13px}
-  .reviewed-h{color:var(--mut)} .reviewed-h .muted{font-weight:400;font-size:12px;opacity:.8}
-  .chips{display:flex;flex-wrap:wrap;gap:8px} .chip{background:#0d1117;border:1px solid var(--line);
-         border-radius:16px;padding:6px 12px;font-size:13px;cursor:pointer;color:var(--acc)}
-  .chip:hover{border-color:var(--acc)}
-  .fb{display:flex;gap:8px;align-items:center;margin-top:14px;color:var(--mut);font-size:13px}
-  .fb button{background:transparent;border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer;font-size:15px}
-  .fb button.on{border-color:var(--acc);background:rgba(74,158,255,.12)}
-  .meta{color:var(--mut);font-size:12px;margin-top:12px;border-top:1px solid var(--line);padding-top:8px}
-  .warn{background:rgba(210,153,34,.14);border:1px solid var(--me);color:var(--me);padding:8px 12px;border-radius:8px;margin-top:12px;font-size:13px}
-  .err{color:var(--lo)}
+
+  /* ---- yerleşim: sol panel + tam yükseklik sohbet sütunu ------------------ */
+  .layout { flex:1 1 auto; min-height:0; display:flex; align-items:stretch; }
+  #sidebar { width:var(--sidebar-w); flex:0 0 var(--sidebar-w); border-right:1px solid var(--line);
+             background:var(--panel); display:flex; flex-direction:column; overflow:hidden; }
+  #sidebar.hidden { display:none; }
+  .sb-head { padding:12px; }
+  #newchat { width:100%; padding:10px; background:var(--acc); color:#fff; border:0;
+             border-radius:var(--radius-sm); font-weight:600; cursor:pointer; }
+  #convlist { flex:1; overflow:auto; padding:0 8px 12px; }
+  .conv { display:flex; align-items:center; gap:6px; padding:9px 10px; border-radius:var(--radius-sm);
+          cursor:pointer; font-size:13.5px; }
+  .conv:hover { background:var(--panel-2); } .conv.on { background:var(--panel-2); }
+  .conv .t { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .conv .del { opacity:0; border:none; background:none; color:var(--mut); cursor:pointer; font-size:14px; padding:0 2px; }
+  .conv:hover .del { opacity:1; } .conv .del:hover { color:var(--lo); }
+  .sb-empty { color:var(--mut); font-size:12.5px; padding:10px 12px; }
+
+  main { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; }
+  #chatarea { flex:1 1 auto; min-height:0; position:relative; display:flex; }
+  /* TEK kaydırma kabı: pencere değil BU kayar (alt-sabit composer'ın şartı). */
+  #scroll { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden; }
+  #out { padding:8px 16px 4px; }
+  /* Boş durum: composer dikey ORTADA. `#spacer`ın flex-grow'u 1→0 animasyonuyla
+     composer akıcı biçimde alta iner (flex-grow sayısal → geçişi vardır). */
+  #spacer { flex:0 1 0; flex-grow:0; transition:flex-grow var(--t-move) ease; }
+  main.empty #spacer { flex-grow:1; }
+  main.empty #scroll { overflow:hidden; }
+  main.empty #jump { display:none; }
+
+  /* ---- composer ----------------------------------------------------------- */
+  #composerWrap { flex:0 0 auto; padding:8px 16px 14px; }
+  #hello { max-width:var(--col); margin:0 auto 18px; text-align:center;
+           opacity:1; max-height:200px; overflow:hidden;
+           transition:opacity var(--t-move) ease, max-height var(--t-move) ease, margin var(--t-move) ease; }
+  main:not(.empty) #hello { opacity:0; max-height:0; margin-bottom:0; pointer-events:none; }
+  #hello h1 { font-size:26px; margin:0 0 8px; font-weight:600; }
+  #hello p { color:var(--mut); margin:0; font-size:14px; }
+  .composer { max-width:var(--col); margin:0 auto; display:flex; align-items:flex-end; gap:8px;
+              background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+              padding:6px 6px 6px 14px; }
+  .composer:focus-within { border-color:var(--acc); }
+  .composer textarea { flex:1; background:transparent; border:0; outline:none; resize:none;
+              color:var(--txt); font:var(--fs-ui)/1.5 var(--font-ui);
+              padding:9px 0; max-height:var(--ta-max); overflow-y:auto; }
+  .composer textarea:disabled { opacity:.55; }
+  .composer button { flex:0 0 auto; padding:10px 18px; background:var(--acc); color:#fff; border:0;
+              border-radius:var(--radius-sm); font-weight:600; cursor:pointer; font-size:14px; }
+  .composer button.stop { background:transparent; border:1px solid var(--lo); color:var(--lo); }
+  .hint { max-width:var(--col); margin:7px auto 0; color:var(--mut); font-size:11.5px; text-align:center; }
+
+  /* ---- yapış-alta düğmesi -------------------------------------------------- */
+  .jump { position:absolute; left:50%; transform:translateX(-50%); bottom:14px; z-index:5;
+          background:var(--panel-2); border:1px solid var(--line); color:var(--txt);
+          border-radius:20px; padding:7px 14px; font-size:12.5px; cursor:pointer; box-shadow:var(--shadow); }
+  .jump:hover { border-color:var(--acc); color:var(--acc); }
+  .jump.hidden { display:none; }
+
+  /* ---- mesajlar ------------------------------------------------------------ */
+  .msg { max-width:var(--col); margin:16px auto 0; padding:12px 16px; border-radius:var(--radius);
+         white-space:pre-wrap; line-height:1.5; }
+  .msg.user { background:var(--panel-2); border:1px solid var(--line); }
+  .msg.asst { background:var(--panel); border:1px solid var(--line); }
+  .msg .role { color:var(--mut); font-size:11px; text-transform:uppercase; letter-spacing:.05em; margin-bottom:6px; }
+  .card { max-width:var(--col); margin:16px auto 0; background:var(--panel); border:1px solid var(--line);
+          border-radius:var(--radius); padding:20px 22px 18px; }
+  .card:last-child { margin-bottom:10px; }
+  .badge { display:inline-block; padding:3px 11px; border-radius:20px; font-size:var(--fs-meta);
+           font-weight:700; font-family:var(--font-ui); }
+  .b-high { background:var(--hi-bg); color:var(--hi); }
+  .b-medium { background:var(--me-bg); color:var(--me); }
+  .b-low { background:var(--lo-bg); color:var(--lo); }
+  /* CEVAP SESİ: serif + dar sütun + yüksek satır aralığı. Rozet/meta/kaynaklar sans kalır. */
+  .answer { font-family:var(--font-answer); font-size:var(--fs-answer); line-height:var(--lh-answer);
+            color:var(--txt-answer); max-width:var(--measure); margin:16px 0 22px; white-space:pre-wrap; }
+  .answer code { font-family:var(--font-mono); font-size:.88em; background:var(--bg-sunken);
+                 padding:1px 5px; border-radius:4px; }
+  /* Atıf: satır-içi [1] yerine üst-simge çip — okuma akışını bölmez. */
+  .cit { font-family:var(--font-ui); font-size:.6em; vertical-align:super; line-height:0;
+         background:var(--acc-soft); color:var(--acc); border-radius:6px; padding:2px 5px;
+         margin:0 2px; cursor:pointer; text-decoration:none; }
+  .cit:hover { background:var(--acc-mid); }
+  h3 { font-family:var(--font-ui); font-size:var(--fs-small); text-transform:uppercase;
+       letter-spacing:.05em; color:var(--mut); margin:22px 0 10px; }
+  .src { font-family:var(--font-ui); font-size:13.5px; border-left:3px solid var(--acc);
+         padding:8px 12px; margin:8px 0; cursor:pointer; border-radius:0 6px 6px 0; background:var(--bg-sunken); }
+  .src:hover { background:var(--panel-2); }
+  .src .q { display:none; color:var(--mut); font-style:italic; margin-top:6px; }
+  .src.open .q { display:block; }
+  .src.flash { background:var(--acc-soft); border-left-color:var(--acc); }
+  .src.reviewed { border-left-color:var(--mut); cursor:default; opacity:.85; font-size:13px; }
+  .reviewed-h { color:var(--mut); } .reviewed-h .muted { font-weight:400; font-size:var(--fs-meta); opacity:.8; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; }
+  .chip { background:var(--bg-sunken); border:1px solid var(--line); border-radius:16px; padding:7px 13px;
+          font-size:var(--fs-small); cursor:pointer; color:var(--acc); }
+  .chip:hover { border-color:var(--acc); }
+  .fb { display:flex; gap:8px; align-items:center; margin-top:18px; color:var(--mut); font-size:var(--fs-small); }
+  .fb button { background:transparent; border:1px solid var(--line); border-radius:6px; padding:4px 10px;
+               cursor:pointer; font-size:var(--fs-ui); }
+  .fb button.on { border-color:var(--acc); background:var(--acc-soft); }
+  .meta { color:var(--mut); font-size:var(--fs-meta); margin-top:14px; border-top:1px solid var(--line); padding-top:9px; }
+  .warn { background:var(--warn-bg); border:1px solid var(--me); color:var(--me); padding:9px 12px;
+          border-radius:var(--radius-sm); margin-top:14px; font-size:var(--fs-small); }
+  .err { color:var(--lo); }
   /* M-2 — yapısal tablo gösterimi */
-  .tbtn{margin-top:8px;background:transparent;border:1px solid var(--acc);color:var(--acc);
-        border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer}
-  .tbtn:hover{background:rgba(74,158,255,.12)}
-  .twrap{overflow:auto;border:1px solid var(--line);border-radius:6px;margin:6px 0;max-height:420px}
+  .tbtn { margin-top:8px; background:transparent; border:1px solid var(--acc); color:var(--acc);
+          border-radius:6px; padding:4px 10px; font-size:var(--fs-meta); cursor:pointer; }
+  .tbtn:hover { background:var(--acc-soft); }
+  .twrap { overflow:auto; border:1px solid var(--line); border-radius:6px; margin:6px 0; max-height:420px; }
   /* width:max-content + hücre sarması: TEK bir uzun hücre ilk kolonu şişirip
      alıntının geldiği sağdaki kolonları ekran dışına itmesin. */
-  table.dt{border-collapse:collapse;width:max-content;min-width:100%;font-size:12.5px}
-  table.dt th,table.dt td{border:1px solid var(--line);padding:5px 7px;text-align:left;
-        max-width:180px;white-space:normal;overflow-wrap:anywhere;vertical-align:top}
-  table.dt th{background:#0d1117;color:var(--mut);font-weight:600;position:sticky;top:0}
-  table.dt tr.hl td{background:rgba(74,158,255,.16);border-color:rgba(74,158,255,.5)}
-  .tmut{color:var(--mut);font-size:11.5px;margin:4px 0}
+  table.dt { border-collapse:collapse; width:max-content; min-width:100%; font-size:12.5px; }
+  table.dt th, table.dt td { border:1px solid var(--line); padding:5px 7px; text-align:left;
+        max-width:180px; white-space:normal; overflow-wrap:anywhere; vertical-align:top; }
+  table.dt th { background:var(--bg-sunken); color:var(--mut); font-weight:600; position:sticky; top:0; }
+  table.dt tr.hl td { background:var(--acc-mid); border-color:var(--acc); }
+  .tmut { color:var(--mut); font-size:11.5px; margin:4px 0; }
   /* M-7: kaynağın sayfasındaki görseller */
-  .figbox{display:flex;flex-wrap:wrap;gap:10px;margin:6px 0}
-  .fig{margin:0;border:1px solid var(--line);border-radius:6px;padding:6px;background:#0d1117;max-width:300px}
-  .fig img{display:block;max-width:100%;height:auto;border-radius:4px}
-  .fig figcaption{color:var(--mut);font-size:11px;margin-top:5px;overflow-wrap:anywhere}
+  .figbox { display:flex; flex-wrap:wrap; gap:10px; margin:6px 0; }
+  .fig { margin:0; border:1px solid var(--line); border-radius:6px; padding:6px; background:var(--bg-sunken); max-width:300px; }
+  .fig img { display:block; max-width:100%; height:auto; border-radius:4px; }
+  .fig figcaption { color:var(--mut); font-size:11px; margin-top:5px; overflow-wrap:anywhere; }
   /* M-12 — giriş/kayıt ekranı + hesap alanı */
-  .acct{float:right;font-weight:400;font-size:13px;color:var(--mut)}
-  .acct button{color:var(--acc);cursor:pointer;background:none;border:none;font-size:13px;padding:0}
-  .overlay{position:fixed;inset:0;background:rgba(0,0,0,.62);display:flex;align-items:center;justify-content:center;z-index:50;padding:16px}
-  .overlay.hidden{display:none}
-  .authbox{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:24px;width:370px;max-width:94vw}
-  .authbox h2{margin:0 0 4px;font-size:19px} .authbox .sub{color:var(--mut);font-size:13px;margin-bottom:18px}
-  .authtabs{display:flex;gap:8px;margin-bottom:16px}
-  .authtabs button{flex:1;padding:9px;border:1px solid var(--line);background:#0d1117;color:var(--txt);border-radius:8px;cursor:pointer;font-size:14px}
-  .authtabs button.on{border-color:var(--acc);color:var(--acc)}
-  .authbox label{display:block;font-size:12px;color:var(--mut);margin:11px 0 4px}
-  .authbox input{width:100%;padding:10px 12px;background:#0d1117;border:1px solid var(--line);border-radius:8px;color:var(--txt);font-size:14px}
-  .authbox .go{width:100%;margin-top:18px;padding:11px;background:var(--acc);color:#fff;border:0;border-radius:8px;font-weight:600;cursor:pointer}
-  .authbox .go:disabled{opacity:.5;cursor:wait}
-  .authmsg{margin-top:12px;font-size:13px;white-space:pre-wrap} .authmsg.err{color:var(--lo)} .authmsg.ok{color:var(--hi)}
-  .authalt{margin-top:16px;text-align:center;font-size:12px}
-  .authalt button{color:var(--mut);cursor:pointer;text-decoration:underline;background:none;border:none;font-size:12px}
-  /* M-13 — sohbet paneli (sol liste + mesaj akışı) */
-  .sbtoggle{background:none;border:none;color:var(--mut);cursor:pointer;font-size:18px;margin-right:10px;vertical-align:middle}
-  .layout{display:flex;align-items:flex-start}
-  #sidebar{position:sticky;top:0;height:100vh;width:264px;flex:0 0 264px;border-right:1px solid var(--line);
-           background:#12181f;display:flex;flex-direction:column;overflow:hidden}
-  #sidebar.hidden{display:none}
-  .sb-head{padding:12px}
-  #newchat{width:100%;padding:10px;background:var(--acc);color:#fff;border:0;border-radius:8px;font-weight:600;cursor:pointer}
-  #convlist{flex:1;overflow:auto;padding:0 8px 12px}
-  .conv{display:flex;align-items:center;gap:6px;padding:9px 10px;border-radius:8px;cursor:pointer;font-size:13.5px}
-  .conv:hover{background:#1a222c} .conv.on{background:#1f2a36}
-  .conv .t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .conv .del{opacity:0;border:none;background:none;color:var(--mut);cursor:pointer;font-size:14px;padding:0 2px}
-  .conv:hover .del{opacity:1} .conv .del:hover{color:var(--lo)}
-  .sb-empty{color:var(--mut);font-size:12.5px;padding:10px 12px}
-  main{flex:1;min-width:0}
-  #out{max-width:900px;margin:0 auto}
-  .msg{max-width:900px;margin:14px auto 0;padding:11px 16px;border-radius:10px;white-space:pre-wrap;line-height:1.5}
-  .msg.user{background:#1f2a36;border:1px solid var(--line)}
-  .msg.asst{background:var(--panel);border:1px solid var(--line)}
-  .msg .role{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+  .acct { float:right; font-weight:400; font-size:var(--fs-small); color:var(--mut); }
+  .acct button { color:var(--acc); cursor:pointer; background:none; border:none; font-size:var(--fs-small); padding:0; }
+  .overlay { position:fixed; inset:0; background:rgba(0,0,0,.62); display:flex; align-items:center;
+             justify-content:center; z-index:50; padding:16px; }
+  .overlay.hidden { display:none; }
+  .authbox { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+             padding:24px; width:370px; max-width:94vw; }
+  .authbox h2 { margin:0 0 4px; font-size:19px; }
+  .authbox .sub { color:var(--mut); font-size:var(--fs-small); margin-bottom:18px; }
+  .authtabs { display:flex; gap:8px; margin-bottom:16px; }
+  .authtabs button { flex:1; padding:9px; border:1px solid var(--line); background:var(--bg-sunken);
+             color:var(--txt); border-radius:var(--radius-sm); cursor:pointer; font-size:14px; }
+  .authtabs button.on { border-color:var(--acc); color:var(--acc); }
+  .authbox label { display:block; font-size:var(--fs-meta); color:var(--mut); margin:11px 0 4px; }
+  .authbox input { width:100%; padding:10px 12px; background:var(--bg-sunken); border:1px solid var(--line);
+             border-radius:var(--radius-sm); color:var(--txt); font-size:14px; }
+  .authbox .go { width:100%; margin-top:18px; padding:11px; background:var(--acc); color:#fff; border:0;
+             border-radius:var(--radius-sm); font-weight:600; cursor:pointer; }
+  .authbox .go:disabled { opacity:.5; cursor:wait; }
+  .authmsg { margin-top:12px; font-size:var(--fs-small); white-space:pre-wrap; }
+  .authmsg.err { color:var(--lo); } .authmsg.ok { color:var(--hi); }
+  .authalt { margin-top:16px; text-align:center; font-size:var(--fs-meta); }
+  .authalt button { color:var(--mut); cursor:pointer; text-decoration:underline; background:none;
+             border:none; font-size:var(--fs-meta); }
+  .sbtoggle { background:none; border:none; color:var(--mut); cursor:pointer; font-size:18px;
+             margin-right:10px; vertical-align:middle; }
   /* M-15: aşama streaming'i — yanıt beklenirken canlı ilerleme satırları. */
-  .prog{font-size:13px;color:var(--mut);line-height:1.7}
-  .pstep{display:flex;gap:8px;align-items:baseline;opacity:.9}
-  .pstep .pq{color:var(--fg);opacity:.85}
-  .pstep .pt{margin-left:auto;font-variant-numeric:tabular-nums;opacity:.6;font-size:12px}
-  .pstep.live::before{content:'●';color:var(--ok,#3fb950);animation:pulse 1.2s ease-in-out infinite}
-  .pstep.done::before{content:'✓';opacity:.5}
-  @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+  .prog { font-family:var(--font-ui); font-size:var(--fs-small); color:var(--mut); line-height:1.75; }
+  .pstep { display:flex; gap:8px; align-items:baseline; min-width:0; }
+  .pstep .pq { color:var(--txt); opacity:.8; min-width:0; overflow:hidden;
+               text-overflow:ellipsis; white-space:nowrap; }
+  .pstep .pt { margin-left:auto; font-variant-numeric:tabular-nums; opacity:.6; font-size:var(--fs-meta); }
+  .pstep.live::before { content:'●'; color:var(--ok); animation:pulse 1.2s ease-in-out infinite; }
+  .pstep.done::before { content:'✓'; opacity:.5; }
+  @keyframes pulse { 0%,100%{opacity:.35} 50%{opacity:1} }
+  /* final gelince aşama satırları KAYBOLMAZ, küçülür: tek satırlık özet olarak katlanır. */
+  .proglog { margin:0 0 6px; }
+  .proglog summary { color:var(--mut); font-size:var(--fs-meta); cursor:pointer; list-style:none; opacity:.75; }
+  .proglog summary::-webkit-details-marker { display:none; }
+  .proglog summary::before { content:'▸ '; }
+  .proglog[open] summary::before { content:'▾ '; }
+  .proglog .prog { margin-top:6px; padding-left:4px; }
+
+  /* ---- dar ekran ----------------------------------------------------------- */
+  @media (max-width:820px) {
+    :root { --sidebar-w:min(300px,84vw); --col:100%; --measure:100%; }
+    #sidebar { position:fixed; top:0; bottom:0; left:0; z-index:40; box-shadow:var(--shadow); }
+    #out { padding:8px 10px 4px; }
+    #composerWrap { padding:6px 10px 10px; }
+    .card { padding:16px 14px 14px; }
+    .msg { padding:11px 13px; }
+    #hello h1 { font-size:21px; }
+  }
 </style>
 </head>
 <body>
@@ -139,25 +252,77 @@
     <div class="sb-head"><button id="newchat" onclick="newChat()">＋ Yeni sohbet</button></div>
     <div id="convlist"></div>
   </aside>
-  <main>
-    <form class="ask" id="askForm">
-      <input id="q" placeholder="Sorunuzu yazın… (ör. Karbon vergisini ilk uygulayan ülke hangisidir?)" autocomplete="off">
-      <button id="askBtn" type="submit">Sor</button>
-    </form>
-    <div id="out"></div>
+  <!-- İki durum: .empty = composer ortada + karşılama · yoksa = composer altta sabit -->
+  <main id="main" class="empty">
+    <div id="chatarea">
+      <div id="scroll"><div id="out"></div></div>
+      <button id="jump" class="jump hidden" onclick="toBottom()">↓ En alta git</button>
+    </div>
+    <div id="composerWrap">
+      <div id="hello">
+        <h1>ragintel</h1>
+        <p>Kurumsal doküman asistanı — yanıtlar yalnızca belgelerinizden, alıntılı verilir.</p>
+      </div>
+      <form class="composer" id="askForm">
+        <textarea id="q" rows="1" autocomplete="off"
+          placeholder="Sorunuzu yazın… (ör. Karbon vergisini ilk uygulayan ülke hangisidir?)"></textarea>
+        <button id="askBtn" type="submit">Sor</button>
+      </form>
+      <div class="hint">Enter gönderir · Shift+Enter yeni satır</div>
+    </div>
+    <div id="spacer"></div>
   </main>
 </div>
 <script>
 const out = document.getElementById('out'), qEl = document.getElementById('q'), btn = document.getElementById('askBtn');
+const mainEl = document.getElementById('main'), scroller = document.getElementById('scroll');
+const jumpBtn = document.getElementById('jump'), askForm = document.getElementById('askForm');
 let sessionId = localStorage.getItem('ragintel_session') || null;
 let cardSeq = 0;   // M-13: her yanıt kartına benzersiz ön-ek (kaynak/tablo id çakışması olmasın)
 const el = h => { const t=document.createElement('template'); t.innerHTML=h.trim(); return t.content.firstElementChild; };
-const scrollBottom = () => window.scrollTo(0, document.body.scrollHeight);
 
-function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function esc(s){return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function md(s){return esc(s).replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/`([^`]+)`/g,'<code>$1</code>');}
+// Atıf işaretleri: satır-içi [1] → üst-simge çip. Metin ÖNCE esc'lenir; çip yalnız
+// sayıdan kurulur (model metni etikete dönüşemez). `map` varsa hover'da kaynak adı.
+function answerHtml(s, map){
+  return md(s).replace(/\[(\d{1,3})\]/g, (m,n)=>
+    `<sup class="cit" data-n="${n}"${(map&&map[n])?` title="${esc(map[n])}"`:''}>${n}</sup>`);
+}
 
-document.getElementById('askForm').addEventListener('submit', e=>{ e.preventDefault(); ask(qEl.value); });
+// ---- durum: boş ↔ sohbet ----------------------------------------------------
+// Geçiş TEK YÖNLÜ ve oturum başına bir kez; "Yeni sohbet" boş duruma döndürür.
+function setChatState(on){ mainEl.classList.toggle('empty', !on); }
+
+// ---- yapış-alta (stick-to-bottom) -------------------------------------------
+// Takip modu varsayılan; kullanıcı yukarı kaydırırsa DURUR (akış devam etse bile
+// ekran zıplamaz); en alta dönünce yeniden takip eder.
+const BOTTOM_EPS = 40;
+let follow = true;
+const atBottom = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < BOTTOM_EPS;
+function syncJump(){ jumpBtn.classList.toggle('hidden', follow); }
+scroller.addEventListener('scroll', ()=>{ follow = atBottom(); syncJump(); }, {passive:true});
+function toBottom(){ follow = true; scroller.scrollTop = scroller.scrollHeight; syncJump(); }
+function stick(){ if(follow) scroller.scrollTop = scroller.scrollHeight; else syncJump(); }
+
+// ---- composer ---------------------------------------------------------------
+let controller = null, busy = false;
+function grow(){ qEl.style.height='auto'; qEl.style.height=qEl.scrollHeight+'px'; }  // max-height CSS'te
+qEl.addEventListener('input', grow);
+qEl.addEventListener('keydown', e=>{
+  if(e.key==='Enter' && !e.shiftKey && !e.isComposing){ e.preventDefault(); askForm.requestSubmit(); }
+});
+function setBusy(b){
+  busy=b; qEl.disabled=b;
+  btn.textContent = b ? 'Durdur' : 'Sor';
+  btn.classList.toggle('stop', b);
+  if(!b){ qEl.focus(); }
+}
+askForm.addEventListener('submit', e=>{
+  e.preventDefault();
+  if(busy){ if(controller) controller.abort(); return; }   // iptal YALNIZ istemci-tarafı UX
+  ask(qEl.value);
+});
 
 // FAZ 6: Bearer token (localStorage). API fail-closed → token zorunlu.
 function authHeaders(){
@@ -223,13 +388,14 @@ async function logout(){
   try{ await fetch('/api/logout',{method:'POST',headers:authHeaders()}); }catch(e){}
   localStorage.removeItem('ragintel_token'); localStorage.removeItem('ragintel_user');
   sessionId=null; localStorage.removeItem('ragintel_session');
-  out.innerHTML=''; document.getElementById('convlist').innerHTML='';
+  out.innerHTML=''; setChatState(false); document.getElementById('convlist').innerHTML='';
   renderAcct(); showAuth(true);
 }
 function tokenLogin(){ if(promptToken()){ localStorage.setItem('ragintel_user','(token)'); showAuth(false); renderAcct(); loadConversations(); } }
 
 // Açılış: hesap alanını çiz; token yoksa giriş ekranını göster, varsa sohbetleri yükle.
 renderAcct();
+if(window.innerWidth<=820) document.getElementById('sidebar').classList.add('hidden');
 if(!localStorage.getItem('ragintel_token')) showAuth(true); else loadConversations();
 
 // M-15 aşama streaming'i. Cevap METNİ akmaz (ajan submit_answer ile teslim eder,
@@ -261,10 +427,14 @@ async function* sseEvents(body){
 }
 
 async function ask(question){
-  question=(question||'').trim(); if(!question) return;
-  qEl.value=''; btn.disabled=true; btn.textContent='…';
+  question=(question||'').trim(); if(!question || busy) return;   // boş/boşluk gönderilmez
+  qEl.value=''; grow(); setBusy(true);
+  setChatState(true);                                   // ilk soruda composer alta iner
+  controller = new AbortController();
+  // Optimistik kullanıcı mesajı: istek gitmeden önce listede görünür.
   out.appendChild(el(`<div class="msg user"><div class="role">Siz</div>${esc(question)}</div>`));
-  const card=el('<div class="card"><div class="prog"></div></div>'); out.appendChild(card); scrollBottom();
+  const card=el('<div class="card"><div class="prog"></div></div>'); out.appendChild(card);
+  follow=true; toBottom();
   const prog=card.querySelector('.prog');
   // İlerleme satırı DOM API ile kurulur, innerHTML ile DEĞİL: `q` model üretimi metindir.
   const step=(label,q,t_ms)=>{
@@ -274,10 +444,10 @@ async function ask(question){
     if(q){ const e=document.createElement('span'); e.className='pq'; e.textContent='“'+q+'”'; d.appendChild(e); }
     const t=document.createElement('span'); t.className='pt';
     t.textContent=((t_ms||0)/1000).toFixed(1)+'s'; d.appendChild(t);
-    prog.appendChild(d); scrollBottom();
+    prog.appendChild(d); stick();
   };
   try{
-    const r=await fetch('/api/ask/stream',{method:'POST',headers:authHeaders(),
+    const r=await fetch('/api/ask/stream',{method:'POST',headers:authHeaders(),signal:controller.signal,
       body:JSON.stringify({question, session_id:sessionId})});
     if(r.status===401){ // token yok/geçersiz/oturum düşmüş → giriş ekranını aç
       card.className='card err'; card.textContent='Oturum gerekli — lütfen giriş yapın.';
@@ -301,16 +471,36 @@ async function ask(question){
     }
     if(!final){ card.className='card err';
       card.textContent='Yanıt akışı yarıda kesildi'+(streamErr?' ('+streamErr+')':'')+'.'; return; }
+    const log=collapseProgress(prog);
     card.innerHTML=answerCardHTML(final, injected, ++cardSeq);
+    if(log) card.insertBefore(log, card.firstChild);   // aşamalar kaybolmaz, katlanır
     loadConversations();   // yeni sohbet / last_at listede yansısın
-  }catch(err){ card.className='card err'; card.textContent='Ağ hatası: '+String(err); }
-  finally{ btn.disabled=false; btn.textContent='Sor'; scrollBottom(); }
+  }catch(err){
+    card.className='card err';
+    card.textContent = (err && err.name==='AbortError') ? 'Durduruldu.' : 'Ağ hatası: '+String(err);
+  }
+  finally{ controller=null; setBusy(false); stick(); }
+}
+
+// `final` gelince ilerleme satırları silinmez: tek satırlık özet altında katlanır.
+// Düğümler zaten textContent ile kurulmuştu; klonlanırken de öyle kalır.
+function collapseProgress(prog){
+  const steps=prog.querySelectorAll('.pstep');
+  if(!steps.length) return null;
+  prog.querySelectorAll('.pstep.live').forEach(n=>n.className='pstep done');
+  const last=steps[steps.length-1].querySelector('.pt');
+  const det=document.createElement('details'); det.className='proglog';
+  const sum=document.createElement('summary');
+  sum.textContent = steps.length+' aşama'+(last?(' · '+last.textContent):'');
+  det.appendChild(sum); det.appendChild(prog.cloneNode(true));
+  return det;
 }
 
 // Akış kullanılamadığında eski (bloklayan) yol — davranış birebir korunur.
 async function askBlocking(question, card){
   card.textContent='Yanıt hazırlanıyor…';
   const r=await fetch('/api/ask',{method:'POST',headers:authHeaders(),
+    signal:controller?controller.signal:undefined,
     body:JSON.stringify({question, session_id:sessionId})});
   if(r.status===401){ card.className='card err'; card.textContent='Oturum gerekli — lütfen giriş yapın.';
     localStorage.removeItem('ragintel_user'); renderAcct(); showAuth(true); return; }
@@ -321,6 +511,16 @@ async function askBlocking(question, card){
   loadConversations();
 }
 
+// Atıf çipine tıklama: aynı KARTTAKİ kaynağı açar ve vurgular (kart-yerel).
+out.addEventListener('click', e=>{
+  const c = e.target.closest('.cit'); if(!c) return;
+  const card = c.closest('.card'); if(!card) return;
+  const src = card.querySelector('.src[data-n="'+c.dataset.n+'"]'); if(!src) return;
+  card.querySelectorAll('.src.flash').forEach(n=>n.classList.remove('flash'));
+  src.classList.add('open','flash');
+  src.scrollIntoView({block:'nearest', behavior:'smooth'});
+});
+
 // Yanıt kartının İÇ HTML'i (kart konteyneri ask() tarafından). `seq` benzersiz ön-ek:
 // aynı akışta birden çok yanıtın tablo/görsel id'leri ÇAKIŞMASIN (M-2/M-7 kapları kart-yerel).
 function answerCardHTML(resp, injected, seq){
@@ -328,7 +528,10 @@ function answerCardHTML(resp, injected, seq){
   const label = {high:'yüksek güven',medium:'orta güven',low:'düşük güven'}[c]||c;
   let h = `<span class="badge b-${c}">${label}</span>`;
   if(injected) h += `<div class="warn">⚠ Soruda şüpheli kalıp işaretlendi (reddedilmedi; kayda geçti).</div>`;
-  h += `<div class="answer">${md(resp.answer)}</div>`;
+  // Atıf çiplerinin hover metni için n → "dosya s.X" haritası.
+  const smap = {};
+  (resp.sources||[]).forEach(s=>{ smap[s.n] = s.file_name + (s.page!=null ? (' s.'+s.page) : ''); });
+  h += `<div class="answer">${answerHtml(resp.answer, smap)}</div>`;
   if(resp.sources && resp.sources.length){
     h += `<h3>Kaynaklar</h3>`;
     resp.sources.forEach(s=>{
@@ -342,7 +545,7 @@ function answerCardHTML(resp, injected, seq){
       const figs = (s.figures && s.figures.length)
         ? `<button class="tbtn" onclick="showFigures('${uid}',event)">Kaynağın görselleri (${s.figures.length})</button>
            <div id="fig-${uid}" class="figbox"></div>` : '';
-      h += `<div class="src" onclick="this.classList.toggle('open')"><b>[${s.n}]</b> ${esc(s.file_name)} ${loc}
+      h += `<div class="src" data-n="${s.n}" onclick="this.classList.toggle('open')"><b>[${s.n}]</b> ${esc(s.file_name)} ${loc}
              ${s.section?('· '+esc(s.section)):''}<div class="q">“${esc(s.quote)}”</div>${btn}${figs}${box}</div>`;
       if(s.figures && s.figures.length) FIGS[uid] = s.figures;
     });
@@ -491,15 +694,23 @@ async function openConversation(id){
     out.innerHTML='';
     // Geçmiş SALT-OKUMA transcript (checkpoint'ten değil, conversation_messages'tan).
     messages.forEach(m=> out.appendChild(el(
-      `<div class="msg ${m.role==='user'?'user':'asst'}"><div class="role">${m.role==='user'?'Siz':'Asistan'}</div>${m.role==='user'?esc(m.content):md(m.content)}</div>`)));
-    loadConversations(); scrollBottom();
+      m.role==='user'
+        ? `<div class="msg user"><div class="role">Siz</div>${esc(m.content)}</div>`
+        : `<div class="msg asst"><div class="role">Asistan</div><div class="answer">${answerHtml(m.content)}</div></div>`)));
+    setChatState(messages.length>0);
+    if(window.innerWidth<=820) document.getElementById('sidebar').classList.add('hidden');
+    loadConversations(); toBottom();
   }catch(e){}
 }
-function newChat(){ sessionId=null; localStorage.removeItem('ragintel_session'); out.innerHTML=''; loadConversations(); qEl.focus(); }
+function newChat(){
+  sessionId=null; localStorage.removeItem('ragintel_session'); out.innerHTML='';
+  setChatState(false); follow=true; syncJump();
+  loadConversations(); qEl.focus();
+}
 async function delConversation(id){
   if(!confirm('Bu sohbeti sil?')) return;
   try{ await fetch('/api/conversations/'+encodeURIComponent(id),{method:'DELETE',headers:authHeaders()}); }catch(e){}
-  if(id===sessionId){ sessionId=null; localStorage.removeItem('ragintel_session'); out.innerHTML=''; }
+  if(id===sessionId){ sessionId=null; localStorage.removeItem('ragintel_session'); out.innerHTML=''; setChatState(false); }
   loadConversations();
 }
 function toggleSidebar(){ document.getElementById('sidebar').classList.toggle('hidden'); }
