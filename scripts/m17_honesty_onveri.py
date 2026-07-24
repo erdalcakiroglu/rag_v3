@@ -63,20 +63,28 @@ def _claims(answer: str, extended: bool) -> list[str]:
     return out
 
 
-def classify(answer: str, confidence: str, n_src: int) -> dict:
+def classify(answer: str, confidence: str, n_src: int, coverage) -> dict:
     declined = confidence == "low" or any(m in (answer or "").lower() for m in _NOTFOUND_MARKERS)
     unc = [s for s in _claims(answer, False) if not CIT.search(s)]
     unc_x = [s for s in _claims(answer, True) if not CIT.search(s)]
+    try:
+        cov = float(coverage)
+    except (TypeError, ValueError):
+        cov = -1.0
     return {
-        "declined": declined, "uncited": unc, "uncited_x": unc_x,
+        "declined": declined, "uncited": unc, "uncited_x": unc_x, "cov": cov,
         "D0": bool(declined and n_src == 0),
         "D2c": bool(declined and not unc),
         "D2c+": bool(declined and not unc_x),
         "D3": bool(declined),
+        # D4: reddetti VE bağlanmamış iddia bırakmadı. Saf ret (kaynak=0) zaten iddiasızdır;
+        # kaynaklı cevapta ise validate'in KENDİ oranı ölçüt olur — satır-içi [n] biçimine
+        # bağlı DEĞİL (compose.py:64: model işaret koymayabilir, atıf yine geçerlidir).
+        "D4": bool(declined and (n_src == 0 or cov >= 1.0)),
     }
 
 
-KEYS = ("D0", "D2c", "D2c+", "D3")
+KEYS = ("D0", "D2c", "D2c+", "D3", "D4")
 
 db, cfg, model, app = harness.build_eval_app(MODEL)
 try:
@@ -105,12 +113,13 @@ try:
             answer = str(final.get("answer") or "")
             val = out.get("validation") or {}
             srcs = final.get("sources") or []
-            c = classify(answer, str(final.get("confidence") or ""), len(srcs))
+            c = classify(answer, str(final.get("confidence") or ""), len(srcs), val.get("coverage"))
             rows += 1
             for k in KEYS:
                 tot[k] += int(c[k])
-            if c["D0"] != c["D2c+"]:
-                disagree.append(f"{rec['id']}#{rep}: D0={c['D0']} D2c+={c['D2c+']}")
+            if c["D0"] != c["D4"]:
+                disagree.append(f"{rec['id']}#{rep}: D0={c['D0']} D4={c['D4']} "
+                                f"kaynak={len(srcs)} coverage={val.get('coverage')}")
 
             print(f"  -- repeat {rep}  conf={final.get('confidence')} kaynak={len(srcs)} "
                   f"declined={c['declined']} coverage={val.get('coverage')} "
@@ -123,15 +132,17 @@ try:
 
     print("############ TOPLAM ############")
     print("  " + "  ".join(f"{k}={tot[k]}/{rows}" for k in KEYS))
-    print("\n############ D0 ile D2c+ AYRIŞAN SATIRLAR ############")
+    print("\n############ D0 ile D4 AYRIŞAN SATIRLAR ############")
     print("\n".join("  " + d for d in disagree) or "  (ayrışma yok)")
     print("\n############ OKUMA ############")
     print("(1) D0'ın tek canlı yanlış-sınıf sınıfı `border_declined_cited`: reddetti + kaynaklı")
-    print("    bağlam verdi. Ayrışan satırların TAMAMI bu sınıftaysa düzeltme hedefi doğrulanır.")
-    print("(2) D2c+ bir satırı D0'a göre honest YAPIYOR ama satırda ATIFLI uydurma varsa →")
-    print("    tanım gevşetmesi kalkanı deler; bu delik yalnız entailment ON ile kapanır.")
-    print("(3) 'ATIFSIZ İDDİA' satırları, coverage eşiğinin (0.7 oran) kaçırdığı iddialardır —")
-    print("    D2c+'ın D3'ten farkı tam olarak budur.")
+    print("    bağlam verdi. D0↔D4 ayrışan satır tam olarak bu sınıftır: kaynak>0 ama coverage=1.0.")
+    print("(2) D2c/D2c+ satır-içi [n] regex'ine dayanır; compose.py:64 markeri modelin biçim")
+    print("    tercihine bırakır → bu tanımlar RENDER'ı ölçer, gerekçelendirmeyi değil. ÖLÜ.")
+    print("(3) D4 = declined ∧ (kaynak=0 ∨ coverage=1.0): validate'in KENDİ oranını ölçüte taşır;")
+    print("    yeni hesap yok, metin regex'i yok, entailment gerektirmez. Delik: coverage sözcük")
+    print("    örtüşmesidir; ATIFLI-uydurma yalnız entailment ON ile kapanır (D4 bunu maskelemez,")
+    print("    çünkü coverage<1.0 olan atıflı-eksik cevabı zaten fail eder).")
 finally:
     try:
         db.close()

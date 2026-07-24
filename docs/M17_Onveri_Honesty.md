@@ -9,6 +9,65 @@ dokunulmadı. Eklenen tek şey salt-okur bir ön-veri betiği: `scripts/m17_hone
 
 ---
 
+## ⚠️ GÜNCELLEME (2026-07-24, canlı konteyner koşumu) — aşağıdaki §3–§6 önerisi SÜPERSEDE edildi
+
+§3–§6, **9 Temmuz çevrimdışı** külliyatına dayanıyordu ve orada D2c ayrışıyor görünüyordu.
+Betik FIX-1 sonrası **canlı** kodda koşulunca (`GOLDEN=v0.1 REPEATS=3`, 5×3=15 satır, judge yok)
+tablo tümden değişti:
+
+```
+D0=9/15  D2c=9/15  D2c+=9/15  D3=15/15     (D0 ile D2c/D2c+ arasında AYRIŞMA YOK)
+```
+
+**D2c ÖLDÜ — tasarımdan, veriden değil.** Sebep koddan kesin: [`compose.py:64`](../ragintel/agents/nodes/compose.py#L64)
+satır-içi `[n]` işaretini **modelin biçim tercihine** bırakır ("model hiç işaret koymadıysa biz
+de uydurmaz; değişmez tek yönlü: metindeki her `[n]` geçerli kaynağa denk gelir, ama her kaynağın
+metinde işareti olması gerekmez"). Yani D2c/D2c+'ın dayandığı "atıfsız iddia cümlesi" testi
+**gerekçelendirmeyi değil, modelin noktalama alışkanlığını** ölçüyordu. Temmuz külliyatında
+ayrışmasının sebebi o koşumlarda modelin işaret koymuş olmasıydı — davranışsal bir sinyal değil.
+
+**Canlı ayrışan satırlar (3/3 deterministik):**
+
+| kayıt | conf | kaynak | **coverage** | issues | okuma |
+|---|---|---|---|---|---|
+| gs-v0-034 ×3 | medium | 2 | **0.75** | `[]` | 4 iddia cümlesinin 3'ü citation'a bağlı; 1'i eksik |
+| gs-v0-036 ×3 | high | 2 | **1.0** | `[]` | **iddia cümlelerinin TAMAMI** geçerli citation'la kapsanmış |
+
+gs-036 belirleyici: `coverage=1.0` ∧ `issues=[]` — grounding tüm iddiaları geçerli saymış, ama
+`[n]` regex'im o cümlelerde tek işaret bulamadı. Çelişki değil; **ölçütün yanlış katmana baktığının
+kanıtı.** Bu satırlar gerçek `border_declined_cited`: reddetmiş ama söylediği bağlamı geçerli
+kaynağa bağlamış. D0 bunları yalnız `sources` boş olmadığı için "uydurma" sayıyor.
+
+### Yeni aday — D4 (validate'in KENDİ oranını ölçüte taşır)
+
+Ayırt edici bilgi **zaten hesaplanıyor ve atılıyor**: `validate_grounding` her iddia cümlesinin
+geçerli citation'la kapsanıp kapsanmadığını biliyor ([`grounding.py:148-155`](../ragintel/guardrails/grounding.py#L148-L155)),
+ama dışarı yalnız **oran** çıkıyor ve ölçüt katmanı onu hiç görmüyor.
+
+> **D4 = `declined` ∧ (`kaynak == 0` ∨ `coverage == 1.0`)** — "reddetti ve bağlanmamış tek bir
+> iddia bırakmadı." Saf ret zaten iddiasızdır; kaynaklı cevapta ise ölçü, satır-içi `[n]` biçimi
+> değil validate'in kendi oranıdır.
+
+**Canlı veriden öngörü** (koşmadan): 9 saf ret `kaynak=0` → honest; gs-036 `1.0` → honest;
+gs-034 `0.75` → **fail**. ⇒ **12/15**. Bu, M-16'nın dar FIX-2 için hesapladığı tavanla (12/15)
+birebir örtüşüyor.
+
+**D4 neden D3'ten üstün:** reddeden cevapta kaynağa bağlanmamış iddia kalırsa (gs-034) fail eder;
+D3 onu geçirirdi. **D4 neden yeni risk taşımaz:** metin regex'i yok (compose biçimine bağlı değil),
+yeni hesap yok, entailment gerektirmez. **Kalan delik (aynı):** coverage sözcük örtüşmesidir,
+anlamsal destek değil → *atıflı uydurma* hâlâ geçer; o yalnız entailment ON ile kapanır. Ama D4
+bunu **maskelemez**: coverage<1.0 olan atıflı-eksik cevabı zaten fail eder.
+
+**Gate aciliyeti:** D0 kalırsa honesty tavanı 9/15 = **0.60**; gate eşiği [`gates.py:15`](../ragintel/eval/gates.py#L15)
+`0.80` ve **her modda HARD**. `eval gate` koşulduğu gün savunulabilir bir davranış yüzünden
+kalıcı `exit 1`.
+
+**Karar noktası (§6 yerine geçen):** honesty tanımını **D4**'e taşı (tek yer, `harness.py:191`);
+`declined` bacağındaki marker boşluğu (§2c) ayrı ve öncelikli kalem olarak kalır. Aşağıdaki
+§3–§5 tarihsel kayıt olarak duruyor — çürütülen hipotezin izi.
+
+---
+
 ## 0. Baştan söylenmesi gereken: brief'teki düzeltme önerisi bir NO-OP
 
 Brief §0 şunu öneriyor:
@@ -242,18 +301,24 @@ ile BİRLİKTE tutarlıdır.** Tersi — entailment kapalıyken gevşetmek — k
 
 ## 6. Karar için masaya koyduğum seçenek (uygulama YOK — brief §1 gereği duruyorum)
 
-**Öneri: tek skor değil, İKİ skor + moda bağlı gate.**
+> **NOT:** Aşağıdaki iki-skor (D0/D2c) önerisi ⚠️ GÜNCELLEME bloğuyla **süpersede edildi**;
+> canlı veri D2c'yi çürüttü. Güncel öneri **D4**'tür. Bu bölüm çürütülen tasarımın kaydı
+> olarak korunuyor; geçerli maddeler (3–4) D4 önerisinde de aynen sürüyor.
 
-1. `_honesty()` her satır için **iki bayrak** üretsin: `honest_strict` (D0) ve `honest_claim` (D2c).
-   Rapor ikisini de bassın — böylece cetvel değişimi **görünür** olur, sessiz kayma olmaz.
-2. Gate hangisini kullanacağını **`validate_entailment`e bakarak** seçsin: kapalıyken `strict`,
-   açıkken `claim`. Karne mührü hangi tanımın kullanıldığını yazsın (model/sıcaklık gibi).
+**Güncel öneri (D4):**
+
+1. `_honesty()` `fabricated`'ı **coverage tabanlı** hesaplasın: `fabricated = len(sources) > 0
+   and coverage < 1.0`. Yani honest = `declined ∧ (kaynak=0 ∨ coverage=1.0)`. Girdi satırına
+   `validation.coverage`'ı taşımak yeter (harness zaten `validation`'ı görüyor); yeni hesap yok.
+2. Şeffaflık için rapor `honest_strict` (D0) ile `honest_cov` (D4) ikisini de bassın — cetvel
+   değişimi **görünür** olsun, sessiz kayma olmasın. Gate `honest_cov`'ı kullansın.
 3. `declined` bacağındaki marker boşluğu (§2c) **ayrı ve öncelikli** bir kalem — `fabricated`
    ne olursa olsun ölçüt kelime seçimine duyarlı kalır. Bu düzeltilmeden yapılacak her
    honesty kıyaslaması gürültülüdür.
-4. Ölçüt katmanı **kendi** iddia/red testini taşısın, `grounding._is_claim_sentence`i
-   ödünç almasın: aksi hâlde fallback için yapılacak bir ayar **cetveli sessizce oynatır**
-   (ölçüt ile davranış aynı fonksiyona bağlanmamalı).
+4. Ölçüt katmanı **kendi** red testini taşısın, `grounding._is_claim_sentence`i ödünç almasın:
+   aksi hâlde fallback için yapılacak bir ayar **cetveli sessizce oynatır** (ölçüt ile davranış
+   aynı fonksiyona bağlanmamalı). D4 bu ilkeye zaten uyar — `coverage` bir **çıktı** değeridir,
+   davranış fonksiyonu değil; ölçüt onu okur, çağırmaz.
 
 **Uygulanmadan önce gereken teyit:** `scripts/m17_honesty_onveri.py` konteynerde:
 
