@@ -69,20 +69,24 @@ base_msgs = [{"role": "system", "content": SYS_STATIC},
 print(f"# M-15 ADIM 1g — KV ön-ek cache probu — model={MODEL}")
 print(f"# bağlam ~{len(CONTEXT)//3} token (ajanın 5.3k'sına yakın olması hedeflendi)\n")
 
+# SIRA KRİTİK: Ollama varsayılanda TEK slot tutar; araya giren farklı bir prompt
+# cache'i ezer. İlk sürümde D, C0/C'den SONRA geliyordu → önkoşulu yok edilmiş,
+# "append kazandırmıyor" sonucu GEÇERSİZdi. D artık B'nin hemen ardında.
 a = chat(base_msgs, "A) soğuk (ilk kez)")
 b = chat(base_msgs, "B) AYNI mesajlar (tekrar)")
 
-# C) ajanın BUGÜNKÜ hali: sistem mesajının SONUNDA değişen sayaç → ön-ek ilk bloktan kırılır
-c_msgs = [{"role": "system", "content": SYS_STATIC + "\n\n[Kalan iterasyon: 2]"},
-          {"role": "user", "content": USER}]
-chat(c_msgs, "C0) sayaç=2 (ön-ek bozuk, ısıtma)")
-c = chat([{"role": "system", "content": SYS_STATIC + "\n\n[Kalan iterasyon: 1]"},
-          {"role": "user", "content": USER}], "C) sayaç=1 (yalnız SAYI değişti)")
-
-# D) hedef tasarım: ön-ek AYNEN korunur, yeni bilgi SONA eklenir
+# D) hedef tasarım: ön-ek AYNEN korunur, yeni bilgi SONA eklenir (ajanın olası hali)
 d = chat(base_msgs + [{"role": "assistant", "content": "Arama yapıyorum."},
                       {"role": "user", "content": "Bulunan blok: " + PARA}],
          "D) APPEND (ön-ek sabit, sona ek)")
+
+# C) ajanın BUGÜNKÜ hali: sistem mesajının SONUNDA değişen sayaç → ön-ek ilk bloktan kırılır.
+# C0 slotu "sayaç=2" ile doldurur; C yalnız SAYIYI değiştirir → kayıp yalnız sayaçtandır.
+c_msgs = [{"role": "system", "content": SYS_STATIC + "\n\n[Kalan iterasyon: 2]"},
+          {"role": "user", "content": USER}]
+chat(c_msgs, "C0) sayaç=2 (slotu doldur)")
+c = chat([{"role": "system", "content": SYS_STATIC + "\n\n[Kalan iterasyon: 1]"},
+          {"role": "user", "content": USER}], "C) sayaç=1 (yalnız SAYI değişti)")
 
 print("\n############ KARAR ############")
 if not a["ms"]:
