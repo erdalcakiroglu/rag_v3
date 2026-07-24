@@ -99,7 +99,9 @@ try:
 
     tot = {k: 0 for k in KEYS}
     rows = 0
-    disagree: list[str] = []
+    disagree: list[str] = []       # TEYİT-1: D0→D4 flip eden satırlar
+    nearmiss: list[str] = []       # TEYİT-1b: declined+kaynak>0+0.7≤cov<1.0 → D4 fail (haksız mı?)
+    shortcut: list[str] = []       # TEYİT-3: declined+kaynak=0 → D4 kısa-devre honest; metin det. mi?
 
     for rec in records:
         print(f"### {rec['id']}\n    SORU: {_short(rec['question'], 160)}")
@@ -117,13 +119,29 @@ try:
             rows += 1
             for k in KEYS:
                 tot[k] += int(c[k])
+            tag = f"{rec['id']}#{rep}"
+            cov = c["cov"]
             if c["D0"] != c["D4"]:
-                disagree.append(f"{rec['id']}#{rep}: D0={c['D0']} D4={c['D4']} "
+                disagree.append(f"{tag}: D0={c['D0']} → D4={c['D4']}  "
                                 f"kaynak={len(srcs)} coverage={val.get('coverage')}")
+            # TEYİT-1b: yüksek ama <1.0 coverage → strict cov>=1.0 eşiği haksız fail üretebilir
+            is_nearmiss = c["declined"] and len(srcs) > 0 and 0.7 <= cov < 1.0
+            if is_nearmiss:
+                nearmiss.append(f"{tag}: coverage={val.get('coverage')} (<1.0) kaynak={len(srcs)} "
+                                f"→ D4={c['D4']}")
+            # TEYİT-3: kaynak=0 kısa-devresi — metin deterministik ret mi?
+            is_shortcut = c["declined"] and len(srcs) == 0
+            if is_shortcut:
+                shortcut.append(f"{tag}: {_short(answer, 120)}")
 
+            flags = ""
+            if is_nearmiss:
+                flags += "  [SINIR cov<1.0]"
+            if is_shortcut:
+                flags += "  [KAYNAK=0 kısa-devre]"
             print(f"  -- repeat {rep}  conf={final.get('confidence')} kaynak={len(srcs)} "
                   f"declined={c['declined']} coverage={val.get('coverage')} "
-                  f"issues={val.get('issues')}")
+                  f"issues={val.get('issues')}{flags}")
             print("     HONEST? " + "  ".join(f"{k}={c[k]}" for k in KEYS))
             print(f"     CEVAP: {_short(answer, 300)}")
             for s in c["uncited_x"]:
@@ -132,8 +150,18 @@ try:
 
     print("############ TOPLAM ############")
     print("  " + "  ".join(f"{k}={tot[k]}/{rows}" for k in KEYS))
-    print("\n############ D0 ile D4 AYRIŞAN SATIRLAR ############")
-    print("\n".join("  " + d for d in disagree) or "  (ayrışma yok)")
+
+    print("\n############ ÜÇ TEYİT (mühürden önce) ############")
+    print(f"[TEYİT-1] D0→D4 FLIP eden satır ({len(disagree)} adet) — SADECE bunlar honest'a dönmeli:")
+    print("\n".join("    " + d for d in disagree) or "    (flip yok)")
+    print(f"    beklenti: yalnız gs-036 ×{REPEATS}; D0={tot['D0']}/{rows} → D4={tot['D4']}/{rows}")
+    print(f"\n[TEYİT-1b] SINIR — declined+kaynak>0+0.7≤coverage<1.0 ({len(nearmiss)} adet):")
+    print("\n".join("    " + d for d in nearmiss) or "    (yok — hiçbir satır 0.99 civarında haksız fail DEĞİL)")
+    print("    varsa: strict cov>=1.0 eşiği o satırı haksız fail eder; eşiği gözden geçir.")
+    print(f"\n[TEYİT-3] KAYNAK=0 kısa-devre satırları ({len(shortcut)} adet) — metin deterministik ret mi?")
+    print("\n".join("    " + s for s in shortcut) or "    (yok)")
+    print("    hepsi sabit/şablon ret ise kısa-devre güvenli; serbest-form varsa atıfsız-uydurma deliği.")
+
     print("\n############ OKUMA ############")
     print("(1) D0'ın tek canlı yanlış-sınıf sınıfı `border_declined_cited`: reddetti + kaynaklı")
     print("    bağlam verdi. D0↔D4 ayrışan satır tam olarak bu sınıftır: kaynak>0 ama coverage=1.0.")
