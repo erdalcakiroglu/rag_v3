@@ -150,6 +150,7 @@ def run_question(app, rec: dict, *, ctx_cap: int = _CTX_CAP) -> dict:
     }
     out = run_agent(app, initial)
     final = out.get("final_response") or {}
+    val = out.get("validation") or {}
     return {
         "id": rec["id"],
         "category": rec["category"],
@@ -160,6 +161,9 @@ def run_question(app, rec: dict, *, ctx_cap: int = _CTX_CAP) -> dict:
         "contexts": _contexts_from_out(out, ctx_cap),
         "confidence": final.get("confidence", ""),
         "sources": final.get("sources") or [],
+        # M-17/D4: honesty ölçütü coverage'ı okur (validate'in ZATEN hesapladığı iddia-kapsama
+        # oranı). Checkpoint'e yazılır ki _honesty gate anında görebilsin.
+        "coverage": val.get("coverage"),
         "iterations": int((final.get("meta") or {}).get("iterations", 0)),
     }
 
@@ -182,26 +186,49 @@ def _score_answerable(judge: Judge, embedder: JudgeEmbedder, row: dict, runs: in
 
 
 def _honesty(row: dict) -> dict:
-    """Unanswerable dürüstlük: 'bulunamadı' dedi mi (declined) VE kaynak uydurmadı mı?
-    Tanım KATI: cevapsızda herhangi citation = fail. `kind` sadece raporlama için sınıf
-    (fail/pass'i DEĞİŞTİRMEZ): honest | border_declined_cited (bulunamadı DEDİ ama cite etti)
-    | fabricated_confident (net halüsinasyon: declined yok + cite)."""
+    """Unanswerable dürüstlük (M-17, D4): 'bulunamadı' dedi mi (declined) VE bağlanmamış
+    iddia bırakmadı mı?
+
+    `fabricated = kaynak VAR ve coverage < 1.0` — yani validate'e göre en az bir iddia cümlesi
+    geçerli citation'a bağlanmamış. Saf ret (kaynak=0) kısa-devre honest'tır: deterministik ret
+    metnidir, serbest-form iddia barındırmaz (M-17 TEYİT-3 ile canlı doğrulandı: 9/9 satır sabit
+    şablon). NEDEN eski `len(sources)>0` (D0) değil: reddedip söylediği bağlamı GEÇERLİ kaynağa
+    bağlayan cevabı (coverage=1.0) D0 haksızca 'uydurma' sayıyordu (`border_declined_cited`).
+    coverage'ı ölçüte taşımak bu haksız cezayı kaldırır; grounding'in ZATEN hesapladığı oranı
+    OKUR, yeni hesap yapmaz, entailment gerektirmez.
+
+    KALAN DELİK: coverage sözcük-örtüşmesidir, anlamsal destek değil → ATIFLI-uydurma yalnız
+    entailment ON ile kapanır. Ama coverage<1.0 olan atıflı-EKSİK cevabı D4 zaten fail eder,
+    o yüzden fabrication maskelenmez.
+
+    coverage YOKSA (eski checkpoint / validation'sız satır) ve kaynak varsa: KATI davran
+    (fabricated=True). Doğrulayamadığımız bir grounding'i honest saymayız.
+
+    `honest_strict` eski D0'dır — Δ raporu ("tanımsal kayma, davranış değil") için taşınır.
+    `kind` yalnız raporlama sınıfıdır (fail/pass'i DEĞİŞTİRMEZ): honest | declined_uncovered
+    (reddetti ama bağlanmamış iddia var) | fabricated_confident (net halüsinasyon: declined yok
+    + kaynak) | other."""
     ans = (row["answer"] or "").lower()
     declined = row["confidence"] == "low" or any(m in ans for m in _NOTFOUND_MARKERS)
-    fabricated = len(row["sources"]) > 0
+    n_src = len(row["sources"])
+    cov = row.get("coverage")
+    covered = isinstance(cov, (int, float)) and not isinstance(cov, bool) and float(cov) >= 1.0
+    fabricated = n_src > 0 and not covered
     honest = bool(declined and not fabricated)
+    honest_strict = bool(declined and n_src == 0)   # eski D0 — Δ için
     if honest:
         kind = "honest"
     elif declined and fabricated:
-        kind = "border_declined_cited"
+        kind = "declined_uncovered"
     elif fabricated:
         kind = "fabricated_confident"
     else:
         kind = "other"
     return {
-        "id": row["id"], "confidence": row["confidence"], "n_sources": len(row["sources"]),
-        "iterations": row["iterations"], "declined": declined, "fabricated_sources": fabricated,
-        "honest": honest, "kind": kind,
+        "id": row["id"], "confidence": row["confidence"], "n_sources": n_src,
+        "coverage": cov, "iterations": row["iterations"], "declined": declined,
+        "fabricated_sources": fabricated, "honest": honest, "honest_strict": honest_strict,
+        "kind": kind,
     }
 
 
@@ -389,6 +416,7 @@ def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
         ]
         honesty_rows = [_honesty(r) for r in unans_rows]
         honest_pass = sum(1 for h in honesty_rows if h["honest"])
+        strict_pass = sum(1 for h in honesty_rows if h["honest_strict"])   # eski D0 — Δ için
         agg = _aggregate(scored)
         if agent_runs > 1:
             agg["fallback"]["by_repeat"] = _fallback_by_repeat(scored, agent_runs)
@@ -418,7 +446,11 @@ def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
                         "errors": [{"id": k, "error": v} for k, v in ck["errors"].items()]},
             "ragas": {**agg, "per_question": scored},
             "honesty": {"pass": honest_pass, "total": len(honesty_rows),
-                        "score": f"{honest_pass}/{len(honesty_rows)}", "per_question": honesty_rows},
+                        "score": f"{honest_pass}/{len(honesty_rows)}",
+                        # M-17 Δ: eski D0 (strict) vs yeni D4 — "tanımsal kayma, davranış değil"
+                        "strict_pass": strict_pass, "definition": "D4",
+                        "strict_score": f"{strict_pass}/{len(honesty_rows)}",
+                        "per_question": honesty_rows},
             "iterations": iters,
             "targets": targets,
         }
@@ -489,11 +521,17 @@ def format_report(result: dict) -> str:
         L.append(f"  {k:20s} {t['value']:.3f}  (hedef ≥{t['target']}) → {'GEÇTİ' if t['pass'] else 'ALTINDA'}")
 
     h = result["honesty"]
-    L.append(f"\n-- Unanswerable dürüstlük (RAGAS dışı, deterministik): {h['score']} --")
+    _delta = h.get("strict_score")
+    _dsuffix = (f"  (Δ tanım: eski-D0 {_delta} → yeni-{h.get('definition','D4')} {h['score']}; "
+                f"kayma DAVRANIŞTAN DEĞİL, ÖLÇÜTTEN)") if _delta and _delta != h["score"] else ""
+    L.append(f"\n-- Unanswerable dürüstlük (RAGAS dışı, deterministik): {h['score']}{_dsuffix} --")
     for r in h["per_question"]:
         flag = "✓" if r["honest"] else "✗"
+        _cov = r.get("coverage")
+        _covs = f"{_cov:.2f}" if isinstance(_cov, (int, float)) and not isinstance(_cov, bool) else "—"
         L.append(f"  {flag} {r['id']}  [{r.get('kind','')}] conf={r['confidence']} kaynak={r['n_sources']} "
-                 f"declined={r['declined']} uydurma={r['fabricated_sources']} iter={r['iterations']}")
+                 f"coverage={_covs} declined={r['declined']} uydurma={r['fabricated_sources']} "
+                 f"iter={r['iterations']}")
 
     it = result["iterations"]
     L.append(f"\n-- İterasyon dağılımı (max_iterations kararı verisi) — ort={it['mean']} max={it['max']} --")

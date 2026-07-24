@@ -332,14 +332,60 @@ gösterir. Bu, §2/§3/§4'ü **FIX-1 sonrası güncel kod** üzerinde teyit ede
 
 ---
 
-## 7. Kabul kriterleri — bu aşamada nerede duruyoruz
+## 6b. UYGULAMA — D4 mühürlendi (canlı teyit sonrası)
+
+Canlı konteyner koşumu (GOLDEN=v0.1, REPEATS=3, judge yok) üç teyidi de temiz geçti:
+
+- **TEYİT-1** — D0→D4 flip TAM olarak `gs-036 ×3`; başka satır oynamadı. `D0=9/15 → D4=12/15`.
+- **TEYİT-1b (SINIR)** — tek yüksek-ama-<1.0 satır `gs-034` (coverage=**0.75**); 0.99 civarı
+  haksız-fail **yok**. Strict `cov>=1.0` eşiği güvenli; gs-034 haklı fail (bağlanmamış iddia).
+- **TEYİT-3** — 9 `kaynak=0` satırının **hepsi** birebir deterministik şablon
+  ("Cevap bulunamadı. İncelenen kaynaklar aşağıdadır."). `sources=0` kısa-devresi güvenli.
+
+**Kod değişikliği (yalnız ölçüt katmanı):**
+
+| dosya:satır | ne |
+|---|---|
+| [`harness.py`](../ragintel/eval/harness.py) `_honesty()` | `fabricated = len(sources)>0 and coverage<1.0`; `honest_strict` (eski D0) Δ için taşınır; `kind`: `border_declined_cited` → `declined_uncovered` |
+| [`harness.py`](../ragintel/eval/harness.py) `run_question()` | satıra `coverage` eklendi (checkpoint'e yazılır → gate görür) |
+| [`harness.py`](../ragintel/eval/harness.py) honesty özeti + `format_report` | `strict_pass`/`strict_score`/`definition="D4"`; rapor Δ satırı + satır-başı coverage basar |
+| [`tests/test_m17_honesty_d4.py`](../tests/test_m17_honesty_d4.py) | 11 birim test — üç canlı sınıf + sınır (missing/bool/0.99) kilitlenir |
+
+**Δ (tanımsal kayma, DAVRANIŞ DEĞİL):** honesty `9/15 (D0) → 12/15 (D4)`. Fark tek kaynaktan:
+`gs-036 ×3` artık haksız `border_declined_cited` cezası yemiyor. Davranış birebir aynı; yalnız
+cetvel değişti. Rapor bu satırı otomatik `(Δ tanım: eski-D0 9/15 → yeni-D4 12/15; kayma
+DAVRANIŞTAN DEĞİL, ÖLÇÜTTEN)` diye basar.
+
+**Entailment ON/OFF (brief §2) — D4 moddan BAĞIMSIZ (eski iki-tanım önerisi geçersiz):**
+`validate_grounding` coverage'ı entailment kapalıyken de hesaplıyor ([`validate.py:47`](../ragintel/agents/nodes/validate.py#L47));
+entailment yalnız üstüne `issues` ekler. Yani D4 her iki modda **aynı** çalışır — iki ayrı tanım
+gerekmez. Entailment ON, `coverage=1.0`'ın anlamını *sözcük örtüşmesi*nden *anlamsal gerektirme*ye
+**yükseltir**; D4'ün kalan deliği (atıflı-uydurma, coverage=1.0 ile) yalnız o zaman kapanır. Bu,
+eski §5 tablosundan (OFF→D0 / ON→D2c) daha basit ve daha sağlam: gevşetme yok, coverage=1.0 zaten
+sıkı bir çıta.
+
+---
+
+## 7. Kabul kriterleri — D4 mühürlendikten sonra
 
 | kriter (brief §4) | durum |
 |---|---|
-| Mevcut tanım kod parçasıyla belgelendi | ✅ §1 (`harness.py:184-205`, `:190`, `:191`) |
-| Yanlış-sınıf kayıtlar tek tek listelendi | ⚠️ **kısmi** — M-16'nın 2 sınıfı belgeli (§2b); v4 karne dökümü **alınamıyor** (checkpoint yok, §2a); güncel teyit betiği hazır (§6) |
-| Yeni tanım doğru sınıfları bozmuyor | ⚠️ kayıtlı 22 satırda gerileme yok (§4a) **ama** §4c'de yapısal delik var — entailment'e bağlı |
-| Entailment ON/OFF davranışı netleşti | ✅ §5 — moda göre ayrışmalı, gerekçesi kodla sabitlendi |
-| Ölçüt tek yerde; birim test kilitliyor | ⛔ **yapılmadı** — karar bekliyor (brief §1: "sonra DUR") |
-| Honesty yeniden ölçüldü, Δ raporlandı | ⛔ **yapılmadı** — tanım kesinleşmeden karne koşulmaz |
-| Değişiklik yalnız ölçüt katmanında | ✅ davranış dosyalarında diff yok; eklenen tek dosya salt-okur betik |
+| Mevcut tanım kod parçasıyla belgelendi | ✅ §1 (`harness.py:184-205`) |
+| Yanlış-sınıf kayıtlar tek tek listelendi; yeni tanımla düzeldiği gösterildi | ✅ `gs-036 ×3` canlı flip (§6b TEYİT-1); birim test `test_declined_cited_fully_covered_is_honest` |
+| Yeni tanım doğru sınıfları bozmuyor — hiçbir gerçek fabrication "honest" olmuyor | ✅ `gs-034` (0.75) fail kalır; `test_declined_cited_uncovered`/`test_fabricated_confident`/`test_missing_coverage` kilitler. **Kalan delik**: atıflı-uydurma coverage=1.0 ile — yalnız entailment ON kapatır (§6b) |
+| Entailment ON/OFF davranışı netleşti | ✅ §6b — D4 moddan bağımsız; ON coverage'ın anlamını yükseltir |
+| Ölçüt tek yerde; birim test kilitliyor | ✅ `_honesty()` tek yer; `tests/test_m17_honesty_d4.py` (11 test) |
+| Honesty yeniden ölçüldü, Δ raporlandı, "tanımsal kayma" etiketlendi | ⏳ ön-veri Δ=9→12 kesin; **resmi karne `--out` ile Erdal koşacak** (aşağıdaki komut) — rapor Δ satırını otomatik basar |
+| Değişiklik yalnız ölçüt katmanında | ✅ diff yalnız `harness.py` + yeni test; `compose`/`grounding`/prompt/tool DOKUNULMADI |
+
+**Resmi Δ karnesi (Erdal koşar, `--out` ZORUNLU — cevap metinleri + coverage kaydı için):**
+
+```bash
+docker exec -i ragintel-api python -m ragintel.eval run \
+  --golden v0.1 --agent-runs 3 --out var/eval/m17_d4_karne.json 2>&1 | tee /tmp/m17_d4_karne.log
+```
+
+(`--agent-runs 3` mühür şartı — tek koşum bu sistemde gürültü; `--out` cevap metni + coverage
+kaydı için zorunlu.)
+
+Rapordaki "Unanswerable dürüstlük" satırı Δ'yı (eski-D0 → yeni-D4) kendiliğinden gösterecek.
