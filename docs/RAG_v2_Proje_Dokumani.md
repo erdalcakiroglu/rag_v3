@@ -156,7 +156,27 @@ Orijinal 10 fazın revize hâli. **Değişiklikler kalın.**
 
 - Faithfulness ≥ 0.85, context precision ≥ 0.80 (RAGAS)
 - Yanıtların %100'ünde doğrulanabilir kaynak citation'ı
-- P95 uçtan uca yanıt < 15 sn (local LLM, tek kullanıcı)
+- ~~P95 uçtan uca yanıt < 15 sn~~ → **M-15'te yeniden tanımlandı** (aşağı bak)
+
+**Gecikme kriteri — M-15 revizyonu (2026-07-24).** Özgün kriter *"P95 uçtan uca < 15 sn"*
+idi. M-15 anatomisi ([M15_Latency_Anatomisi.md](M15_Latency_Anatomisi.md)) bunun **kalite
+korunarak ulaşılamaz** olduğunu ölçtü: süre tur sayısı × (prompt-eval + üretim); decode
+tavanı ~110 tok/s, prompt-eval 0.33 ms/tok — ikisi de sabit. Kalan davranış-nötr kollarla
+tavan p95 ≈ 19 sn. Tek gerçek kaldıraç modelin ürettiğini değiştirmekti; denendi (kol-1) ve
+fallback'i %9.68 → %20.4'e çıkardığı için **reddedildi** ([M15_Kol1_Red_Kaydi.md](M15_Kol1_Red_Kaydi.md)).
+
+Yerine geçen üç kriter (tek kullanıcı, local LLM):
+
+| kriter | eşik | durum |
+|---|---|---|
+| **p50** uçtan uca yanıt | < 15 sn | **SAĞLANIYOR** — ölçülen 11.5-13.3 sn |
+| **TTFB** (kullanıcının ilk geri bildirim aldığı an) | < 1 sn | `/api/ask/stream` ile ~0.1 sn |
+| p95 uçtan uca yanıt | *gösterge* — eşik değil | ölçülen 21.1-21.3 sn; kol-2 sonrası ~19 sn beklenir |
+
+**Neden p95 eşik olmaktan çıktı:** p95'i belirleyen şey çağrı hızı değil **tur sayısı**
+(ort. 3.5, max 5) — yani sorunun kaç adımda çözüldüğü. Bunu eşiğe bağlamak, sistemi zor
+soruyu erken bırakmaya teşvik eder; M-9'da görülen "sapkın gate teşviki" deseninin aynısı.
+Gösterge olarak izlenir, gerileme raporlanır, ama fix'in kabul şartı değildir.
 
 ## 7. Riskler
 

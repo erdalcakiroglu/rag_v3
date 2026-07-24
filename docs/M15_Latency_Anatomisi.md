@@ -247,6 +247,13 @@ Dürüst seçenekler:
 context_precision / honesty / fallback **sabit** kalmazsa fix geri alınır. Kol-1'de bu kural
 işletildi: latency %19 kazandı, fix yine de geri alındı.
 
+**VERİLEN KARAR (2026-07-24): seçenek 2.** P95 eşiği kaldırıldı; yerine **p50 < 15 sn**
+(sağlanıyor) + **TTFB < 1 sn** kondu ve TTFB'yi sağlayan aşama streaming'i eklendi
+(`/api/ask/stream`). p95 gösterge olarak izlenmeye devam eder. Ayrıntı ve güvenlik
+sözleşmesi: [M15_Hedef_Revizyonu_ve_Streaming.md](M15_Hedef_Revizyonu_ve_Streaming.md).
+Kol-2 backlog'a alındı — kazancı gerçek (~2.3 sn) ama `_apply_budget` tahliye politikasını
+değiştirdiği için kendi karnesini ister.
+
 ---
 
 ## Ek: ölçüm zemini dersleri (bu çalışmada yaşananlar)

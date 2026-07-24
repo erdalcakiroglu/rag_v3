@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from ..agents.graph import build_agent_graph, run_agent
+from ..agents.graph import build_agent_graph, run_agent, run_agent_stream
 from ..config.loader import EffectiveConfig
 from ..config.settings import LangfuseSettings, LiteLLMSettings, OllamaSettings, TeiSettings
 from ..database import figure_repo, table_repo
@@ -30,6 +30,58 @@ from .auth import DbUserResolver
 
 class InputRejected(ValueError):
     """Boş / çok uzun soru — 400."""
+
+
+# M-15: ilerleme olaylarında gösterilen arama sorgusunun üst sınırı. Sorgu MODEL
+# üretimidir; kırpma hem yükü küçük tutar hem de kontrolsüz uzunlukta metnin UI'a
+# akmasını engeller (UI tarafında ayrıca metin olarak basılır, HTML olarak değil).
+_EVENT_QUERY_MAX = 120
+
+
+@dataclass
+class _AskCtx:
+    """`ask` / `ask_stream` prologue çıktısı — güvenlik sözleşmesinin taşıyıcısı."""
+    q: str
+    user_ctx: dict
+    session_id: str
+    inj: object          # InjectionScanner.scan sonucu (.flagged / .counts)
+
+
+def tool_event(call: dict) -> dict:
+    """Tool çağrısından SIZDIRILABİLİR alan seçimi — allowlist, denylist DEĞİL.
+
+    Argüman sözlüğü OLDUĞU GİBİ geçirilmez: `tools_node` `user_ctx`'i runtime'da
+    enjekte ediyor ve tool şeması ileride büyüyebilir; bugün güvenli olan bir sözlük
+    yarın scope taşıyabilir. Denylist ("şu anahtarları çıkar") o gün sessizce
+    yanılır; allowlist yanılmaz. Yalnız `query` (kırpılmış) ve SAYILAR çıkar."""
+    args = call.get("arguments") or {}
+    out: dict = {"name": str(call.get("name", ""))[:40]}
+    query = args.get("query")
+    if isinstance(query, str) and query.strip():
+        out["query"] = query.strip()[:_EVENT_QUERY_MAX]
+    ids = args.get("chunk_ids")
+    if isinstance(ids, list):
+        out["chunk_count"] = len(ids)
+    return out
+
+
+def node_event(node: str, update: dict, t_ms: int) -> dict | None:
+    """Düğüm çıktısını KULLANICIYA GÖSTERİLEBİLİR olaya indirger (allowlist).
+
+    `agent` düğümü tool ÇAĞIRMAYA KARAR verdiğinde olay çağrıdan ÖNCE gider —
+    kullanıcı beklemeye BAŞLADIĞINDA görür, bittikten sonra değil. Bilinmeyen düğüm
+    adı `None` döner: grafa yeni düğüm eklenirse içeriği kendiliğinden akmaz."""
+    if node == "agent":
+        calls = update.get("pending_tool_calls") or []
+        if calls:
+            return {"event": "tool", "data": {"t_ms": t_ms, "calls": [tool_event(c) for c in calls]}}
+        return {"event": "step", "data": {"stage": "agent", "t_ms": t_ms}}
+    if node == "tools":
+        return {"event": "retrieved",
+                "data": {"total": len(update.get("retrieved") or []), "t_ms": t_ms}}
+    if node in ("prepare", "validate", "compose", "fallback"):
+        return {"event": "step", "data": {"stage": node, "t_ms": t_ms}}
+    return None
 
 
 def derive_health_status(checks: dict) -> str:
@@ -125,7 +177,10 @@ class RagRuntime:
         threading.Thread(target=self.warm_up, name="ragintel-warmup", daemon=True).start()
 
     # -- /api/ask (FAZ 6: Bearer token → user_ctx, fail-closed) -----------------
-    def ask(self, question: str, session_id: str | None, token: str | None) -> AskResult:
+    def _ask_prologue(self, question: str, session_id: str | None, token: str | None) -> _AskCtx:
+        """AuthN + girdi doğrulama + injection taraması. `ask` ve `ask_stream` AYNI
+        prologue'u kullanır — güvenlik sözleşmesi tek yerde yaşasın, iki uç arasında
+        sapamasın (fail-closed sırası: token → boş/uzunluk → tarama)."""
         # AuthN ÖNCE: geçersiz/eksik token → Unauthorized (API 401). Fail-closed.
         user_ctx = self.resolver.resolve(token)
         q = (question or "").strip()
@@ -134,17 +189,27 @@ class RagRuntime:
         if len(q) > self.max_q:
             raise InputRejected(f"Soru çok uzun (>{self.max_q} karakter).")
         session_id = session_id or f"sess-{uuid.uuid4().hex[:16]}"
-        inj = self.injection.scan(q)
-        initial = {"query": q, "user_ctx": user_ctx, "session_id": session_id, "retrieved": []}
-        run_cfg = {"configurable": {"thread_id": session_id}}
+        return _AskCtx(q=q, user_ctx=user_ctx, session_id=session_id, inj=self.injection.scan(q))
 
-        with start_span("api.request", session_id=session_id, injection_flagged=inj.flagged) as span:
-            ctx = span.get_span_context()
-            trace_id = f"{ctx.trace_id:032x}" if ctx.is_valid else uuid.uuid4().hex
-            if inj.flagged:
-                # FLAG-ONLY: reddetme, işaretle + logla, devam et.
-                set_span_attributes(injection_findings=",".join(sorted(inj.counts)))
-                self.log.warning("api_injection_flagged", session_id=session_id, counts=inj.counts)
+    def _ask_epilogue(self, ctx: _AskCtx, final: dict, trace_id: str) -> AskResult:
+        """Zenginleştirme + geçmiş kaydı. `ask` ve `ask_stream` AYNI epilogue'u kullanır."""
+        self._enrich_table_refs(final)
+        self._enrich_figures(final, ctx.user_ctx)   # M-7: kaynağın sayfasındaki görseller
+        # M-13: konuşma geçmişi (best-effort — başarısızlık cevabı ÇÖKERTMEZ; şema
+        # uygulanmadıysa sessizce atlar). scope SNAPSHOT salt bilgidir (yetki değil).
+        self._record_history(ctx.session_id, ctx.user_ctx, ctx.q, final, trace_id)
+        return AskResult(session_id=ctx.session_id, final_response=final,
+                         injection_flagged=ctx.inj.flagged, trace_id=trace_id)
+
+    def ask(self, question: str, session_id: str | None, token: str | None) -> AskResult:
+        ctx = self._ask_prologue(question, session_id, token)
+        initial = {"query": ctx.q, "user_ctx": ctx.user_ctx, "session_id": ctx.session_id, "retrieved": []}
+        run_cfg = {"configurable": {"thread_id": ctx.session_id}}
+
+        with start_span("api.request", session_id=ctx.session_id, injection_flagged=ctx.inj.flagged) as span:
+            span_ctx = span.get_span_context()
+            trace_id = f"{span_ctx.trace_id:032x}" if span_ctx.is_valid else uuid.uuid4().hex
+            self._note_injection(ctx)
             t0 = time.perf_counter()
             try:
                 with self._lock:
@@ -153,15 +218,70 @@ class RagRuntime:
             except Exception as exc:
                 # LLM/altyapı hatası API'yi ÇÖKERTMEZ — dürüst fallback döner.
                 set_span_attributes(error=type(exc).__name__)
-                self.log.error("api_ask_failed", session_id=session_id, error=str(exc)[:200])
+                self.log.error("api_ask_failed", session_id=ctx.session_id, error=str(exc)[:200])
                 final = self._error_response(trace_id, t0, type(exc).__name__)
-        self._enrich_table_refs(final)
-        self._enrich_figures(final, user_ctx)   # M-7: kaynağın sayfasındaki görseller
-        # M-13: konuşma geçmişi (best-effort — başarısızlık cevabı ÇÖKERTMEZ; şema
-        # uygulanmadıysa sessizce atlar). scope SNAPSHOT salt bilgidir (yetki değil).
-        self._record_history(session_id, user_ctx, q, final, trace_id)
-        return AskResult(session_id=session_id, final_response=final,
-                         injection_flagged=inj.flagged, trace_id=trace_id)
+        return self._ask_epilogue(ctx, final, trace_id)
+
+    def _note_injection(self, ctx: _AskCtx) -> None:
+        if ctx.inj.flagged:
+            # FLAG-ONLY: reddetme, işaretle + logla, devam et.
+            set_span_attributes(injection_findings=",".join(sorted(ctx.inj.counts)))
+            self.log.warning("api_injection_flagged", session_id=ctx.session_id, counts=ctx.inj.counts)
+
+    # -- M-15: /api/ask/stream — AŞAMA streaming'i ------------------------------
+    def ask_stream(self, question: str, session_id: str | None, token: str | None):
+        """İlerleme olayları üretir; generator'ın dönüş değeri `AskResult`'tır.
+
+        NE AKMAZ: cevap metni. Bu mimaride nihai cevap LLM'den akmaz — ajan
+        `submit_answer` tool'uyla teslim eder, metin `compose` düğümünde kurulur.
+        Dolayısıyla token-streaming YOKTUR; akan şey AŞAMA sinyalidir. Ölçülen kazanç
+        gerçek gecikmede değil ALGILANAN gecikmededir: ilk sinyal ~11.5-21.2 sn yerine
+        ~0.1 sn'de gelir (M-15 anatomisi §2: soru süresi ≈ tur × 3.2 sn).
+
+        GÜVENLİK: olay yükü allowlist'tir — aşama adı, tool adı, model-üretimi arama
+        sorgusu (kısaltılmış) ve SAYILAR. Chunk metni, doküman adı, `user_ctx`,
+        `allowed_doc_scopes` HİÇBİR olayda yer almaz (bkz. `_tool_event`).
+
+        AuthN/girdi hataları İLK `next()`'te fırlar (generator gövdesi o an başlar) →
+        uç, SSE gövdesi açılmadan 401/400 dönebilir.
+        """
+        ctx = self._ask_prologue(question, session_id, token)
+        initial = {"query": ctx.q, "user_ctx": ctx.user_ctx, "session_id": ctx.session_id, "retrieved": []}
+        run_cfg = {"configurable": {"thread_id": ctx.session_id}}
+        t0 = time.perf_counter()
+
+        def ms() -> int:
+            return int((time.perf_counter() - t0) * 1000)
+
+        with start_span("api.request", session_id=ctx.session_id, injection_flagged=ctx.inj.flagged) as span:
+            span_ctx = span.get_span_context()
+            trace_id = f"{span_ctx.trace_id:032x}" if span_ctx.is_valid else uuid.uuid4().hex
+            self._note_injection(ctx)
+            # İlk olay: kilit BEKLENMEDEN gider → TTFB kuyruğa girmeden ölçülür.
+            yield {"event": "open", "data": {"session_id": ctx.session_id,
+                                             "injection_flagged": ctx.inj.flagged, "t_ms": ms()}}
+            final: dict | None = None
+            try:
+                with self._lock:
+                    gen = run_agent_stream(self.app, initial, config=run_cfg)
+                    while True:
+                        try:
+                            node, update = next(gen)
+                        except StopIteration as stop:
+                            out = stop.value or {}
+                            break
+                        event = node_event(node, update, ms())
+                        if event is not None:
+                            yield event
+                final = out.get("final_response") or self._error_response(trace_id, t0, "empty")
+            except Exception as exc:
+                set_span_attributes(error=type(exc).__name__)
+                self.log.error("api_ask_failed", session_id=ctx.session_id, error=str(exc)[:200])
+                final = self._error_response(trace_id, t0, type(exc).__name__)
+        result = self._ask_epilogue(ctx, final, trace_id)
+        yield {"event": "final", "data": result.final_response}
+        return result
+
 
     def _record_history(self, session_id: str, user_ctx: dict, question: str,
                         final: dict, trace_id: str) -> None:

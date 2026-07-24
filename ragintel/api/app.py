@@ -6,17 +6,39 @@ durumu HTTP header'larda taşınır (gövde §5-saf kalır).
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Response
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
 from .auth import Unauthorized, bearer_token
 from .runtime import InputRejected, RagRuntime
 from .schemas import AskRequest, FeedbackRequest, FinalResponse
 
 _STATIC = Path(__file__).parent / "static"
+
+
+def _sse_frame(event: str, data: dict) -> str:
+    """Tek SSE karesi. `json.dumps` satır sonlarını KAÇIRIR — çok satırlı `data:`
+    üretilemez, dolayısıyla model çıktısı kare sınırını kıramaz."""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
+
+
+def _sse_frames(first: dict, gen):
+    """İlerleme olaylarını SSE karelerine çevirir; `final`'ı §5 şemasından geçirir."""
+    yield _sse_frame(first["event"], first["data"])
+    try:
+        for ev in gen:
+            data = ev["data"]
+            if ev["event"] == "final":
+                data = FinalResponse.model_validate(data).model_dump()
+            yield _sse_frame(ev["event"], data)
+    except Exception as exc:
+        # Akış ORTASINDA hata: HTTP durumu artık değiştirilemez (başlıklar gitti).
+        # İstemciye TÜR adı gider, iz/gövde DEĞİL — sunucu içi ayrıntı sızmasın.
+        yield _sse_frame("error", {"message": type(exc).__name__})
 
 
 def build_default_runtime() -> RagRuntime:
@@ -105,6 +127,39 @@ def create_app(runtime: RagRuntime | None = None) -> FastAPI:
             "X-Session-Id": res.session_id,
             "X-Injection-Flagged": "1" if res.injection_flagged else "0",
         })
+
+    @app.post("/api/ask/stream")
+    def ask_stream(req: AskRequest, authorization: str | None = Header(default=None)):
+        """M-15: aşama streaming'i (SSE). Gövde /api/ask ile AYNI FinalResponse'u
+        `event: final` içinde taşır; öncesinde ilerleme olayları gider.
+
+        TTFB için kritik ayrıntı: generator'ın İLK `next()`'i burada, StreamingResponse
+        DÖNMEDEN önce koşar. AuthN/girdi hataları böylece gerçek 401/400 olur — SSE
+        gövdesi içine gömülü bir hata değil (istemci yeniden giriş akışını tetikleyebilsin).
+
+        `event: final` yükü /api/ask ile aynı şemadan geçirilir; iki uç sessizce sapamaz.
+        """
+        gen = rt().ask_stream(req.question, req.session_id, bearer_token(authorization))
+        try:
+            first = next(gen)
+        except Unauthorized as exc:
+            raise HTTPException(401, str(exc), headers={"WWW-Authenticate": "Bearer"})
+        except InputRejected as exc:
+            raise HTTPException(400, str(exc))
+        except StopIteration:
+            raise HTTPException(500, "akış açılamadı")
+
+        opened = first.get("data") or {}
+        return StreamingResponse(
+            _sse_frames(first, gen),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",   # nginx ara-tamponlaması akışı öldürmesin
+                "X-Session-Id": str(opened.get("session_id", "")),
+                "X-Injection-Flagged": "1" if opened.get("injection_flagged") else "0",
+            },
+        )
 
     @app.get("/api/table/{table_id}")
     def table(table_id: int, authorization: str | None = Header(default=None)):

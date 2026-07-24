@@ -162,3 +162,51 @@ def run_agent(app, initial: dict, *, config: dict | None = None) -> dict:
         if isinstance(final.get("meta"), dict) and not final["meta"].get("trace_id"):
             final["meta"]["trace_id"] = trace_id
         return out
+
+
+def run_agent_stream(app, initial: dict, *, config: dict | None = None):
+    """M-15: `run_agent`'ın AKAN biçimi — düğüm bitişlerini yield eder, final state'i döner.
+
+    `(node_adı, partial_update)` üretir; generator'ın dönüş değeri (StopIteration.value)
+    `run_agent`'ınkiyle aynı final state'tir. Kullanım:
+
+        gen = run_agent_stream(app, initial, config=cfg)
+        for node, update in gen: ...        # ilerleme
+        # out = StopIteration.value
+
+    NEDEN AYRI FONKSİYON (run_agent bunun üstüne sarılmadı): `run_agent`, M-16 karnesinin
+    mühürlediği yolun ta kendisidir (eval, golden set, tüm kalite ölçümleri oradan geçer).
+    LangGraph'ta `invoke` ≈ `stream(...)`'in son değeri olsa da "≈" bu projede yeterli
+    değil: mühürlü yolu ölçmeden değiştirmemek, farkın sıfır olduğunu VARSAYMAKTAN
+    üstündür. Bedeli iki yolun sapabilmesi; karşılığı
+    `tests/test_faz_m15_stream.py::test_stream_and_invoke_agree` ile kilitlenir.
+
+    Akış modu `["updates", "values"]`: `updates` hangi düğümün bittiğini + o düğümün
+    kısmi çıktısını verir (ilerleme sinyali), `values` ise her adımdan sonraki TAM
+    state'i verir — sonuncusu final state'tir.
+    """
+    with start_span("agent.run", session_id=str(initial.get("session_id", ""))) as span:
+        ctx = span.get_span_context()
+        trace_id = f"{ctx.trace_id:032x}" if ctx.is_valid else uuid.uuid4().hex
+        set_span_attributes(query=str(initial.get("query", "")))
+
+        kwargs = {"stream_mode": ["updates", "values"]}
+        stream = app.stream(initial, config, **kwargs) if config else app.stream(initial, **kwargs)
+
+        out: dict = {}
+        for mode, chunk in stream:
+            if mode == "values":
+                if isinstance(chunk, dict):
+                    out = chunk
+                continue
+            for node, update in (chunk or {}).items():
+                yield node, (update if isinstance(update, dict) else {})
+
+        final = out.get("final_response") or {}
+        set_span_attributes(
+            confidence=final.get("confidence", ""),
+            validation_passed=bool((out.get("validation") or {}).get("passed", False)),
+        )
+        if isinstance(final.get("meta"), dict) and not final["meta"].get("trace_id"):
+            final["meta"]["trace_id"] = trace_id
+        return out

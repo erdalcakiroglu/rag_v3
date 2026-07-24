@@ -96,6 +96,14 @@
   .msg.user{background:#1f2a36;border:1px solid var(--line)}
   .msg.asst{background:var(--panel);border:1px solid var(--line)}
   .msg .role{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+  /* M-15: aşama streaming'i — yanıt beklenirken canlı ilerleme satırları. */
+  .prog{font-size:13px;color:var(--mut);line-height:1.7}
+  .pstep{display:flex;gap:8px;align-items:baseline;opacity:.9}
+  .pstep .pq{color:var(--fg);opacity:.85}
+  .pstep .pt{margin-left:auto;font-variant-numeric:tabular-nums;opacity:.6;font-size:12px}
+  .pstep.live::before{content:'●';color:var(--ok,#3fb950);animation:pulse 1.2s ease-in-out infinite}
+  .pstep.done::before{content:'✓';opacity:.5}
+  @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
 </style>
 </head>
 <body>
@@ -224,26 +232,93 @@ function tokenLogin(){ if(promptToken()){ localStorage.setItem('ragintel_user','
 renderAcct();
 if(!localStorage.getItem('ragintel_token')) showAuth(true); else loadConversations();
 
+// M-15 aşama streaming'i. Cevap METNİ akmaz (ajan submit_answer ile teslim eder,
+// metin sunucuda compose'da kurulur) — akan şey AŞAMA sinyalidir. Kazanç algılanan
+// gecikmede: ilk geri bildirim ~11-21 sn yerine ~0.1 sn.
+const STAGE_LABELS={prepare:'Soru hazırlanıyor',agent:'Düşünüyorum',
+  validate:'Kaynaklar doğrulanıyor',compose:'Yanıt kuruluyor',fallback:'Yanıt kuruluyor'};
+const TOOL_LABELS={search_hybrid:'Belgelerde arıyorum',lookup_document:'Bağlamı genişletiyorum',
+  rerank:'Sonuçlar yeniden sıralanıyor',memory_search:'Oturum hafızasına bakılıyor'};
+
+// SSE çözücü: fetch gövdesini kare kare ayrıştırır. EventSource kullanılmıyor —
+// Authorization başlığı taşıyamaz ve POST edemez.
+async function* sseEvents(body){
+  const reader=body.getReader(), dec=new TextDecoder(); let buf='';
+  for(;;){
+    const {value,done}=await reader.read(); if(done) break;
+    buf+=dec.decode(value,{stream:true});
+    let i;
+    while((i=buf.indexOf('\n\n'))>=0){
+      const raw=buf.slice(0,i); buf=buf.slice(i+2);
+      let ev='message', data='';
+      raw.split('\n').forEach(l=>{
+        if(l.startsWith('event:')) ev=l.slice(6).trim();
+        else if(l.startsWith('data:')) data+=l.slice(5).trim();
+      });
+      if(data){ try{ yield {event:ev,data:JSON.parse(data)}; }catch(e){} }
+    }
+  }
+}
+
 async function ask(question){
   question=(question||'').trim(); if(!question) return;
   qEl.value=''; btn.disabled=true; btn.textContent='…';
   out.appendChild(el(`<div class="msg user"><div class="role">Siz</div>${esc(question)}</div>`));
-  const card = el('<div class="card">Yanıt hazırlanıyor…</div>'); out.appendChild(card); scrollBottom();
+  const card=el('<div class="card"><div class="prog"></div></div>'); out.appendChild(card); scrollBottom();
+  const prog=card.querySelector('.prog');
+  // İlerleme satırı DOM API ile kurulur, innerHTML ile DEĞİL: `q` model üretimi metindir.
+  const step=(label,q,t_ms)=>{
+    prog.querySelectorAll('.pstep.live').forEach(n=>n.className='pstep done');
+    const d=document.createElement('div'); d.className='pstep live';
+    const s=document.createElement('span'); s.textContent=label; d.appendChild(s);
+    if(q){ const e=document.createElement('span'); e.className='pq'; e.textContent='“'+q+'”'; d.appendChild(e); }
+    const t=document.createElement('span'); t.className='pt';
+    t.textContent=((t_ms||0)/1000).toFixed(1)+'s'; d.appendChild(t);
+    prog.appendChild(d); scrollBottom();
+  };
   try{
-    const r = await fetch('/api/ask',{method:'POST',headers:authHeaders(),
+    const r=await fetch('/api/ask/stream',{method:'POST',headers:authHeaders(),
       body:JSON.stringify({question, session_id:sessionId})});
     if(r.status===401){ // token yok/geçersiz/oturum düşmüş → giriş ekranını aç
       card.className='card err'; card.textContent='Oturum gerekli — lütfen giriş yapın.';
       localStorage.removeItem('ragintel_user'); renderAcct(); showAuth(true); return;
     }
+    // Akış ucu yok (eski sürüm) ya da gövde okunamıyor → bloklayan /api/ask'a düş.
+    if(r.status===404 || !r.body){ return await askBlocking(question, card); }
     if(!r.ok){ const t=await r.text(); card.className='card err'; card.textContent=`Hata ${r.status}: ${t}`; return; }
-    sessionId = r.headers.get('X-Session-Id') || sessionId;
+    sessionId=r.headers.get('X-Session-Id')||sessionId;
     if(sessionId) localStorage.setItem('ragintel_session', sessionId);
-    const injected = r.headers.get('X-Injection-Flagged')==='1';
-    card.innerHTML = answerCardHTML(await r.json(), injected, ++cardSeq);
+    const injected=r.headers.get('X-Injection-Flagged')==='1';
+    let final=null, streamErr=null;
+    for await(const ev of sseEvents(r.body)){
+      const d=ev.data||{};
+      if(ev.event==='step') step(STAGE_LABELS[d.stage]||d.stage,null,d.t_ms);
+      else if(ev.event==='tool') (d.calls||[]).forEach(c=>
+        step(TOOL_LABELS[c.name]||c.name, c.query||null, d.t_ms));
+      else if(ev.event==='retrieved') step(d.total+' kaynak bulundu',null,d.t_ms);
+      else if(ev.event==='final') final=d;
+      else if(ev.event==='error') streamErr=d.message||'bilinmeyen';
+    }
+    if(!final){ card.className='card err';
+      card.textContent='Yanıt akışı yarıda kesildi'+(streamErr?' ('+streamErr+')':'')+'.'; return; }
+    card.innerHTML=answerCardHTML(final, injected, ++cardSeq);
     loadConversations();   // yeni sohbet / last_at listede yansısın
   }catch(err){ card.className='card err'; card.textContent='Ağ hatası: '+String(err); }
   finally{ btn.disabled=false; btn.textContent='Sor'; scrollBottom(); }
+}
+
+// Akış kullanılamadığında eski (bloklayan) yol — davranış birebir korunur.
+async function askBlocking(question, card){
+  card.textContent='Yanıt hazırlanıyor…';
+  const r=await fetch('/api/ask',{method:'POST',headers:authHeaders(),
+    body:JSON.stringify({question, session_id:sessionId})});
+  if(r.status===401){ card.className='card err'; card.textContent='Oturum gerekli — lütfen giriş yapın.';
+    localStorage.removeItem('ragintel_user'); renderAcct(); showAuth(true); return; }
+  if(!r.ok){ const t=await r.text(); card.className='card err'; card.textContent=`Hata ${r.status}: ${t}`; return; }
+  sessionId=r.headers.get('X-Session-Id')||sessionId;
+  if(sessionId) localStorage.setItem('ragintel_session', sessionId);
+  card.innerHTML=answerCardHTML(await r.json(), r.headers.get('X-Injection-Flagged')==='1', ++cardSeq);
+  loadConversations();
 }
 
 // Yanıt kartının İÇ HTML'i (kart konteyneri ask() tarafından). `seq` benzersiz ön-ek:
