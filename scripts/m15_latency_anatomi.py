@@ -44,9 +44,18 @@ def _gen_breakdown(msg) -> dict:
     (prompts.py:23) — yani bağlamda ZATEN duran metni yeniden yazdırıyoruz; payı
     büyükse burası kaliteyi bozmadan kısaltılabilecek tek yer.
     """
-    out = {"answer": 0, "quote": 0, "claim": 0, "search_args": 0, "text": 0, "n_cit": 0}
-    out["text"] = len(getattr(msg, "content", None) or "")
-    for tc in (getattr(msg, "tool_calls", None) or []):
+    out = {"answer": 0, "quote": 0, "claim": 0, "search_args": 0, "text": 0, "n_cit": 0,
+           "text_atilan": 0, "text_kullanilan": 0}
+    content = getattr(msg, "content", None) or ""
+    tcs = getattr(msg, "tool_calls", None) or []
+    out["text"] = len(content)
+    # KRİTİK AYRIM: tool çağrısıyla BİRLİKTE gelen serbest metin ajan tarafından
+    # okunmaz (agent_node tool_calls dalına girer) → ATILAN üretim, bedava kesilir.
+    # Tool çağrısı YOKKEN gelen metin ise "citation'sız taslak" olarak KULLANILIR
+    # (agent.py:117) → kesilemez.
+    out["text_atilan" if tcs else "text_kullanilan"] = len(content)
+    out["_sample"] = content[:200] if (tcs and content) else ""
+    for tc in tcs:
         fn = getattr(tc, "function", None)
         raw = getattr(fn, "arguments", "") or ""
         name = getattr(fn, "name", "") or ""
@@ -204,7 +213,8 @@ try:
 
     # --- (c) ÜRETİM KIRILIMI: token nereye gidiyor? --------------------------
     gb = {k: sum(c["gen_break"][k] for r in rows for c in r["calls"])
-          for k in ("answer", "quote", "claim", "search_args", "text", "n_cit")}
+          for k in ("answer", "quote", "claim", "search_args", "text", "n_cit",
+                    "text_atilan", "text_kullanilan")}
     chars = gb["answer"] + gb["quote"] + gb["claim"] + gb["search_args"] + gb["text"]
     print("\n############ (c) ÜRETİLEN TOKEN NEREYE GİDİYOR? ############")
     if chars:
@@ -214,6 +224,19 @@ try:
             print(f"  {label:<38} {gb[k]:>7} krk  %{100*gb[k]/chars:4.1f}")
         print(f"  toplam {chars} karakter, {gb['n_cit']} citation "
               f"(~{chars/max(sum(gen_tok),1):.1f} krk/token)")
+        # EN BÜYÜK DİLİMİN HEDEFLENEBİLİRLİĞİ: serbest metnin ne kadarı atılıyor?
+        print(f"\n  serbest metnin kırılımı: ATILAN (tool çağrısıyla birlikte) {gb['text_atilan']} krk "
+              f"%{100*gb['text_atilan']/chars:.1f}  |  KULLANILAN (taslak) {gb['text_kullanilan']} krk "
+              f"%{100*gb['text_kullanilan']/chars:.1f}")
+        print(f"  → BEDAVA KAZANÇ TAVANI ≈ {gb['text_atilan']/max(chars,1)*sum(gen_tok):.0f} token "
+              f"≈ {gb['text_atilan']/max(chars,1)*sum(gen_tok)/109.6:.1f}s "
+              f"(ürün çıktısına HİÇ girmiyor; kesilmesi cevabı değiştirmez)")
+        samples = [c["gen_break"].get("_sample") for r in rows for c in r["calls"]
+                   if c["gen_break"].get("_sample")]
+        print(f"  atılan metin örnekleri (n={len(samples)}) — NE yazıyor, kesilebilir mi:")
+        for s in samples[:3]:
+            print(f"    | {' '.join(s.split())[:160]}")
+
         kopya = gb["quote"] + gb["claim"]
         print(f"  → KOPYA PAYI (quote+claim) = %{100*kopya/chars:.1f}  "
               f"≈ {kopya/max(chars,1)*sum(gen_tok):.0f} token ≈ "
