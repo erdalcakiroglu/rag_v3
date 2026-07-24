@@ -220,6 +220,39 @@ def test_stream_delivers_progress_then_same_final_as_blocking(stream_client):
     assert "allowed_doc_scopes" not in blob and "user_ctx" not in blob
 
 
+def test_client_abort_releases_the_runtime_lock(live_db):
+    """İSTEMCİ 'Durdur'a basınca sunucu tarafı ne oluyor? (önyüz revizyonu, gözden geçirme #2)
+
+    Önyüzdeki `AbortController` bağlantıyı keser; ASGI katmanı da yanıt
+    generator'ını KAPATIR. Kapanış, `ask_stream` içinde `with self._lock:`
+    bloğunun İÇİNDEKİ `yield` noktasında `GeneratorExit` olarak gelir. Bu test
+    kritik sonucu kilitler: **kilit bırakılır**. Bırakılmasaydı tek bir iptal
+    tüm servisi süresiz kilitlerdi (`_lock` graf çağrılarını serileştiriyor).
+
+    NOT — bilinçli davranış: iptal turu YARIDA bırakır (bir sonraki düğüm
+    sınırında durur), `_ask_epilogue` koşmaz → o tur geçmişe yazılmaz. Yarım
+    checkpoint bir sonraki turu zehirlemez, çünkü `prepare_state` her turda
+    `messages=None` ile scratchpad'i sıfırlar.
+    """
+    from tests.test_faz7_api import _runtime
+
+    rt = _runtime(live_db)
+    gen = rt.ask_stream("karbon vergisi nedir?", None, "test-token")
+
+    assert next(gen)["event"] == "open"
+    assert not rt._lock.locked(), "ilk olay kilit BEKLENMEDEN gitmeliydi (TTFB)"
+
+    next(gen)                       # ilk ilerleme olayı → artık kilidin İÇİNDEYİZ
+    assert rt._lock.locked()
+
+    gen.close()                     # istemci koptu (RuntimeError atarsa: GeneratorExit yutulmuş)
+    assert not rt._lock.locked(), "iptal sonrası kilit sızdı — sonraki istek süresiz beklerdi"
+
+    # Kilit gerçekten yeniden alınabilir olmalı: yarım-durumda takılma yok.
+    assert rt._lock.acquire(timeout=1)
+    rt._lock.release()
+
+
 def test_open_event_carries_session_and_precedes_work(stream_client):
     r = stream_client.post("/api/ask/stream", json={"question": "karbon vergisi nedir?"},
                            headers={"Authorization": "Bearer test-token"})

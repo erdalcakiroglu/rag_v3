@@ -135,16 +135,24 @@
             color:var(--txt-answer); max-width:var(--measure); margin:16px 0 22px; white-space:pre-wrap; }
   .answer code { font-family:var(--font-mono); font-size:.88em; background:var(--bg-sunken);
                  padding:1px 5px; border-radius:4px; }
-  /* Atıf: satır-içi [1] yerine üst-simge çip — okuma akışını bölmez. */
-  .cit { font-family:var(--font-ui); font-size:.6em; vertical-align:super; line-height:0;
-         background:var(--acc-soft); color:var(--acc); border-radius:6px; padding:2px 5px;
-         margin:0 2px; cursor:pointer; text-decoration:none; }
-  .cit:hover { background:var(--acc-mid); }
+  /* Atıf: satır-içi [1] yerine üst-simge çip — okuma akışını bölmez.
+     Tıklanabilir çip GERÇEK <button>'dır: Tab ile odaklanır, Enter/Space ile çalışır,
+     ekran okuyucuya "Kaynak N, düğme" diye duyurulur. Buton varsayılan stili sıfırlanır,
+     görünüm üst-simge çip olarak kalır. Hedefi olmayan atıf (salt-okuma geçmiş) düğme
+     DEĞİL, sade <sup>'tur — çalışmayan bir kontrol duyurulmaz. */
+  .cit { font:inherit; font-family:var(--font-ui); font-size:.62em; line-height:1;
+         vertical-align:super; white-space:nowrap; background:var(--acc-soft);
+         color:var(--acc); border:0; border-radius:6px; padding:2px 5px; margin:0 2px; }
+  button.cit { display:inline-block; cursor:pointer; }
+  button.cit:hover { background:var(--acc-mid); }
+  .cit:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
   h3 { font-family:var(--font-ui); font-size:var(--fs-small); text-transform:uppercase;
        letter-spacing:.05em; color:var(--mut); margin:22px 0 10px; }
   .src { font-family:var(--font-ui); font-size:13.5px; border-left:3px solid var(--acc);
          padding:8px 12px; margin:8px 0; cursor:pointer; border-radius:0 6px 6px 0; background:var(--bg-sunken); }
   .src:hover { background:var(--panel-2); }
+  .src:focus { outline:none; }   /* çipten gelen programatik odak halka çizmesin */
+  .src:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
   .src .q { display:none; color:var(--mut); font-style:italic; margin-top:6px; }
   .src.open .q { display:block; }
   .src.flash { background:var(--acc-soft); border-left-color:var(--acc); }
@@ -301,10 +309,17 @@ const el = h => { const t=document.createElement('template'); t.innerHTML=h.trim
 function esc(s){return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function md(s){return esc(s).replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/`([^`]+)`/g,'<code>$1</code>');}
 // Atıf işaretleri: satır-içi [1] → üst-simge çip. Metin ÖNCE esc'lenir; çip yalnız
-// sayıdan kurulur (model metni etikete dönüşemez). `map` varsa hover'da kaynak adı.
+// SAYIDAN kurulur (model metni etikete dönüşemez).
+// Kaynağı olan atıf = <button> (Tab/Enter/Space + aria-label ile erişilebilir).
+// Kaynağı olmayan atıf (salt-okuma geçmiş, ya da metinde olup listede olmayan n)
+// = sade <sup>: çalışmayan bir düğmeyi klavyeye/ekran okuyucuya duyurmayız.
 function answerHtml(s, map){
-  return md(s).replace(/\[(\d{1,3})\]/g, (m,n)=>
-    `<sup class="cit" data-n="${n}"${(map&&map[n])?` title="${esc(map[n])}"`:''}>${n}</sup>`);
+  return md(s).replace(/\[(\d{1,3})\]/g, (m,n)=>{
+    const who = map && map[n];
+    if(!who) return `<sup class="cit">${n}</sup>`;
+    return `<button type="button" class="cit" data-n="${n}" title="${esc(who)}"`
+         + ` aria-label="Kaynak ${n}: ${esc(who)}">${n}</button>`;
+  });
 }
 
 // ---- durum: boş ↔ sohbet ----------------------------------------------------
@@ -528,14 +543,17 @@ async function askBlocking(question, card){
   loadConversations();
 }
 
-// Atıf çipine tıklama: aynı KARTTAKİ kaynağı açar ve vurgular (kart-yerel).
+// Atıf çipi etkinleştirilince aynı KARTTAKİ kaynağı açar, vurgular ve ODAĞI oraya
+// taşır. Çip <button> olduğu için Enter/Space de bu `click`'i üretir — ayrı bir
+// keydown gerekmez; klavye ve fare aynı yoldan geçer.
 out.addEventListener('click', e=>{
-  const c = e.target.closest('.cit'); if(!c) return;
+  const c = e.target.closest('button.cit'); if(!c) return;
   const card = c.closest('.card'); if(!card) return;
   const src = card.querySelector('.src[data-n="'+c.dataset.n+'"]'); if(!src) return;
   card.querySelectorAll('.src.flash').forEach(n=>n.classList.remove('flash'));
   src.classList.add('open','flash');
   src.scrollIntoView({block:'nearest', behavior:'smooth'});
+  src.focus({preventScroll:true});   // ekran okuyucu kaynağın üstüne insin
 });
 
 // Yanıt kartının İÇ HTML'i (kart konteyneri ask() tarafından). `seq` benzersiz ön-ek:
@@ -562,7 +580,7 @@ function answerCardHTML(resp, injected, seq){
       const figs = (s.figures && s.figures.length)
         ? `<button class="tbtn" onclick="showFigures('${uid}',event)">Kaynağın görselleri (${s.figures.length})</button>
            <div id="fig-${uid}" class="figbox"></div>` : '';
-      h += `<div class="src" data-n="${s.n}" onclick="this.classList.toggle('open')"><b>[${s.n}]</b> ${esc(s.file_name)} ${loc}
+      h += `<div class="src" data-n="${s.n}" tabindex="-1" onclick="this.classList.toggle('open')"><b>[${s.n}]</b> ${esc(s.file_name)} ${loc}
              ${s.section?('· '+esc(s.section)):''}<div class="q">“${esc(s.quote)}”</div>${btn}${figs}${box}</div>`;
       if(s.figures && s.figures.length) FIGS[uid] = s.figures;
     });
