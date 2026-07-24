@@ -11,15 +11,18 @@
      tema/font tercihi eklemek = bu bloğu override etmek; yeniden yazım yok.
      ------------------------------------------------------------------------ */
   :root {
-    /* renk */
-    --bg:#0f1419; --bg-sunken:#0d1117; --panel:#1a222c; --panel-2:#1f2a36;
-    --line:#2a3542; --line-soft:#222c37;
-    --txt:#e6edf3; --txt-answer:#e6ebf5; --mut:#9fb0c0;
-    --acc:#4a9eff; --acc-soft:rgba(74,158,255,.12); --acc-mid:rgba(74,158,255,.16);
-    --hi:#2ea043; --me:#d29922; --lo:#f85149; --ok:#3fb950;
-    --hi-bg:rgba(46,160,67,.18); --me-bg:rgba(210,153,34,.18); --lo-bg:rgba(248,81,73,.18);
-    --warn-bg:rgba(210,153,34,.14);
-    --shadow:0 8px 28px rgba(0,0,0,.38);
+    /* renk — VARSAYILAN TEMA: AÇIK. Koyu tema aşağıda [data-theme="dark"] olarak
+       hazır duruyor; tercih kaydı (brief §7) eklenince tek öznitelikle açılır. */
+    --bg:#fbfcfd; --bg-sunken:#f2f4f8; --panel:#ffffff; --panel-2:#eceff5;
+    --line:#d7dde7; --line-soft:#e6eaf1; --sidebar-bg:#f4f6fa;
+    --txt:#1d232c; --txt-answer:#20272f; --mut:#5c6775;
+    --acc:#1666d0; --acc-soft:rgba(22,102,208,.09); --acc-mid:rgba(22,102,208,.16);
+    --on-acc:#ffffff;
+    --hi:#177f38; --me:#8a5d00; --lo:#c4272f; --ok:#177f38;
+    --hi-bg:rgba(23,127,56,.11); --me-bg:rgba(138,93,0,.11); --lo-bg:rgba(196,39,47,.11);
+    --warn-bg:rgba(138,93,0,.08);
+    --scrim:rgba(29,35,44,.38);
+    --shadow:0 6px 22px rgba(16,24,40,.14);
     /* tipografi */
     --font-ui:-apple-system,Segoe UI,Roboto,sans-serif;
     --font-answer:Georgia,"Iowan Old Style","Times New Roman",serif;
@@ -34,6 +37,20 @@
     --radius:12px; --radius-sm:8px;
     --t-move:240ms;       /* boş→sohbet geçişi (brief: 200-300ms) */
   }
+  /* Koyu tema — yalnız renk katmanı. Etkinleştirmek için <html data-theme="dark">.
+     Ölçü/tipografi değişkenlerine dokunmaz; bu, §7'deki "tema saf sunum" ilkesidir. */
+  :root[data-theme="dark"] {
+    --bg:#0f1419; --bg-sunken:#0d1117; --panel:#1a222c; --panel-2:#1f2a36;
+    --line:#2a3542; --line-soft:#222c37; --sidebar-bg:#1a222c;
+    --txt:#e6edf3; --txt-answer:#e6ebf5; --mut:#9fb0c0;
+    --acc:#4a9eff; --acc-soft:rgba(74,158,255,.12); --acc-mid:rgba(74,158,255,.16);
+    --on-acc:#ffffff;
+    --hi:#2ea043; --me:#d29922; --lo:#f85149; --ok:#3fb950;
+    --hi-bg:rgba(46,160,67,.18); --me-bg:rgba(210,153,34,.18); --lo-bg:rgba(248,81,73,.18);
+    --warn-bg:rgba(210,153,34,.14);
+    --scrim:rgba(0,0,0,.62);
+    --shadow:0 8px 28px rgba(0,0,0,.38);
+  }
   * { box-sizing:border-box; }
   html,body { height:100%; }
   body { margin:0; background:var(--bg); color:var(--txt);
@@ -45,10 +62,10 @@
   /* ---- yerleşim: sol panel + tam yükseklik sohbet sütunu ------------------ */
   .layout { flex:1 1 auto; min-height:0; display:flex; align-items:stretch; }
   #sidebar { width:var(--sidebar-w); flex:0 0 var(--sidebar-w); border-right:1px solid var(--line);
-             background:var(--panel); display:flex; flex-direction:column; overflow:hidden; }
+             background:var(--sidebar-bg); display:flex; flex-direction:column; overflow:hidden; }
   #sidebar.hidden { display:none; }
   .sb-head { padding:12px; }
-  #newchat { width:100%; padding:10px; background:var(--acc); color:#fff; border:0;
+  #newchat { width:100%; padding:10px; background:var(--acc); color:var(--on-acc); border:0;
              border-radius:var(--radius-sm); font-weight:600; cursor:pointer; }
   #convlist { flex:1; overflow:auto; padding:0 8px 12px; }
   .conv { display:flex; align-items:center; gap:6px; padding:9px 10px; border-radius:var(--radius-sm);
@@ -87,7 +104,7 @@
               color:var(--txt); font:var(--fs-ui)/1.5 var(--font-ui);
               padding:9px 0; max-height:var(--ta-max); overflow-y:auto; }
   .composer textarea:disabled { opacity:.55; }
-  .composer button { flex:0 0 auto; padding:10px 18px; background:var(--acc); color:#fff; border:0;
+  .composer button { flex:0 0 auto; padding:10px 18px; background:var(--acc); color:var(--on-acc); border:0;
               border-radius:var(--radius-sm); font-weight:600; cursor:pointer; font-size:14px; }
   .composer button.stop { background:transparent; border:1px solid var(--lo); color:var(--lo); }
   .hint { max-width:var(--col); margin:7px auto 0; color:var(--mut); font-size:11.5px; text-align:center; }
@@ -166,7 +183,7 @@
   /* M-12 — giriş/kayıt ekranı + hesap alanı */
   .acct { float:right; font-weight:400; font-size:var(--fs-small); color:var(--mut); }
   .acct button { color:var(--acc); cursor:pointer; background:none; border:none; font-size:var(--fs-small); padding:0; }
-  .overlay { position:fixed; inset:0; background:rgba(0,0,0,.62); display:flex; align-items:center;
+  .overlay { position:fixed; inset:0; background:var(--scrim); display:flex; align-items:center;
              justify-content:center; z-index:50; padding:16px; }
   .overlay.hidden { display:none; }
   .authbox { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
@@ -180,7 +197,7 @@
   .authbox label { display:block; font-size:var(--fs-meta); color:var(--mut); margin:11px 0 4px; }
   .authbox input { width:100%; padding:10px 12px; background:var(--bg-sunken); border:1px solid var(--line);
              border-radius:var(--radius-sm); color:var(--txt); font-size:14px; }
-  .authbox .go { width:100%; margin-top:18px; padding:11px; background:var(--acc); color:#fff; border:0;
+  .authbox .go { width:100%; margin-top:18px; padding:11px; background:var(--acc); color:var(--on-acc); border:0;
              border-radius:var(--radius-sm); font-weight:600; cursor:pointer; }
   .authbox .go:disabled { opacity:.5; cursor:wait; }
   .authmsg { margin-top:12px; font-size:var(--fs-small); white-space:pre-wrap; }
