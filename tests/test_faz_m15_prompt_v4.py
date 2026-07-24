@@ -1,9 +1,13 @@
 """M-15 kol-1 — prompt v4'ün TEK DEĞİŞKEN olduğunu kilitler.
 
-M-16 dersi: iddia edilen "tek değişken" ölçülebilir olmalı. v4, v1'e göre
-YALNIZCA bir satır eklenmiş olmalı; başka hiçbir kural (grounding, quote,
-reddetme, uzunluk) değişmemeli. Aksi hâlde karnede çıkan fark hangi
-değişikliğe ait, söylenemez.
+M-16 dersi: iddia edilen "tek değişken" ölçülebilir olmalı. v4, CANLI sürüme
+(`V4_BASE` = v2) göre YALNIZCA bir satır eklenmiş olmalı; başka hiçbir kural
+(grounding, quote, reddetme, uzunluk) değişmemeli. Aksi hâlde karnede çıkan fark
+hangi değişikliğe ait, söylenemez.
+
+Taban neden v1 değil: üretimde `prompts.agent_system_active='v2'`. v1'den
+türetmek v2'nin GROUNDING (KATI) + REDDETME bloklarını da kaldırır — M-16'nın
+honesty/fallback kazanımını taşıyan blok. Aşağıdaki testler bunu kilitler.
 """
 
 from __future__ import annotations
@@ -11,21 +15,34 @@ from __future__ import annotations
 from ragintel.agents.prompts import (
     DEFAULT_SYSTEM_PROMPT,
     PROMPT_VERSIONS,
+    SYSTEM_PROMPT_V2,
     SYSTEM_PROMPT_V4,
+    V4_BASE,
     _V4_RULE,
 )
 
 
-def test_v4_is_v1_plus_exactly_one_line():
-    v1_lines = DEFAULT_SYSTEM_PROMPT.splitlines()
+def test_v4_is_base_plus_exactly_one_line():
+    base = PROMPT_VERSIONS[V4_BASE]
+    base_lines = base.splitlines()
     v4_lines = SYSTEM_PROMPT_V4.splitlines()
-    assert len(v4_lines) == len(v1_lines) + 1, "v4, v1'den tam 1 satır uzun olmalı"
+    assert len(v4_lines) == len(base_lines) + 1, f"v4, {V4_BASE}'den tam 1 satır uzun olmalı"
 
-    added = [ln for ln in v4_lines if ln not in v1_lines]
+    added = [ln for ln in v4_lines if ln not in base_lines]
     assert added == [_V4_RULE.rstrip("\n")], f"beklenmeyen ek satır(lar): {added}"
 
-    # Eklenen satır ÇIKARILINCA gövde v1 ile BİREBİR aynı olmalı (byte-eşitlik).
-    assert SYSTEM_PROMPT_V4.replace(_V4_RULE, "", 1) == DEFAULT_SYSTEM_PROMPT
+    # Eklenen satır ÇIKARILINCA gövde taban ile BİREBİR aynı olmalı (byte-eşitlik).
+    assert SYSTEM_PROMPT_V4.replace(_V4_RULE, "", 1) == base
+
+
+def test_v4_base_is_the_live_version_not_v1():
+    """Taban v2 olmalı; v1'e kayarsa M-16'nın grounding/reddetme blokları düşer."""
+    assert V4_BASE == "v2"
+    assert PROMPT_VERSIONS[V4_BASE] is SYSTEM_PROMPT_V2
+    assert SYSTEM_PROMPT_V4 != DEFAULT_SYSTEM_PROMPT.replace("", "", 1)
+    for block in ("GROUNDING (KATI):", "REDDETME:", "HİPOTETİK"):
+        assert block in SYSTEM_PROMPT_V4, f"v2 bloğu v4'te kaybolmuş: {block}"
+        assert block not in DEFAULT_SYSTEM_PROMPT, f"{block} v1'de de varmış — taban testi anlamsız"
 
 
 def test_v4_rule_targets_tool_turns_not_final_answer():
@@ -34,12 +51,12 @@ def test_v4_rule_targets_tool_turns_not_final_answer():
     assert "tool" in rule
     assert "submit_answer" not in rule          # nihai teslimat kanalına dokunmuyor
     for keep in ("`submit_answer` TOOL'u ile teslim et", "KOPYALA-YAPIŞTIR",
-                 "dokumanlarda bulunamadi".replace("dokumanlarda", "dokümanlarda")
-                 .replace("bulunamadi", "bulunamadı")):
+                 "Bu bilgi dokümanlarda bulunamadı"):
         assert keep in SYSTEM_PROMPT_V4, keep
 
 
 def test_v4_registered_and_others_untouched():
     assert PROMPT_VERSIONS["v4"] is SYSTEM_PROMPT_V4
     assert PROMPT_VERSIONS["v1"] is DEFAULT_SYSTEM_PROMPT      # v1 gövdesi değişmedi
+    assert PROMPT_VERSIONS["v2"] is SYSTEM_PROMPT_V2           # canlı gövde değişmedi
     assert set(PROMPT_VERSIONS) == {"v1", "v2", "v3", "v4"}

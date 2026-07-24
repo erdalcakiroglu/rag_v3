@@ -120,18 +120,22 @@ citation ile desteklenmeli; destekleyemeyeceğin cümleyi YAZMA.
 # prose'unu yazıyor, `agent_node` tool_calls dalına girdiği için o metin hiç okunmuyor.
 # 14 çağrıda ~8000 karakter ≈ 2793 token ≈ 25s / 15 soru (~1.7s/soru).
 #
-# TEK DEĞİŞKEN GARANTİSİ: gövde v1'den PROGRAMATİK türetilir — tek bir satır eklenir,
-# kalan her karakter v1 ile birebir aynıdır (bkz. test_faz4_prompt_v4_tek_degisken).
+# TEK DEĞİŞKEN GARANTİSİ: gövde CANLI sürümden (v2) PROGRAMATİK türetilir — tek bir satır
+# eklenir, kalan her karakter v2 ile birebir aynıdır (bkz. tests/test_faz_m15_prompt_v4.py).
+# DİKKAT: taban v1 DEĞİL. Üretimde aktif olan sürüm `v2`'dir; v1'den türetmek v2'nin
+# GROUNDING (KATI) + REDDETME bloklarını da kaldırırdı ve M-16'nın honesty/fallback
+# kazanımını taşıyan değişkeni sessizce oynatırdı. Taban değişirse `V4_BASE` güncellenmeli.
 #
 # RİSK (karne bunun için koşulur): `reasoning_effort='none'` açık olduğundan bu atılan
 # prose modelin fiilî not defteri olabilir. Kesmek gecikmeyi düşürürken cevap kalitesini
 # de düşürebilir. Kabul koşulu: latency düşerken faith/prec/honesty/fallback SABİT.
+V4_BASE = "v2"                                    # v4'ün türetildiği CANLI sürüm
 _V4_ANCHOR = "- `quote` KOPYALA-YAPIŞTIR olmalı:"
 _V4_RULE = (
     "- Tool çağıracaksan YANINDA düz metin YAZMA: o turda yalnızca tool çağrısını üret; "
     "açıklama, özet ya da taslak cevap yazma (bu metin okunmaz, yalnızca gecikme ekler).\n"
 )
-SYSTEM_PROMPT_V4 = DEFAULT_SYSTEM_PROMPT.replace(_V4_ANCHOR, _V4_RULE + _V4_ANCHOR, 1)
+SYSTEM_PROMPT_V4 = SYSTEM_PROMPT_V2.replace(_V4_ANCHOR, _V4_RULE + _V4_ANCHOR, 1)
 
 # Kod-içi versiyon kaydı (DB seed kaynağı + fallback). DB (app_config prompts) kazanır.
 PROMPT_VERSIONS = {"v1": DEFAULT_SYSTEM_PROMPT, "v2": SYSTEM_PROMPT_V2,

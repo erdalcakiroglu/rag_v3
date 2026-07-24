@@ -18,8 +18,14 @@ M-15 görevi "**~24-27 s/çağrı** × 2-3 iterasyon" premisiyle açıldı. Kayn
 M-10'un 24-27 s'i uydurma değil: dağılımın **kuyruğu** (max 26.8 s). Yani hedef gerçekten
 aşılıyor — ama sebebi "her çağrı 25 s sürüyor" değil, "bazı sorular 3-6 tur atıyor".
 
-**Zemin:** 15 soru (kategori-çeşitli, `PER_CAT=3`), **3 bağımsız temiz koşum**, sonuçlar
-±0.4 s içinde örtüşüyor. Tek-koşum gürültüsü değil.
+**Zemin:** 15 soru (kategori-çeşitli, `PER_CAT=3`), **4 bağımsız temiz koşum**
+(p95 = 21.1 / 21.2 / 21.1 / 21.3 s), sonuçlar ±0.4 s içinde örtüşüyor. Tek-koşum gürültüsü
+değil. p50 ise 11.5-13.3 s arasında oynuyor; sebebi tur sayısı dağılımı (bir koşumda
+6-turluk soru 3 tura düştü) — yani **varyansın kaynağı tur sayısı**, çağrı hızı değil.
+
+**Aktif prompt: `v2`** (`app_config.prompts.agent_system_active`, `m4-migration`,
+2026-07-10'dan beri değişmemiş). Tüm zemin ölçümleri v2 ile alınmıştır; ADIM 2'de
+karşılaştırılacak her sürüm v2'den türetilmelidir.
 
 ---
 

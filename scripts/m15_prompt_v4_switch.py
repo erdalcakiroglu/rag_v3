@@ -5,15 +5,21 @@
 sürümü REDDEDER. Bu yüzden gövde ile aktif seçim BİRLİKTE yazılır. Gövde koddan
 (`PROMPT_VERSIONS`) alınır → DB ile git arasında sapma olamaz.
 
-Geri alma bir revert değil, bir ANAHTAR: `--target v1` eski davranışa döner; v4
-gövdesi DB'de kalır (sürüm silinmez). Karne gerilerse tek komutla geri alınır.
+Geri alma bir revert değil, bir ANAHTAR: `--target v2` (= `V4_BASE`, CANLI sürüm) eski
+davranışa döner; v4 gövdesi DB'de kalır (sürüm silinmez). Karne gerilerse tek komutla
+geri alınır. GERİ ALMA HEDEFİ v1 DEĞİLDİR — v1'e dönmek v2'nin GROUNDING+REDDETME
+bloklarını da düşürür.
+
+TEK DEĞİŞKEN KORUMASI: v4 hedeflenirken DB'deki hâlihazırda AKTİF gövde ile v4'ün
+türetildiği taban (`PROMPT_VERSIONS[V4_BASE]`) karşılaştırılır. Uyuşmuyorsa yazma
+REDDEDİLİR — aksi hâlde karnedeki fark "tek satır"a değil, taban kaymasına ait olurdu.
 
 DİKKAT: config konteyner AÇILIŞINDA dondurulur → yazdıktan sonra RESTART şart.
 
 KULLANIM (H200'de):
   docker exec -i ragintel-api python -u scripts/m15_prompt_v4_switch.py --target v4
   docker exec -i ragintel-api python -u scripts/m15_prompt_v4_switch.py --target v4 --apply
-  docker exec -i ragintel-api python -u scripts/m15_prompt_v4_switch.py --target v1 --apply
+  docker exec -i ragintel-api python -u scripts/m15_prompt_v4_switch.py --target v2 --apply
 """
 
 from __future__ import annotations
@@ -23,7 +29,7 @@ import json
 
 import psycopg
 
-from ragintel.agents.prompts import PROMPT_VERSIONS
+from ragintel.agents.prompts import PROMPT_VERSIONS, V4_BASE
 from ragintel.config.settings import DbSettings
 
 
@@ -40,15 +46,26 @@ def main(target: str, apply: bool) -> None:
 
         versions = dict(current.get("agent_system") or {})
         before = str(current.get("agent_system_active") or "")
+        live_body = str(versions.get(before, "") or "").strip()
+
+        base, v4 = PROMPT_VERSIONS[V4_BASE], PROMPT_VERSIONS["v4"]
+        print(f"aktif sürüm : {before or '(boş → kod varsayılanı = v1)'}  →  {target}")
+        print(f"DB sürümleri: {sorted(versions)}")
+        print(f"hedef gövde : {len(PROMPT_VERSIONS[target])} krk   "
+              f"(v4 = {V4_BASE} + {len(v4) - len(base)} krk tek satır)")
+
+        # TEK DEĞİŞKEN KORUMASI: v4 yalnızca CANLI gövde v4'ün tabanıyla aynıysa anlamlıdır.
+        if target == "v4" and live_body != base.strip():
+            raise SystemExit(
+                f"\nREDDEDİLDİ: canlı aktif sürüm '{before or '(boş)'}' ile v4'ün tabanı "
+                f"'{V4_BASE}' AYNI DEĞİL.\nv4'e geçmek tek satır eklemekle kalmaz, tabanı da "
+                f"kaydırır → karnedeki fark 'tek satır'a ait olmaz.\nÖnce prompts.py'de "
+                f"V4_BASE'i canlı sürüme çek ve v4'ü ondan türet."
+            )
 
         # Kod ↔ DB sapmasını kapat: hedef sürümün gövdesi HER ZAMAN koddan yazılır.
         versions[target] = PROMPT_VERSIONS[target]
         merged = dict(current, agent_system=versions, agent_system_active=target)
-
-        v1, v4 = PROMPT_VERSIONS["v1"], PROMPT_VERSIONS["v4"]
-        print(f"aktif sürüm : {before or '(boş → kod varsayılanı = v1)'}  →  {target}")
-        print(f"DB sürümleri: {sorted(versions)}")
-        print(f"hedef gövde : {len(PROMPT_VERSIONS[target])} krk   (v4, v1'den +{len(v4) - len(v1)} krk)")
 
         if not apply:
             print("\nDRY-RUN (uygulanmadi) — yazmak icin --apply ekle.")
@@ -67,7 +84,8 @@ def main(target: str, apply: bool) -> None:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--target", default="v4", help="aktif edilecek prompt sürümü (v1 = geri alma)")
+    ap.add_argument("--target", default="v4",
+                    help=f"aktif edilecek prompt sürümü ({V4_BASE} = geri alma; v1 DEĞİL)")
     ap.add_argument("--apply", action="store_true", help="yaz (yoksa yalnız gösterir)")
     a = ap.parse_args()
     main(a.target, a.apply)
