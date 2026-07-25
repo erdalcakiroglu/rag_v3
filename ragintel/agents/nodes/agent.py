@@ -123,16 +123,34 @@ def _feedback_message(state: dict) -> list[dict]:
     return [{"role": "user", "content": content}]
 
 
-def _assemble_messages(state: dict, cfg: EffectiveConfig, context: ContextBuildResult) -> list[dict]:
+def _counter_message(state: dict) -> list[dict]:
+    """M-15/kol-2 (a): tur sayacını sistem prompt'undan çıkarıp EN SON mesaja taşır.
+
+    NEDEN: `[Kalan iterasyon: N]` sistem mesajının İÇİNDEydi ve her tur değiştiği için ilk
+    mesajı her tur farklılaştırıp prefix (KV-cache) yeniden-kullanımını tümüyle kırıyordu.
+    Trailing minik bir not olarak taşınınca system + query/context + tur-geçmişi turlar arası
+    BYTE-ÖZDEŞ kalır; yalnız en sondaki küçük mesaj değişir (cache onu zaten ucuz değerler).
+    Sayaç modele HÂLÂ iletilir → tur-bütçesi işlevi korunur; yalnız konumu sonda.
+
+    SINIR (dürüst): mesaj-2'deki bağlam hâlâ her tur yeniden kurulup numaralanır → asıl
+    ~2500 token'lık yükü ancak (b) append-only dondurur. (a) tek başına yalnız sistem mesajını
+    cache'lenebilir kılan ÖN KOŞUL'dur, latency ödülü değil; ödül (b)'den sonra ölçülür."""
     budget = state["budget"]
     remaining = int(budget["max_iterations"]) - int(budget["iteration"])
-    system = load_system_prompt(cfg) + f"\n\n[Kalan iterasyon: {remaining}]"
+    return [{"role": "user", "content": f"[Kalan iterasyon: {remaining}]"}]
+
+
+def _assemble_messages(state: dict, cfg: EffectiveConfig, context: ContextBuildResult) -> list[dict]:
+    # M-15/kol-2 (a): system BYTE-ÖZDEŞ kalır — sayaç artık burada DEĞİL, en sonda (_counter_message).
+    system = load_system_prompt(cfg)
     head = [
         {"role": "system", "content": system},
         {"role": "user", "content": f"Soru: {state['query']}\n\nBağlam blokları:\n{_render_context(context)}"},
     ]
     tail = list(state.get("messages") or [])
-    return head + tail + _feedback_message(state)
+    # Sıra: head + tur-geçmişi + feedback + [sayaç]. Sayaç GERÇEKTEN en sonda: feedback retry
+    # turunda trailing mesaj eklese bile sayaç onun da sonrasına gelir.
+    return head + tail + _feedback_message(state) + _counter_message(state)
 
 
 def agent_node(
