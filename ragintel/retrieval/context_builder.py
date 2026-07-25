@@ -139,25 +139,66 @@ class ContextBuilder:
         self.token_counter = token_counter or BGEM3TokenCounter()
         self.metadata_store = metadata_store or DbContextMetadataStore(db)
 
-    def build(self, retrieved: list[RetrievedChunk]) -> ContextBuildResult:
+    def build(
+        self, retrieved: list[RetrievedChunk], prior: ContextBuildResult | None = None
+    ) -> ContextBuildResult:
+        """İP-3.4 + kol-2(b): APPEND-ONLY bağlam (prefix/KV-cache disiplini).
+
+        `prior` verilirse (bir önceki turun `context` sonucu), o turda gösterilmiş bloklar
+        NUMARASIYLA BİREBİR yeniden yayılır — asla yeniden-numaralama/tahliye — ve yalnız YENİ
+        chunk'lar daha yüksek numarayla SONA eklenir. Böylece mesaj-2'nin önceki bytes'ı turlar
+        arası değişmez → prefix cache kırılmaz. FREEZE DEĞİL: ajan yeni chunk çekerse onlar da
+        `[n]` ile citelanabilir. `prior=None` → ilk tur: eski stateless davranışla BİREBİR aynı
+        (shown boş → numaralar 1'den; regresyon yok).
+
+        Bütçe (append-only sözleşmesi): gösterilmiş bloklar ASLA düşmez (bütçeyi aşsalar bile);
+        tahliye yalnız YENİ adaylardan, en düşük `(score, -order)` önce. Durum builder'da DEĞİL
+        `context` state kanalında taşınır (builder singleton — self'te tutmak sorgular arası sızar).
+        """
         with start_span("retrieval.build_context", input_chunk_count=len(retrieved)):
+            shown_blocks, shown_citations, shown_ids, next_n = self._prior_ledger(prior)
             unique = self._dedup(retrieved)
-            metas = self.metadata_store.fetch([item["chunk_id"] for item in unique])
+            # Gösterilmiş chunk'lar zaten dondurulmuş bloklarla temsil ediliyor → yalnız YENİleri işle.
+            new_unique = [item for item in unique if int(item["chunk_id"]) not in shown_ids]
+            metas = self.metadata_store.fetch([item["chunk_id"] for item in new_unique])
             selected = [
                 _SelectedChunk(order=idx, chunk=chunk, meta=metas[chunk["chunk_id"]])
-                for idx, chunk in enumerate(unique)
+                for idx, chunk in enumerate(new_unique)
                 if chunk["chunk_id"] in metas
             ]
-            blocks = self._merge_adjacent(selected)
-            kept, dropped_chunk_ids = self._apply_budget(blocks)
-            result = self._render(kept, dropped_chunk_ids)
+            new_blocks = self._merge_adjacent(selected)
+            kept, dropped_chunk_ids = self._apply_budget(new_blocks, shown_blocks)
+            new_rendered, new_citations = self._render(kept, start_n=next_n)
+            result: ContextBuildResult = {
+                "blocks": shown_blocks + new_rendered,
+                "citations": shown_citations + new_citations,
+                "dropped_chunk_ids": dropped_chunk_ids,
+            }
             set_span_attributes(
                 output_block_count=len(result["blocks"]),
                 output_citation_count=len(result["citations"]),
+                shown_block_count=len(shown_blocks),
                 dropped_chunk_count=len(dropped_chunk_ids),
                 dropped_chunk_ids=",".join(str(cid) for cid in dropped_chunk_ids),
             )
             return result
+
+    @staticmethod
+    def _prior_ledger(
+        prior: ContextBuildResult | None,
+    ) -> tuple[list[ContextBlock], list[ContextCitation], set[int], int]:
+        """Önceki tur sonucundan append-only defterini çıkar.
+
+        Döner: (gösterilmiş bloklar, gösterilmiş citation'lar — ikisi de BİREBİR yeniden yayılır),
+        gösterilmiş chunk_id kümesi (yeniden işlenmez), bir sonraki BOŞ numara (yeni bloklar buradan).
+        Bloklar sığ kopyalanır (çıktı listesi bağımsız olsun; içerik salt-okunur kullanılır)."""
+        if not prior or not prior.get("blocks"):
+            return [], [], set(), 1
+        shown_blocks = [dict(block) for block in prior["blocks"]]
+        shown_citations = [dict(cit) for cit in prior.get("citations", [])]
+        shown_ids = {int(cid) for block in shown_blocks for cid in block["chunk_ids"]}
+        next_n = max(int(block["n"]) for block in shown_blocks) + 1
+        return shown_blocks, shown_citations, shown_ids, next_n
 
     @staticmethod
     def _dedup(retrieved: list[RetrievedChunk]) -> list[RetrievedChunk]:
@@ -182,29 +223,49 @@ class ContextBuilder:
                 blocks.append(_Block([item]))
         return blocks
 
-    def _apply_budget(self, blocks: list[_Block]) -> tuple[list[_Block], list[int]]:
+    def _apply_budget(
+        self, blocks: list[_Block], shown_blocks: list[ContextBlock]
+    ) -> tuple[list[_Block], list[int]]:
+        """Bütçeyi YALNIZ yeni adaylara uygula; gösterilmiş bloklar ASLA düşmez (append-only).
+
+        Gösterilmişlerin token maliyeti bütçeden düşülür (birlikte sığmalılar) ama tahliye
+        edilmezler — bütçeyi aşsalar bile korunurlar. `shown_blocks` boşsa (ilk tur / prior=None)
+        davranış eski `_apply_budget` ile BİREBİR aynıdır."""
         budget = int(self.retrieval_cfg.context_token_budget)
         safety_margin = float(self.retrieval_cfg.context_token_safety_margin)
+        shown_tokens = sum(
+            self.token_counter.count(f"{block['label']}\n{block['text']}") for block in shown_blocks
+        )
         kept = list(blocks)
         dropped: list[int] = []
-        while kept and self._estimated_tokens(kept, safety_margin) > budget:
+        while kept and self._estimated_tokens(kept, safety_margin, shown_tokens, len(shown_blocks)) > budget:
             victim = min(kept, key=lambda block: (block.score, -block.order))
             kept.remove(victim)
             dropped.extend(victim.chunk_ids)
         kept.sort(key=lambda block: block.order)
         return kept, dropped
 
-    def _estimated_tokens(self, blocks: list[_Block], safety_margin: float) -> int:
-        total = 0
-        for idx, block in enumerate(blocks, start=1):
+    def _estimated_tokens(
+        self, blocks: list[_Block], safety_margin: float, shown_tokens: int = 0, shown_count: int = 0
+    ) -> int:
+        total = shown_tokens
+        for offset, block in enumerate(blocks):
+            idx = shown_count + 1 + offset
             total += self.token_counter.count(f"{self._label(idx, block)}\n{block.text()}")
         return int(total * safety_margin)
 
-    def _render(self, blocks: list[_Block], dropped_chunk_ids: list[int]) -> ContextBuildResult:
+    def _render(
+        self, blocks: list[_Block], start_n: int = 1
+    ) -> tuple[list[ContextBlock], list[ContextCitation]]:
+        """Yeni blokları `start_n`'den başlayarak numaralayıp render eder (bloklar + citation'lar).
+
+        Append-only: `start_n` gösterilmiş blokların bir sonrası → yeni bloklar hep daha yüksek
+        numara alır, önceki numaralar korunur. `start_n=1` (ilk tur) eski davranışla BİREBİR aynı."""
         threshold = float(self.retrieval_cfg.context_low_quality_threshold)
         out_blocks: list[ContextBlock] = []
         out_citations: list[ContextCitation] = []
-        for idx, block in enumerate(blocks, start=1):
+        for offset, block in enumerate(blocks):
+            idx = start_n + offset
             label = self._label(idx, block)
             low_quality = any(
                 item.meta.quality_score is not None and float(item.meta.quality_score) < threshold
@@ -231,11 +292,7 @@ class ContextBuilder:
                         "chunk_id": item.chunk["chunk_id"],
                     }
                 )
-        return {
-            "blocks": out_blocks,
-            "citations": out_citations,
-            "dropped_chunk_ids": dropped_chunk_ids,
-        }
+        return out_blocks, out_citations
 
     @staticmethod
     def _label(n: int, block: _Block) -> str:

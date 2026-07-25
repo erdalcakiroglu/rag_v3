@@ -41,6 +41,7 @@ DEFAULT_TARGETS=(
   tests/test_faz_m9_dusuk_kapsama_geribildirimi.py
   tests/test_faz_m9_retry_butcesi.py
   tests/test_kol2_prefix_a_sayac.py
+  tests/test_kol2_prefix_b_append_only.py
   tests/test_m17_honesty_d4.py
 )
 

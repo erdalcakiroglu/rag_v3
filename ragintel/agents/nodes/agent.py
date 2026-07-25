@@ -174,7 +174,10 @@ def agent_node(
         validation = state.get("validation")
         is_retry = bool(validation) and not validation.get("passed", False)
 
-        context = context_builder.build(state.get("retrieved") or [])
+        # kol-2(b): önceki turun context'ini prior olarak geçir → append-only (gösterilmiş
+        # bloklar numarasıyla korunur, yeni chunk'lar sona eklenir). prepare her istekte
+        # context=None sıfırladığı için ledger istek-yereldir (builder singleton'a durum yazılmaz).
+        context = context_builder.build(state.get("retrieved") or [], prior=state.get("context"))
         messages = _assemble_messages(state, cfg, context)
 
         exhausted = (
