@@ -51,3 +51,25 @@ model değil). **Karar: (C) bu haliyle NO-GO — correctness değil LATENCY nede
 yalnız açık kapı.
 
 **Karar:** gs-012 (bozuk tool-call JSON → fallback) canlıda **KABUL EDİLDİ** — correctness çözüldü (20/20, fallback=0, M-9 mührü korunuyor). Kök = model (~%15 bozuk JSON), katmanlı retry maskeliyor. Sistem üretim-güvenilir → **M-9.1 açılabilir**. (C) grammar iyileştirmesi backlog'da (veriyle karar).
+
+## (C) grammar — maxItems probu ve KALICI KAPANIŞ (2026-07-25)
+
+Backlog "açık kapı"sı (sınırsız `citations[]` → `maxItems` ile latency açılır mı) canlı test edildi.
+`scripts/c_grammar_poc_maxitems.py` (üretim şemasına dokunmayan deepcopy + maxItems enjeksiyonu).
+
+| koşum | şema | VALID | latency | not |
+|---|---|---|---|---|
+| maxItems probu | citations maxItems=12 | 0/20 | hepsi 180s timeout | — |
+| **kontrol** (aynı seans) | maxItems YOK (orijinal PoC) | 0/20 | hepsi 180s timeout | 20 Tem'de 5/20 @ min 57.8s idi |
+
+**Atıf (kontrol koşusu ile):** maxItems'ı suçlayamayız — kontrol de bugün 0/20 timeout. Kök
+**ortam** (H200/Ollama bugünkü durumu grammar-constrained decode'u tümüyle 180s'e itiyor),
+şema sınırı değil. Not: grammar decode kısıtlı-örnekleme yolu; normal tool-call+retry üretimi
+(~27s) bu patikayı kullanmaz, dolayısıyla bu yavaşlık normal işleyişi göstermez.
+
+**KALICI KARAR: (C) grammar-constrained kök-çözüm KAPANDI.** Gerekçe: en iyi gözlem bile
+(20 Tem, 5/20 @ 57s) kullanılamazdı; tek hızlandırma umudu (maxItems) latency'yi açmadı ve
+bugünkü ortamda grammar hiçbir rejimde <180s üretmiyor. Correctness çalışıyor ama latency
+hiçbir koşulda kabul edilebilir değil. **Retry çözümü (20/20, ~27s) kabul edilen kök-fix olarak
+kalır; gs-012 çözülü.** Yeniden açılması için ön koşul: farklı motor/sürüm (ör. vLLM guided_json)
+veya temelden farklı bir constrained-decode implementasyonu — bugünkü Ollama/GBNF ile değil.
