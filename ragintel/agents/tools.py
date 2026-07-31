@@ -73,7 +73,10 @@ MEMORY_SEARCH_SCHEMA = {
     "type": "function",
     "function": {
         "name": "memory_search",
-        "description": "Oturum hafızasından ilgili önceki mesajları getirir (MVP: stub).",
+        "description": (
+            "Bu oturumun ÖNCEKİ turlarındaki soru/cevapları getirir (çok-tur hafıza). "
+            "Kullanıcı geçmişe atıfta bulunuyorsa ('az önce', 'onu', 'bir önceki') bağlamı buradan al."
+        ),
         "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
     },
 }
@@ -111,13 +114,21 @@ SUBMIT_ANSWER_SCHEMA = {
 
 SUBMIT_ANSWER = "submit_answer"
 
+# M-14: memory_search'ün getireceği önceki tur sayısı (soru+cevap çifti). Prompt şişmesini
+# (prepare reset'inin var oluş nedeni: gözlemlenen 134s+fallback) sınırlı tutmak için küçük.
+_MEMORY_RECALL_TURNS = 3
+
 
 class ToolRegistry:
     """İP-3.0 RetrievalService'i LLM tool'larına bağlar. `service` None ise
-    (graph flow testleri) retrieval tool'ları boş sonuç döndürür."""
+    (graph flow testleri) retrieval tool'ları boş sonuç döndürür. `memory_reader`
+    (M-14) enjekte edilmezse memory_search boş döner (stateless testlerle uyumlu)."""
 
-    def __init__(self, service=None, *, include_memory: bool = True):
+    def __init__(self, service=None, *, include_memory: bool = True, memory_reader=None):
         self.service = service
+        # M-14: (conversation_id, user_id, limit_turns) -> list[{"role","content"}]; sahiplik
+        # fail-closed reader'da. None ise memory_search boş (graph/flow testleri).
+        self._memory_reader = memory_reader
         self._impls: dict[str, Callable[[dict, dict], dict]] = {
             "search_hybrid": self._search_hybrid,
             "lookup_document": self._lookup_document,
@@ -140,10 +151,15 @@ class ToolRegistry:
     def executable_names(self) -> set[str]:
         return set(self._impls)
 
-    # -- Yürütme (user_ctx RUNTIME enjekte) ------------------------------------
-    def execute(self, name: str, arguments: dict, *, user_ctx: dict) -> dict:
+    # -- Yürütme (user_ctx + conversation_id RUNTIME enjekte) ------------------
+    def execute(self, name: str, arguments: dict, *, user_ctx: dict,
+                conversation_id: str | None = None) -> dict:
         if name == SUBMIT_ANSWER:
             raise ValueError("submit_answer terminaldir; agent node işler, tools node yürütmez.")
+        # M-14: memory_search'e conversation_id RUNTIME enjekte edilir (LLM argümanı DEĞİL —
+        # oturum kimliğini model üretemez/atlatamaz; search_hybrid'deki user_ctx deseniyle aynı).
+        if name == "memory_search":
+            return self._memory_search(arguments, user_ctx, conversation_id=conversation_id)
         impl = self._impls.get(name)
         if impl is None:
             return {"error": f"tool_error: bilinmeyen tool '{name}'"}
@@ -172,9 +188,17 @@ class ToolRegistry:
         ranking = self.service.rerank(args["query"], [int(c) for c in args.get("chunk_ids", [])], user_ctx=user_ctx)
         return {"ranking": ranking}
 
-    def _memory_search(self, args: dict, user_ctx: dict) -> dict:
-        # MVP stub — session memory İP-3.5/FAZ 5'te bağlanır.
-        return {"memory": []}
+    def _memory_search(self, args: dict, user_ctx: dict, *, conversation_id: str | None = None) -> dict:
+        """M-14 agent-pull çok-tur hafıza: bu oturumun önceki turlarının Q/A'sını getirir.
+        `memory_reader` enjekte edilmemişse (graph testleri) ya da conversation_id/user_id yoksa
+        boş döner. SAHİPLİK + scope güvenliği reader'da (get_conversation_messages fail-closed).
+        Dönen içerik yalnız kullanıcının KENDİ önceki soru/cevap metni — chunk/scope/tool YOK."""
+        if self._memory_reader is None or not conversation_id:
+            return {"memory": []}
+        user_id = (user_ctx or {}).get("user_id")
+        if not user_id:
+            return {"memory": []}
+        return {"memory": self._memory_reader(conversation_id, user_id, _MEMORY_RECALL_TURNS)}
 
 
 def accumulated_chunks(tool_output: Any) -> list:

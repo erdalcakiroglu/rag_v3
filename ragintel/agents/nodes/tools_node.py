@@ -52,6 +52,7 @@ def _dedup(chunks: list) -> list:
 def tools_node(state: dict, *, registry: ToolRegistry) -> dict:
     calls = state.get("pending_tool_calls") or []
     user_ctx = state.get("user_ctx") or {}
+    conversation_id = state.get("session_id")   # M-14: memory_search'e runtime enjekte (LLM argümanı değil)
     messages: list[dict] = []
     accumulated = list(state.get("retrieved") or [])
 
@@ -60,7 +61,8 @@ def tools_node(state: dict, *, registry: ToolRegistry) -> dict:
             name = call["name"]
             t0 = time.perf_counter()
             try:
-                output = registry.execute(name, call.get("arguments") or {}, user_ctx=user_ctx)
+                output = registry.execute(name, call.get("arguments") or {},
+                                          user_ctx=user_ctx, conversation_id=conversation_id)
             except Exception as exc:  # tool exception → LLM'e mesaj, crash değil
                 output = {"error": f"tool_error: {exc}"}
             tool_ms = int((time.perf_counter() - t0) * 1000)

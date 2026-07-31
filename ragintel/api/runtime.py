@@ -127,7 +127,7 @@ class RagRuntime:
         self.langfuse = langfuse or LangfuseSettings()
         service = service or RetrievalService(db=db, config=config)
         context_builder = context_builder or ContextBuilder(db=db, config=config)
-        registry = registry or ToolRegistry(service)
+        registry = registry or ToolRegistry(service, memory_reader=self._read_conversation_memory)
         # warm-up için tutulur: context_builder→tokenizer, service→embedder ön-ısıtma
         self.context_builder = context_builder
         self.service = service
@@ -282,6 +282,27 @@ class RagRuntime:
         yield {"event": "final", "data": result.final_response}
         return result
 
+
+    def _read_conversation_memory(self, conversation_id: str, user_id: str,
+                                  limit_turns: int) -> list[dict]:
+        """M-14 agent-pull çok-tur hafıza: bu oturumun ÖNCEKİ turlarının Q/A metnini (en yeni
+        `limit_turns` tur = 2×limit mesaj) döndürür. SAHİPLİK fail-closed: get_conversation_messages
+        başkasının/olmayan sohbette None → boş. Yalnız user/assistant metni (chunk/scope/tool YOK).
+        Geçmiş, kullanıcının KENDİ önceki cevaplarıdır; retrieval her istekte canlı user_ctx ile
+        sınırlı olduğundan yeni bir ifşa değil. DB hatası hafızayı boşaltır, ask'ı bozmaz."""
+        from ..database import conversation_repo
+        if not conversation_id or not user_id:
+            return []
+        try:
+            with self.db.connection() as conn:
+                msgs = conversation_repo.get_conversation_messages(conn, conversation_id, user_id)
+        except Exception as exc:
+            self.log.warning("memory_read_failed", session_id=conversation_id, error=str(exc)[:120])
+            return []
+        if not msgs:                       # None (sahip değil/yok) veya boş → hafıza yok
+            return []
+        tail = msgs[-2 * max(1, limit_turns):]
+        return [{"role": m["role"], "content": m["content"]} for m in tail]
 
     def _record_history(self, session_id: str, user_ctx: dict, question: str,
                         final: dict, trace_id: str) -> None:
