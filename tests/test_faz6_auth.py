@@ -89,7 +89,7 @@ class _MockService:
 
 
 class _MockCB:
-    def build(self, retrieved):
+    def build(self, retrieved, prior=None):   # kol-2(b): prior kwarg'ı kabul et (auth reddinde çağrılmaz)
         return {"blocks": [], "citations": [], "dropped_chunk_ids": []}
 
 

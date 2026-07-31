@@ -41,15 +41,26 @@ class ScriptedGateway:
 
 
 class FakeContextBuilder:
-    """retrieved → her chunk bir blok (İP-3.4 kontratı biçiminde)."""
+    """retrieved → her chunk bir blok (İP-3.4 kontratı biçiminde).
 
-    def build(self, retrieved):
-        blocks, citations = [], []
-        for i, ch in enumerate(retrieved, start=1):
+    kol-2(b) append-only: `prior` verilirse gösterilmiş bloklar NUMARASIYLA BİREBİR
+    yeniden yayılır (yeniden-numaralama yok), yalnız YENİ chunk'lar daha yüksek
+    numarayla sona eklenir. `prior=None` → ilk tur, eski stateless davranışla birebir.
+    """
+
+    def build(self, retrieved, prior=None):
+        shown_blocks = [dict(b) for b in (prior or {}).get("blocks", [])]
+        shown_citations = [dict(c) for c in (prior or {}).get("citations", [])]
+        shown_ids = {cid for b in shown_blocks for cid in b["chunk_ids"]}
+        blocks, citations = list(shown_blocks), list(shown_citations)
+        n = max((int(b["n"]) for b in shown_blocks), default=0) + 1
+        for ch in retrieved:
+            if ch["chunk_id"] in shown_ids:      # gösterilmiş → dondurulmuş blokta zaten var
+                continue
             blocks.append(
                 {
-                    "n": i,
-                    "label": f"[{i}] {ch['source']['file_name']}",
+                    "n": n,
+                    "label": f"[{n}] {ch['source']['file_name']}",
                     "text": ch["text"],
                     "chunk_ids": [ch["chunk_id"]],
                     "token_count": len(ch["text"].split()),
@@ -58,7 +69,7 @@ class FakeContextBuilder:
             )
             citations.append(
                 {
-                    "n": i,
+                    "n": n,
                     "file_name": ch["source"]["file_name"],
                     "page": ch["source"].get("page"),
                     "sheet": None,
@@ -66,6 +77,7 @@ class FakeContextBuilder:
                     "chunk_id": ch["chunk_id"],
                 }
             )
+            n += 1
         return {"blocks": blocks, "citations": citations, "dropped_chunk_ids": []}
 
 
