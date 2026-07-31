@@ -171,12 +171,37 @@ Yerine geçen üç kriter (tek kullanıcı, local LLM):
 |---|---|---|
 | **p50** uçtan uca yanıt | < 15 sn | **SAĞLANIYOR** — ölçülen 11.5-13.3 sn |
 | **TTFB** (kullanıcının ilk geri bildirim aldığı an) | < 1 sn | `/api/ask/stream` ile ~0.1 sn |
-| p95 uçtan uca yanıt | *gösterge* — eşik değil | ölçülen 21.1-21.3 sn; kol-2 sonrası ~19 sn beklenir |
+| p95 uçtan uca yanıt | *gösterge* — eşik değil | ölçülen 21.1-21.3 sn; **kol-2 (a+b) canlıda `4d0e815`** → hedef ~19 sn |
 
 **Neden p95 eşik olmaktan çıktı:** p95'i belirleyen şey çağrı hızı değil **tur sayısı**
 (ort. 3.5, max 5) — yani sorunun kaç adımda çözüldüğü. Bunu eşiğe bağlamak, sistemi zor
 soruyu erken bırakmaya teşvik eder; M-9'da görülen "sapkın gate teşviki" deseninin aynısı.
 Gösterge olarak izlenir, gerileme raporlanır, ama fix'in kabul şartı değildir.
+
+**kol-2 kapanışı — prefix (KV-cache) disiplini (2026-07-31, canlıda `4d0e815`).** M-15'in latency
+kolu iki parçada mühürlendi. **(a)** tur sayacı sistem prompt'undan en-son mesaja taşındı (commit
+`491de56`) → sistem mesajı turlar arası byte-özdeş. **(b)** `context_builder.build()` **append-only**
+(stateful) yapıldı (commit `ef5f455`): gösterilmiş bloklar numarasıyla+bytes'ıyla korunur, yeni chunk'lar
+yalnız sona eklenir → mesaj-2'deki ~2500 token bağlam her tur yeniden numaralanmaz. Ölçülen kaldıraç:
+Ollama ardışık `/api/chat` çağrılarında byte-özdeş prefix'in KV-cache'ini yeniden kullanıyor (prob commit
+`dfd62db`: STABLE 2. çağrı prompt-eval 97 ms vs MUTATED 694 ms).
+
+**Davranış-nötrlük — k=3 A/B karne (izole worktree, aynı prod DB + config parmak-izi).** kol-2'nin
+karnesi latency için değil, **kalite regresyonu olmadığını** kanıtlamak için şart: baseline↔(b) — honesty
+**12/15 birebir** (D4 taban), fallback **0.2366→0.2258** (artış yok), faithfulness **0.8939→0.8899**
+(Δ −0.004), context_precision **0.8854=0.8854**. 4/4 kapı yeşil → kabul. Canlıda `4d0e815` smoke'u groundlu
+cevap (4 kaynak, gerçek `quote`'lar) + aşama streaming'i döndürerek (b)'yi çalışan sistemde doğruladı.
+
+**#4 (tool-şemasını her tur göndermeme) — ön-veri ile elendi (prob commit `4d0e815`).** Tool şeması qwen
+chat-template'inde sistem prologuna, bağlamdan önce render edilir → zaten (b)'nin dondurduğu cache'li
+prefix'in parçası (byte-özdeş tool → 2. çağrı 295 ms cache-hit). Şemayı tur başına düşürmek prologun önünü
+değiştirip tüm prefix'i cache-miss yapardı (aynı prob: token sayısı 3455→2732 düşse de süre 295→679 ms) —
+yani tur başına ~597 ms geri gelir, (b) tersine döner. **Kod yazılmadı** (ön-veri kuralı).
+
+**Dürüst sınır.** M-15'in çekirdek kriteri (p50 < 15 sn + TTFB < 1 sn) zaten M-15 kapanışında yeşildi;
+kol-2 bunların üstüne p95'i ~21 sn'den ~19 sn'e çeken **ek** kazanç. Prefix cache tek model-slotu →
+eşzamanlı yükte erir; ~2 sn tasarruf yalnız sıralı/tek-kullanıcı akışında gerçek (M-15'in "kapasite ayrı
+kalem" ilkesiyle tutarlı, aşırı iddia yok).
 
 ## 7. Riskler
 
