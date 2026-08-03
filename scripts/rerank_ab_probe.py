@@ -17,9 +17,15 @@ Hedef metrik: multi_hop recall@5 (§7 taban 0.30).
      process'in ENV'inde. KALICI DEĞİŞİKLİK YOK — salt ölçüm.
   2. Baseline üretim hybrid parametreleriyle koşar (ef_search/rrf_k/ağırlıklar
      cfg'den) → sayı KARNE zeminiyle kıyaslanabilir, sweep-varsayılanı sızmaz.
-  3. `_tei_rerank` Timeout/ConnectError'da SESSİZCE passthrough'a düşer → B kolu
-     A'ya eşit çıkıp "rerank etkisiz" YANLIŞINI üretebilir. Koşudan önce preflight
-     ile TEI'nin gerçekten sıraladığı DOĞRULANIR; geçmezse exit 2 (ölçme).
+  3. Kalite ölçümü ASLA fail-open etmez. Prod `_tei_rerank` timeout'ta SESSİZCE
+     passthrough'a düşer (erişilebilirlik doğrusu) → ama ölçümde bu B=A YALANINI
+     üretir. Prob rerank'i KENDİ İÇİNDE, fallback'siz, cömert timeout'la yapar →
+     her hata GÜRÜLTÜLÜ ÇÖKER (sessiz düşüş yok). Ayrıca preflight ile koşudan
+     önce TEI'nin gerçekten sıraladığı doğrulanır; geçmezse exit 2.
+
+TEI-CPU notu: bge-reranker-v2-m3 batch>4 desteklemez → 20 aday = 5 seri batch,
+CPU'da tek sorgu birkaç saniye sürebilir. `--rerank-timeout` (vars. 120s) bunun
+için cömert; config'in ~5s'lik rerank_timeout_sec'i ölçümü zamanaşımına uğratırdı.
 
 Konteynerde koşulur (DB + bge-m3 embedder + TEI hepsi host-network):
   docker exec <ragintel-api> python /app/scripts/rerank_ab_probe.py
@@ -42,10 +48,11 @@ def _force_utf8() -> None:
                 pass
 
 
-def _preflight(url: str) -> tuple[bool, str]:
+def _preflight(url: str, timeout: float) -> tuple[bool, str]:
     """TEI gerçekten rerank ediyor mu? Bilinen çiftte alakalı metin TEPEDE mi?
 
     Sessiz passthrough-fallback'i koşudan ÖNCE yakalar (ölçüm-zemini güvencesi).
+    Koşu ile AYNI timeout kullanılır ki CPU yavaşlığı burada da temsil edilsin.
     """
     import httpx
 
@@ -58,7 +65,7 @@ def _preflight(url: str) -> tuple[bool, str]:
         ],
     }
     try:
-        resp = httpx.post(f"{url.rstrip('/')}/rerank", json=payload, timeout=30.0)
+        resp = httpx.post(f"{url.rstrip('/')}/rerank", json=payload, timeout=timeout)
         resp.raise_for_status()
     except Exception as exc:  # noqa: BLE001 — preflight her hatada ölçmeyi durdurur
         return False, f"TEI erişilemedi/hatalı: {exc}"
@@ -104,6 +111,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--golden", default="v0", help="DB set_version (varsayılan v0)")
     ap.add_argument("--tei-url", default="http://localhost:8085", help="TEI rerank kök URL")
     ap.add_argument("--pool", type=int, default=20, help="Rerank aday havuzu (varsayılan 20)")
+    ap.add_argument("--rerank-timeout", type=float, default=120.0,
+                    help="TEI rerank HTTP timeout sn (CPU'da 20 aday yavaş; vars. 120)")
     ap.add_argument("--json", action="store_true", help="Ham A/B JSON de bas")
     args = ap.parse_args(argv)
 
@@ -125,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     from ragintel.retrieval import RetrievalService
 
     # 1) Preflight — TEI gerçekten rerank ediyor mu? (sessiz passthrough tuzağı)
-    ok, msg = _preflight(args.tei_url)
+    ok, msg = _preflight(args.tei_url, args.rerank_timeout)
     print(f"[preflight] {'OK' if ok else 'BAŞARISIZ'} — {msg}")
     if not ok:
         print("Ölçüm durduruldu: TEI güvenilir rerank yapmıyor.", file=sys.stderr)
@@ -165,10 +174,27 @@ def main(argv: list[str] | None = None) -> int:
             sparse_variant=str(rc.hybrid_sparse_variant),
         )
 
+        # KENDİ İÇİNDE rerank — prod `_tei_rerank`'in fail-open'ını BİLEREK atlıyoruz:
+        # kalite ölçümünde timeout SESSİZCE yutulmamalı, GÜRÜLTÜLÜ çökmeli (B=A yalanı
+        # yerine). Cömert timeout (args.rerank_timeout) CPU'nun 20-aday yavaşlığını karşılar.
+        import httpx
+
+        rerank_client = httpx.Client(timeout=args.rerank_timeout)
+        rerank_url = f"{args.tei_url.rstrip('/')}/rerank"
+
         def tei_fn(question: str, ids: list[int], doc_scope: str) -> list[int]:
-            # Üretimle AYNI kod yolu: metin çek → TEI → skora göre sırala.
-            ordered = service._tei_rerank(question, ids, [doc_scope])
-            return [int(r["chunk_id"]) for r in ordered]
+            rows = service.store.rerank_texts(chunk_ids=ids, allowed_doc_scopes=[doc_scope])
+            if len(rows) != len(ids):
+                raise ValueError(f"rerank metinleri eksik: {len(rows)} ≠ {len(ids)}")
+            texts = [str(r["text"]) for r in rows]
+            resp = rerank_client.post(rerank_url, json={"query": question, "texts": texts})
+            resp.raise_for_status()  # herhangi bir hata → ÇÖK (sessiz passthrough YOK)
+            payload = resp.json()
+            results = payload if isinstance(payload, list) else payload.get("results")
+            if not isinstance(results, list) or len(results) != len(ids):
+                raise ValueError(f"TEI rerank yanıtı geçersiz: {payload!r}")
+            ranked = sorted(results, key=lambda it: float(it["score"]), reverse=True)
+            return [ids[int(it["index"])] for it in ranked]
 
         arm_a = StoreRetriever(service.store, embed_cache, name="passthrough",
                                rerank=False, **common)
