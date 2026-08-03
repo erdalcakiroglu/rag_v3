@@ -108,6 +108,11 @@ Kabul edilen kararlar. Yeni karar eklerken aynı formatı kullan.
 - **Gerekçe:** Container kullanımı onaylandı; Langfuse prompt yönetimi + feedback UI + LLM-as-judge entegrasyonuyla FAZ 7-8 ihtiyaçlarını da karşılar. Kurulum: `Kurulum_RHEL_Langfuse_Podman.md`.
 - **Durum:** Kabul edildi (2026-07-02).
 
+### ADR-014 — Rerank serving: TEI, parametrik endpoint (önce CPU, sonra H200)
+- **Karar:** bge-reranker-v2-m3, Hugging Face TEI (text-embeddings-inference) container'ı ile servis edilir (Podman). Başlangıç: DB sunucusunda CPU imajı; H200 erişimi açılınca GPU TEI'ye geçiş yalnızca `RAGINTEL_TEI_RERANK_URL` değişikliğidir. Uygulama tarafında `rerank_backend` config'i: `passthrough | tei`. TEI erişilemezse **fail-open**: passthrough'a düşer, span'e işaretlenir, log'lanır — rerank kalite artırıcıdır, kritik yol değildir (retrieval rerank'siz de çalışır).
+- **Gerekçe:** Ollama rerank API'si sunmuyor; torch projede yok (ADR-012); TEI hem CPU hem GPU imajıyla aynı API'yi verir — model serving = uzak HTTP ilkesiyle (Ollama gibi) tutarlı. H200 takvimi belirsiz; CPU rerank (~200-800ms/10 doküman) dev için kabul edilebilir, katkısı İP-3.6'da ölçülür.
+- **Durum:** Kabul edildi (2026-07-03). **Güncelleme (2026-08-03: rerank A/B ön-verisi, changelog v1.11):** TEI CPU'da ölçüldü (kalite CPU/GPU özdeş → nvidia-toolkit kurulmadı). Blanket `rerank_backend='tei'` prod'da **AÇILMADI** — HEDEF multi_hop recall@5 −0.200 + single_fact −0.100 bozuyor, GENEL net +0.032'yi telafi etmez (mekanik: cross-encoder chunk'ları tek tek puanlar → multi-hop ikinci-sıçrama kanıtını top-5'ten iter). TEI-GPU kurulumu **ERTELENDİ** (reddedilmedi; orijinal gerekçe=multi_hop düştü). Güçlü olduğu table_based (+0.400) / synthesis (+0.143) için **kategori-koşullu rerank** backlog'a alındı (görev #11) — prod'da kategori etiketi yok, gating sinyali gerekir; küçük-n: **yön güvenilir, büyüklük kırılgan**. Adım-1 planı: `Brief_M11_Kategori_Kosullu_Rerank_Adim1`. Bkz. `rerank-ab-onveri`.
+
 ## 4. Teknoloji Yığını
 
 | Bileşen | Dev | Prod | Not |
