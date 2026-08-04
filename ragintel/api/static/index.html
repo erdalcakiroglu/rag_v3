@@ -4,6 +4,22 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ragintel — Doküman Asistanı</title>
+<script>
+  /* Tercihleri BOYAMADAN ÖNCE uygula → tema/font flash'ı (FOUC) olmaz.
+     Ölçü değişkenleri (--fs-*) ve data-theme, ana script'ten bağımsız burada set edilir. */
+  (function(){
+    try{
+      var t = localStorage.getItem('ragintel_theme') || 'auto';
+      var dark = t==='dark' || (t==='auto' && window.matchMedia
+                 && matchMedia('(prefers-color-scheme:dark)').matches);
+      if(dark) document.documentElement.setAttribute('data-theme','dark');
+      var f = localStorage.getItem('ragintel_fontsize');
+      var M = {s:['14px','14.5px'], m:['15px','15.5px'], l:['16.5px','17px']}[f];
+      if(M){ var r=document.documentElement.style;
+             r.setProperty('--fs-ui',M[0]); r.setProperty('--fs-answer',M[1]); }
+    }catch(e){}
+  })();
+</script>
 <style>
   /* ------------------------------------------------------------------------
      CSS DEĞİŞKENİ DİSİPLİNİ (Önyüz Brief §7): renk/ölçü/tipografi SABİT HEX
@@ -76,6 +92,34 @@
   .conv:hover .del { opacity:1; } .conv .del:hover { color:var(--lo); }
   .sb-empty { color:var(--mut); font-size:12.5px; padding:10px 12px; }
 
+  /* ---- sidebar footer: hesap + ayarlar (sol-alt köşe, Claude deseni) -------- */
+  .sb-foot { flex:0 0 auto; border-top:1px solid var(--line); padding:8px; position:relative; }
+  .acctbtn { display:flex; align-items:center; gap:9px; width:100%; padding:8px 9px; border:0;
+             background:none; border-radius:var(--radius-sm); cursor:pointer; color:var(--txt); text-align:left; }
+  .acctbtn:hover { background:var(--panel-2); }
+  .avatar { flex:0 0 auto; width:30px; height:30px; border-radius:50%; background:var(--acc);
+            color:var(--on-acc); display:flex; align-items:center; justify-content:center;
+            font-weight:600; font-size:13px; text-transform:uppercase; }
+  .acctbtn .who { flex:1; min-width:0; }
+  .acctbtn .who .nm { font-size:13.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .acctbtn .who .st { font-size:11.5px; color:var(--mut); }
+  .acctbtn .cog { flex:0 0 auto; color:var(--mut); font-size:15px; }
+  .pop { position:absolute; left:8px; right:8px; bottom:calc(100% - 2px); background:var(--panel);
+         border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow);
+         padding:10px; z-index:30; }
+  .pop.hidden { display:none; }
+  .pop .lbl { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--mut); margin:10px 2px 6px; }
+  .pop .lbl:first-child { margin-top:2px; }
+  .seg { display:flex; gap:4px; background:var(--bg-sunken); border:1px solid var(--line);
+         border-radius:var(--radius-sm); padding:3px; }
+  .seg button { flex:1; padding:6px 4px; border:0; background:none; border-radius:6px; cursor:pointer;
+                color:var(--mut); font-size:12.5px; }
+  .seg button.on { background:var(--panel); color:var(--acc); font-weight:600; box-shadow:0 1px 2px rgba(0,0,0,.12); }
+  .pop .act { display:block; width:100%; text-align:left; margin-top:8px; padding:9px 10px; border:0;
+              background:none; border-radius:var(--radius-sm); cursor:pointer; color:var(--txt); font-size:13.5px; }
+  .pop .act:hover { background:var(--panel-2); }
+  .pop .act.danger { color:var(--lo); }
+
   main { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; }
   #chatarea { flex:1 1 auto; min-height:0; position:relative; display:flex; }
   /* TEK kaydırma kabı: pencere değil BU kayar (alt-sabit composer'ın şartı). */
@@ -132,7 +176,15 @@
   .b-low { background:var(--lo-bg); color:var(--lo); }
   /* CEVAP SESİ: serif + dar sütun + yüksek satır aralığı. Rozet/meta/kaynaklar sans kalır. */
   .answer { font-family:var(--font-answer); font-size:var(--fs-answer); line-height:var(--lh-answer);
-            color:var(--txt-answer); max-width:var(--measure); margin:16px 0 22px; white-space:pre-wrap; }
+            color:var(--txt-answer); max-width:var(--measure); margin:16px 0 22px; }
+  /* Markdown blok öğeleri: paragraf/madde/başlık artık gerçek yapı olarak render edilir
+     (eski tek-paragraf pre-wrap yerine). Model markdown üretirse okunur biçimlenir. */
+  .answer p { margin:0 0 12px; } .answer p:last-child { margin-bottom:0; }
+  .answer ul, .answer ol { margin:0 0 12px; padding-left:1.45em; }
+  .answer li { margin:5px 0; } .answer li:last-child { margin-bottom:0; }
+  .answer h4 { font-family:var(--font-ui); font-size:15.5px; font-weight:600; margin:18px 0 8px;
+               color:var(--txt); }
+  .answer a { color:var(--acc); text-decoration:underline; }
   .answer code { font-family:var(--font-mono); font-size:.88em; background:var(--bg-sunken);
                  padding:1px 5px; border-radius:4px; }
   /* Atıf: satır-içi [1] yerine üst-simge çip — okuma akışını bölmez.
@@ -245,7 +297,7 @@
 </style>
 </head>
 <body>
-<header><button class="sbtoggle" onclick="toggleSidebar()" title="Sohbetler">☰</button>ragintel <small>kurumsal doküman asistanı — FAZ 7 öncü</small><span class="acct" id="acct"></span></header>
+<header><button class="sbtoggle" onclick="toggleSidebar()" title="Sohbetler">☰</button>ragintel <small>kurumsal doküman asistanı</small></header>
 
 <!-- M-12: giriş/kayıt ekranı (token yoksa açılır). Token-yapıştırma yolu altta gizli tutulur. -->
 <div id="auth" class="overlay hidden">
@@ -276,6 +328,25 @@
   <aside id="sidebar">
     <div class="sb-head"><button id="newchat" onclick="newChat()">＋ Yeni sohbet</button></div>
     <div id="convlist"></div>
+    <!-- Sol-alt: hesap + ayarlar (Claude deseni). Popover yukarı açılır. -->
+    <div class="sb-foot">
+      <div id="pop" class="pop hidden" role="menu" aria-label="Ayarlar">
+        <div class="lbl">Tema</div>
+        <div class="seg" id="segTheme">
+          <button type="button" data-v="light" onclick="setTheme('light')">Açık</button>
+          <button type="button" data-v="dark" onclick="setTheme('dark')">Koyu</button>
+          <button type="button" data-v="auto" onclick="setTheme('auto')">Oto</button>
+        </div>
+        <div class="lbl">Yazı boyutu</div>
+        <div class="seg" id="segFont">
+          <button type="button" data-v="s" onclick="setFont('s')">Küçük</button>
+          <button type="button" data-v="m" onclick="setFont('m')">Orta</button>
+          <button type="button" data-v="l" onclick="setFont('l')">Büyük</button>
+        </div>
+        <div id="popAcct"></div>
+      </div>
+      <button class="acctbtn" id="acctBtn" onclick="togglePop()" aria-haspopup="true"></button>
+    </div>
   </aside>
   <!-- İki durum: .empty = composer ortada + karşılama · yoksa = composer altta sabit -->
   <main id="main" class="empty">
@@ -307,14 +378,39 @@ let cardSeq = 0;   // M-13: her yanıt kartına benzersiz ön-ek (kaynak/tablo i
 const el = h => { const t=document.createElement('template'); t.innerHTML=h.trim(); return t.content.firstElementChild; };
 
 function esc(s){return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-function md(s){return esc(s).replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/`([^`]+)`/g,'<code>$1</code>');}
+// Satır-içi markdown (metin ZATEN esc'lenmiş olarak gelir → XSS yok): kalın, kod, link.
+function mdInline(s){
+  return s
+    .replace(/`([^`]+)`/g,'<code>$1</code>')
+    .replace(/\*\*(.+?)\*\*/g,'<b>$1</b>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,'<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+}
+// Blok markdown → gerçek HTML yapısı. ÖNCE esc (güvenlik), sonra blok ayrımı:
+// boş satır=paragraf, '- '/'* '/'• '=madde, '1.'=sıralı, '#'=başlık. Paragraf içi tek
+// satır sonu <br> (eski pre-wrap hissi korunur). Model düz metin verirse tek <p> olur.
+function mdBlocks(raw){
+  const src = esc(raw||''); const lines = src.split('\n');
+  let html='', list='', para=[];
+  const flushPara=()=>{ if(para.length){ html+='<p>'+mdInline(para.join('\n')).replace(/\n/g,'<br>')+'</p>'; para=[]; } };
+  const flushList=()=>{ if(list){ html+='</'+list+'>'; list=''; } };
+  for(const raw2 of lines){
+    const t=raw2.trim(); let m;
+    if(!t){ flushPara(); flushList(); continue; }
+    if(m=t.match(/^#{1,6}\s+(.+)$/)){ flushPara(); flushList(); html+='<h4>'+mdInline(m[1])+'</h4>'; continue; }
+    if(m=t.match(/^[-*•]\s+(.+)$/)){ flushPara(); if(list!=='ul'){ flushList(); html+='<ul>'; list='ul'; } html+='<li>'+mdInline(m[1])+'</li>'; continue; }
+    if(m=t.match(/^\d+[.)]\s+(.+)$/)){ flushPara(); if(list!=='ol'){ flushList(); html+='<ol>'; list='ol'; } html+='<li>'+mdInline(m[1])+'</li>'; continue; }
+    flushList(); para.push(t);
+  }
+  flushPara(); flushList();
+  return html || '<p></p>';
+}
 // Atıf işaretleri: satır-içi [1] → üst-simge çip. Metin ÖNCE esc'lenir; çip yalnız
 // SAYIDAN kurulur (model metni etikete dönüşemez).
 // Kaynağı olan atıf = <button> (Tab/Enter/Space + aria-label ile erişilebilir).
 // Kaynağı olmayan atıf (salt-okuma geçmiş, ya da metinde olup listede olmayan n)
 // = sade <sup>: çalışmayan bir düğmeyi klavyeye/ekran okuyucuya duyurmayız.
 function answerHtml(s, map){
-  return md(s).replace(/\[(\d{1,3})\]/g, (m,n)=>{
+  return mdBlocks(s).replace(/\[(\d{1,3})\]/g, (m,n)=>{
     const who = map && map[n];
     if(!who) return `<sup class="cit">${n}</sup>`;
     return `<button type="button" class="cit" data-n="${n}" title="${esc(who)}"`
@@ -379,11 +475,61 @@ function authTab(which){
 }
 function authMsg(t, ok){ const m=document.getElementById('authmsg'); m.textContent=t||''; m.className='authmsg'+(t?(ok?' ok':' err'):''); }
 function showAuth(show){ document.getElementById('auth').classList.toggle('hidden', !show); }
+// Sohbette kullanıcı mesajının rol etiketi = kullanıcı adı (token/misafirse "Siz").
+function userLabel(){ const u=localStorage.getItem('ragintel_user'); return (u && u!=='(token)') ? u : 'Siz'; }
+
+// Hesap satırı = sol-alt köşe (sidebar footer). Avatar (baş harf) + isim + çark.
+// Popover içinde ayarlar (tema/font) + giriş/çıkış eylemi.
 function renderAcct(){
-  const uid=localStorage.getItem('ragintel_user'); const a=document.getElementById('acct');
-  a.innerHTML = uid ? `${esc(uid)} · <button onclick="logout()">çıkış</button>`
-                    : `<button onclick="showAuth(true)">Giriş</button>`;
+  const uid=localStorage.getItem('ragintel_user');
+  const btn=document.getElementById('acctBtn'), pa=document.getElementById('popAcct');
+  if(uid){
+    const init=(uid.trim().charAt(0)||'?');
+    btn.innerHTML=`<span class="avatar">${esc(init)}</span>`
+      +`<span class="who"><span class="nm">${esc(uid)}</span><span class="st">Oturum açık</span></span>`
+      +`<span class="cog">⚙</span>`;
+    pa.innerHTML=`<button class="act danger" onclick="logout()">Çıkış yap</button>`;
+  } else {
+    btn.innerHTML=`<span class="avatar">?</span>`
+      +`<span class="who"><span class="nm">Misafir</span><span class="st">Giriş yapılmadı</span></span>`
+      +`<span class="cog">⚙</span>`;
+    pa.innerHTML=`<button class="act" onclick="togglePop(true);showAuth(true)">Giriş yap</button>`;
+  }
 }
+
+// ---- Ayarlar: tema + font (kalıcı, saf sunum — brief §7) --------------------
+const FONT_MAP={s:['14px','14.5px'], m:['15px','15.5px'], l:['16.5px','17px']};
+function applyTheme(t){
+  const dark = t==='dark' || (t==='auto' && window.matchMedia
+               && matchMedia('(prefers-color-scheme:dark)').matches);
+  if(dark) document.documentElement.setAttribute('data-theme','dark');
+  else document.documentElement.removeAttribute('data-theme');
+}
+function applyFont(f){ const m=FONT_MAP[f]||FONT_MAP.m; const r=document.documentElement.style;
+  r.setProperty('--fs-ui',m[0]); r.setProperty('--fs-answer',m[1]); }
+function setTheme(t){ localStorage.setItem('ragintel_theme',t); applyTheme(t); syncSeg(); }
+function setFont(f){ localStorage.setItem('ragintel_fontsize',f); applyFont(f); syncSeg(); }
+function syncSeg(){
+  const t=localStorage.getItem('ragintel_theme')||'auto';
+  const f=localStorage.getItem('ragintel_fontsize')||'m';
+  document.querySelectorAll('#segTheme button').forEach(b=>b.classList.toggle('on',b.dataset.v===t));
+  document.querySelectorAll('#segFont button').forEach(b=>b.classList.toggle('on',b.dataset.v===f));
+}
+function togglePop(close){
+  const p=document.getElementById('pop');
+  if(close===true){ p.classList.add('hidden'); return; }
+  p.classList.toggle('hidden');
+}
+// Popover DIŞINA tıklama kapatır (footer içi tıklamalar — çark, seg, eylem — açık tutar).
+document.addEventListener('click', e=>{
+  if(!e.target.closest('.sb-foot')) document.getElementById('pop').classList.add('hidden');
+});
+// Oto tema: sistem teması değişince (kullanıcı 'auto' seçtiyse) canlı güncelle.
+if(window.matchMedia) matchMedia('(prefers-color-scheme:dark)').addEventListener('change', ()=>{
+  if((localStorage.getItem('ragintel_theme')||'auto')==='auto') applyTheme('auto');
+});
+// Açılışta seçili durumları işaretle (tema/font head'de zaten uygulandı).
+syncSeg();
 async function doLogin(){
   const email=document.getElementById('li_email').value.trim(), pw=document.getElementById('li_pw').value;
   if(!email||!pw){ authMsg('Email ve şifre girin.'); return; }
@@ -464,7 +610,7 @@ async function ask(question){
   setChatState(true);                                   // ilk soruda composer alta iner
   controller = new AbortController();
   // Optimistik kullanıcı mesajı: istek gitmeden önce listede görünür.
-  out.appendChild(el(`<div class="msg user"><div class="role">Siz</div>${esc(question)}</div>`));
+  out.appendChild(el(`<div class="msg user"><div class="role">${esc(userLabel())}</div>${esc(question)}</div>`));
   const card=el('<div class="card"><div class="prog"></div></div>'); out.appendChild(card);
   follow=true; toBottom();
   const prog=card.querySelector('.prog');
@@ -561,7 +707,7 @@ out.addEventListener('click', e=>{
 function answerCardHTML(resp, injected, seq){
   const c = resp.confidence||'low';
   const label = {high:'yüksek güven',medium:'orta güven',low:'düşük güven'}[c]||c;
-  let h = `<span class="badge b-${c}">${label}</span>`;
+  let h = `<div class="role">ragintel</div><span class="badge b-${c}">${label}</span>`;
   if(injected) h += `<div class="warn">⚠ Soruda şüpheli kalıp işaretlendi (reddedilmedi; kayda geçti).</div>`;
   // Atıf çiplerinin hover metni için n → "dosya s.X" haritası.
   const smap = {};
@@ -730,8 +876,8 @@ async function openConversation(id){
     // Geçmiş SALT-OKUMA transcript (checkpoint'ten değil, conversation_messages'tan).
     messages.forEach(m=> out.appendChild(el(
       m.role==='user'
-        ? `<div class="msg user"><div class="role">Siz</div>${esc(m.content)}</div>`
-        : `<div class="msg asst"><div class="role">Asistan</div><div class="answer">${answerHtml(m.content)}</div></div>`)));
+        ? `<div class="msg user"><div class="role">${esc(userLabel())}</div>${esc(m.content)}</div>`
+        : `<div class="msg asst"><div class="role">ragintel</div><div class="answer">${answerHtml(m.content)}</div></div>`)));
     setChatState(messages.length>0);
     if(window.innerWidth<=820) document.getElementById('sidebar').classList.add('hidden');
     loadConversations(); toBottom();
