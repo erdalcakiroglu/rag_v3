@@ -17,6 +17,10 @@
       var M = {s:['14px','14.5px'], m:['15px','15.5px'], l:['16.5px','17px']}[f];
       if(M){ var r=document.documentElement.style;
              r.setProperty('--fs-ui',M[0]); r.setProperty('--fs-answer',M[1]); }
+      var fam = localStorage.getItem('ragintel_fontfamily');
+      var F = {serif:'Georgia,"Iowan Old Style","Times New Roman",serif',
+               sans:'-apple-system,Segoe UI,Roboto,sans-serif'}[fam];
+      if(F) document.documentElement.style.setProperty('--font-answer', F);
     }catch(e){}
   })();
 </script>
@@ -343,6 +347,11 @@
           <button type="button" data-v="m" onclick="setFont('m')">Orta</button>
           <button type="button" data-v="l" onclick="setFont('l')">Büyük</button>
         </div>
+        <div class="lbl">Yazı tipi</div>
+        <div class="seg" id="segFam">
+          <button type="button" data-v="serif" onclick="setFamily('serif')">Serif</button>
+          <button type="button" data-v="sans" onclick="setFamily('sans')">Sans</button>
+        </div>
         <div id="popAcct"></div>
       </div>
       <button class="acctbtn" id="acctBtn" onclick="togglePop()" aria-haspopup="true"></button>
@@ -475,8 +484,13 @@ function authTab(which){
 }
 function authMsg(t, ok){ const m=document.getElementById('authmsg'); m.textContent=t||''; m.className='authmsg'+(t?(ok?' ok':' err'):''); }
 function showAuth(show){ document.getElementById('auth').classList.toggle('hidden', !show); }
-// Sohbette kullanıcı mesajının rol etiketi = kullanıcı adı (token/misafirse "Siz").
-function userLabel(){ const u=localStorage.getItem('ragintel_user'); return (u && u!=='(token)') ? u : 'Siz'; }
+// Sohbette kullanıcı mesajının rol etiketi = KULLANICI ADI. Email ise @ öncesi
+// yerel kısım gösterilir (tam adres değil); token/misafirse "Siz".
+function userLabel(){
+  const u=localStorage.getItem('ragintel_user');
+  if(!u || u==='(token)') return 'Siz';
+  return u.includes('@') ? u.split('@')[0] : u;
+}
 
 // Hesap satırı = sol-alt köşe (sidebar footer). Avatar (baş harf) + isim + çark.
 // Popover içinde ayarlar (tema/font) + giriş/çıkış eylemi.
@@ -484,9 +498,9 @@ function renderAcct(){
   const uid=localStorage.getItem('ragintel_user');
   const btn=document.getElementById('acctBtn'), pa=document.getElementById('popAcct');
   if(uid){
-    const init=(uid.trim().charAt(0)||'?');
+    const nm=userLabel(); const init=(nm.charAt(0)||'?');
     btn.innerHTML=`<span class="avatar">${esc(init)}</span>`
-      +`<span class="who"><span class="nm">${esc(uid)}</span><span class="st">Oturum açık</span></span>`
+      +`<span class="who"><span class="nm">${esc(nm)}</span><span class="st">Oturum açık</span></span>`
       +`<span class="cog">⚙</span>`;
     pa.innerHTML=`<button class="act danger" onclick="logout()">Çıkış yap</button>`;
   } else {
@@ -499,6 +513,10 @@ function renderAcct(){
 
 // ---- Ayarlar: tema + font (kalıcı, saf sunum — brief §7) --------------------
 const FONT_MAP={s:['14px','14.5px'], m:['15px','15.5px'], l:['16.5px','17px']};
+const FAM_MAP={serif:'Georgia,"Iowan Old Style","Times New Roman",serif',
+               sans:'-apple-system,Segoe UI,Roboto,sans-serif'};
+function applyFamily(f){ document.documentElement.style.setProperty('--font-answer', FAM_MAP[f]||FAM_MAP.serif); }
+function setFamily(f){ localStorage.setItem('ragintel_fontfamily',f); applyFamily(f); syncSeg(); }
 function applyTheme(t){
   const dark = t==='dark' || (t==='auto' && window.matchMedia
                && matchMedia('(prefers-color-scheme:dark)').matches);
@@ -512,8 +530,10 @@ function setFont(f){ localStorage.setItem('ragintel_fontsize',f); applyFont(f); 
 function syncSeg(){
   const t=localStorage.getItem('ragintel_theme')||'auto';
   const f=localStorage.getItem('ragintel_fontsize')||'m';
+  const fam=localStorage.getItem('ragintel_fontfamily')||'serif';
   document.querySelectorAll('#segTheme button').forEach(b=>b.classList.toggle('on',b.dataset.v===t));
   document.querySelectorAll('#segFont button').forEach(b=>b.classList.toggle('on',b.dataset.v===f));
+  document.querySelectorAll('#segFam button').forEach(b=>b.classList.toggle('on',b.dataset.v===fam));
 }
 function togglePop(close){
   const p=document.getElementById('pop');
