@@ -137,9 +137,38 @@ _V4_RULE = (
 )
 SYSTEM_PROMPT_V4 = SYSTEM_PROMPT_V2.replace(_V4_ANCHOR, _V4_RULE + _V4_ANCHOR, 1)
 
+# v5 — M-18: cevap YAPISI (paragraf/madde) nudge. DAVRANIŞ değişikliği → k=3 karne + honesty
+# HARD gate (≥12/15) ZORUNLU (bkz. docs/Brief_M18_Prompt_Yapi_Nudge.md). FE render (mdBlocks)
+# ZATEN canlıda; eksik olan modelin yapı üretmesi. v2'deki "düz paragraf / madde imi KULLANMA"
+# satırı grounding disiplini için KASITLIYDI (madde imi → alıntısız yapısal metin: liste-girişi/
+# başlık → coverage düşer → honesty düşer). v5 bunu gevşetir AMA güvenliği KORUR: her madde
+# TEK BAŞINA citation-bağlı bir iddia, başlık/liste-girişi/dolgu satırı YASAK kalır.
+#
+# TEK DEĞİŞKEN GARANTİSİ (v4 deseni; ama INSERT değil REPLACE): gövde CANLI sürümden (v2)
+# PROGRAMATİK türetilir — YALNIZCA uzunluk/biçim satırı (`_V5_TARGET`) değişir, kalan her
+# karakter v2 ile birebir aynıdır (round-trip byte-eşitlik: tests/test_faz_m18_prompt_v5.py).
+# Taban v1 DEĞİL: v2'nin GROUNDING (KATI) + REDDETME bloklarını korur (M-16 kazanımı). Taban
+# değişirse `V5_BASE` güncellenmeli.
+#
+# RİSK (karne bunun için koşulur): madde imi → alıntısız yapısal satır → coverage/honesty düşüşü.
+# Kabul koşulu (§4): honesty ≥12/15 SERT + faith/prec Δ≥−0.03 + fallback artmaz + citation
+# yerleşimi bozulmaz + alıntısız-yapı sızmaz. Biri düşerse v5 REDDEDİLİR, v2 kalır.
+V5_BASE = "v2"                                    # v5'in türetildiği CANLI sürüm
+_V5_TARGET = (
+    "- KISA ve ÖZ yaz (3-6 cümle, düz paragraf). Başlık/madde imi KULLANMA. Her cümle bir "
+    "citation ile desteklenmeli; destekleyemeyeceğin cümleyi YAZMA."
+)
+_V5_RULE = (
+    "- Cevabı OKUNUR biçimle: mantıklı yerlerde paragraflara böl; birden çok ayrı olgu "
+    "sıralıyorsan madde imleri (`- `) kullan — AMA her madde TEK BAŞINA bir citation'a bağlı "
+    "bir iddia olmalı. ALINTISIZ hiçbir satır yazma: başlık, liste-girişi ('şunlar önemlidir:') "
+    "veya dolgu/geçiş cümlesi EKLEME. Kısa ve öz kal; destekleyemeyeceğin cümleyi/maddeyi YAZMA."
+)
+SYSTEM_PROMPT_V5 = SYSTEM_PROMPT_V2.replace(_V5_TARGET, _V5_RULE, 1)
+
 # Kod-içi versiyon kaydı (DB seed kaynağı + fallback). DB (app_config prompts) kazanır.
 PROMPT_VERSIONS = {"v1": DEFAULT_SYSTEM_PROMPT, "v2": SYSTEM_PROMPT_V2,
-                   "v3": SYSTEM_PROMPT_V3, "v4": SYSTEM_PROMPT_V4}
+                   "v3": SYSTEM_PROMPT_V3, "v4": SYSTEM_PROMPT_V4, "v5": SYSTEM_PROMPT_V5}
 
 
 def load_system_prompt(cfg: EffectiveConfig) -> str:

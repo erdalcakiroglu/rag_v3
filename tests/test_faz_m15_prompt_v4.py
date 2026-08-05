@@ -80,4 +80,4 @@ def test_v4_registered_and_others_untouched():
     assert PROMPT_VERSIONS["v4"] is SYSTEM_PROMPT_V4
     assert PROMPT_VERSIONS["v1"] is DEFAULT_SYSTEM_PROMPT      # v1 gövdesi değişmedi
     assert PROMPT_VERSIONS["v2"] is SYSTEM_PROMPT_V2           # canlı gövde değişmedi
-    assert set(PROMPT_VERSIONS) == {"v1", "v2", "v3", "v4"}
+    assert set(PROMPT_VERSIONS) == {"v1", "v2", "v3", "v4", "v5"}  # M-18: v5 eklendi
