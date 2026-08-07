@@ -75,6 +75,24 @@ def l2_normalize(vec: list[float]) -> list[float]:
     return [x / n for x in vec]
 
 
+def sanitize_for_embed(text: str) -> str:
+    """Deterministik embed-500 için SON ÇARE sanitizasyonu (yalnız fallback yolunda).
+
+    Uzak embed ucu (H200 Open WebUI/Ollama proxy'si) belirli PIPE-ayraçlı flatten-
+    tablo token dizilerinde deterministik HTTP 500 veriyor (ölçüldü 2026-08-05:
+    "5411 sayılı Bankacılık Kanunu.pdf" chunk#266 `POZİSYON UNVANI | ADEDİ\n…`;
+    3/3 500, yük değil, kodumuz değil — dar bir uzak-sunucu bug'ı). Ayracı ('|')
+    boşlukla değiştirmek 500'ü gideriyor (asciifi/NFC/pipe→tab denendi; etkili
+    olan tek dönüşüm bu). Satır sonları KORUNUR (tablo satır yapısı; zehir yalnız
+    pipe token'ı). SADECE tek-chunk kalıcı 5xx'te ve metin GERÇEKTEN değişiyorsa
+    çağrılır; değişmiyorsa fallback anlamsızdır → gerçek altyapı arızası yükseltilir.
+
+    Saklanan `chunk_text` bu dönüşümden ETKİLENMEZ — yalnız gönderilen embed payload'ı
+    temizlenir; sapma `qc_findings('embed_sanitized')` ile şeffafça işaretlenir.
+    """
+    return text.replace("|", " ")
+
+
 class Embedder(Protocol):
     model_name: str
     def embed_batch(self, texts: list[str]) -> list[list[float]]: ...

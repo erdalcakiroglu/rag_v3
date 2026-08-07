@@ -26,7 +26,12 @@ from ...database.ingestion_repo import insert_metric, insert_qc_finding
 from ...observability.logging import bind_context, clear_context, get_logger
 from ...observability.tracing import add_event, set_span_attributes, start_span
 from ..chunking.chunk import Chunk
-from .embedder import EmbeddingBackendError, OllamaEmbedder, model_stamp
+from .embedder import (
+    EmbeddingBackendError,
+    OllamaEmbedder,
+    model_stamp,
+    sanitize_for_embed,
+)
 from .quality import compute_embed_metrics, is_bad_vector, mean_pairwise_cosine
 
 EMBED_STEP = "embed"
@@ -85,8 +90,16 @@ class EmbeddingService:
         """DB'siz: chunk'ları embed eder, QC uygular. EmbeddingBackendError
         fırlatabilir (erişilemezlik/kalıcı hata)."""
         texts = [c.chunk_text for c in chunks]
-        stats = {"requests": 0, "retries": 0, "halvings": 0}
+        stats = {"requests": 0, "retries": 0, "halvings": 0, "sanitized_texts": []}
         vectors = self._embed_all(texts, stats)   # aligned; hata -> raise
+
+        # SON-ÇARE sanitize fallback (bkz. sanitize_for_embed): hangi chunk'ın
+        # vektörü temizlenmiş metinden üretildi? Orijinal metinle eşleşerek işaretle.
+        sanitized = set(stats.get("sanitized_texts", []))
+        sanitized_indexes = (
+            [c.chunk_index for c in chunks if c.chunk_text in sanitized]
+            if sanitized else []
+        )
 
         items: list[EmbeddedChunk] = []
         good: list[list[float]] = []
@@ -110,11 +123,15 @@ class EmbeddingService:
             "batch_size": self.batch_size,
             "model_name": self.model_name,
             "failed_chunk_indexes": failed_indexes[:50],
+            "sanitized_chunk_indexes": sanitized_indexes[:50],
+            "sanitized_count": len(sanitized_indexes),
         })
 
         findings: list[str] = []
         if failed_indexes:
             findings.append("embed_failed")
+        if sanitized_indexes:
+            findings.append("embed_sanitized")
         if len(good) >= 2 and anomaly > self.embed_cfg.anomaly_cosine_high:
             findings.append("embed_anomaly")
 
@@ -149,6 +166,11 @@ class EmbeddingService:
                     for idx in result.metrics["failed_chunk_indexes"]:
                         insert_qc_finding(conn, file_id=file_id, finding="embed_failed",
                                           detail=f"chunk_index={idx}")
+                    for idx in result.metrics.get("sanitized_chunk_indexes", []):
+                        insert_qc_finding(
+                            conn, file_id=file_id, finding="embed_sanitized",
+                            detail=f"chunk_index={idx} (pipe→boşluk; vektör sanitize "
+                                   f"metinden, chunk_text orijinal)")
                     if "embed_anomaly" in result.findings:
                         insert_qc_finding(
                             conn, file_id=file_id, finding="embed_anomaly",
@@ -218,6 +240,29 @@ class EmbeddingService:
             self.log.warning("embed_batch_halving", size=len(texts))
             return (self._process_batch(texts[:mid], stats)
                     + self._process_batch(texts[mid:], stats))
+
+        # Tek chunk hâlâ kalıcı 5xx. SON ÇARE (ölçüldü 2026-08-05): uzak embed ucu
+        # belirli PIPE-ayraçlı flatten-tablo token dizilerinde deterministik 500
+        # veriyor. Ayracı temizlenmiş varyantı TEK KEZ dene — metin GERÇEKTEN
+        # değişiyor VE varyant geçiyorsa dosya tamamlanır (sessiz kayıp YOK: sapma
+        # qc_finding 'embed_sanitized' ile işaretlenir, saklanan chunk_text ORİJİNAL
+        # kalır, yalnız vektör sanitize metinden üretilir). Varyant da 500/timeout
+        # veriyorsa bu bir içerik-tetikli bug DEĞİL gerçek altyapı arızasıdır → aşağıda
+        # yükselt (discipline b: kalite ölçümü sessizce fail-open OLMAZ).
+        if len(texts) == 1 and isinstance(last_exc, httpx.HTTPStatusError):
+            cleaned = sanitize_for_embed(texts[0])
+            if cleaned != texts[0]:
+                stats["requests"] += 1
+                try:
+                    with start_span("embed.http", component="embed_http",
+                                    request_batch_size=1, retry_attempt=0,
+                                    model_name=self.model_name, sanitized=True):
+                        vectors = self.embedder.embed_batch([cleaned])
+                    stats.setdefault("sanitized_texts", []).append(texts[0])
+                    self.log.warning("embed_sanitized_fallback", chars=len(texts[0]))
+                    return vectors
+                except (httpx.HTTPStatusError, httpx.TimeoutException):
+                    pass   # varyant da patladı -> gerçek arıza, aşağıda yükselt
 
         raise EmbeddingBackendError(
             f"Ollama kalıcı hata (tek istek {self.retries} denemede başarısız): {last_exc}"
