@@ -99,6 +99,37 @@ def test_embed_anomaly_on_identical_vectors():
     assert "embed_anomaly" in res.findings
 
 
+def test_sanitize_fallback_recovers_poison_table_chunk():
+    # Uzak uç pipe-ayraçlı chunk'ta deterministik 500; halving tek chunk'a
+    # iner, sanitize (pipe→boşluk) varyantı geçer -> dosya kaybetmeden tamamlanır.
+    poison = "POZİSYON | ADEDİ\nToplam | 155"
+    chunks = [Chunk(0, "temiz metin", "temiz metin", 5),
+              Chunk(1, poison, poison, 5),
+              Chunk(2, "diğer metin", "diğer metin", 5)]
+    res = _svc(om.poison_handler(), batch_size=4).embed_chunks(chunks)
+    assert res.metrics["embedded"] == 3 and res.metrics["failed"] == 0   # kayıp YOK
+    assert res.metrics["sanitized_count"] == 1
+    assert 1 in res.metrics["sanitized_chunk_indexes"]
+    assert "embed_sanitized" in res.findings
+    # parite: her chunk için vektör var.
+    assert all(i.vector is not None for i in res.items)
+
+
+def test_sanitize_fallback_not_triggered_on_real_outage():
+    # Marker olmayan gerçek altyapı arızası (her şey 500) -> sanitize metni
+    # değiştirmez, fallback tetiklenmez -> HARD HALT (discipline b).
+    with pytest.raises(EmbeddingBackendError):
+        _svc(om.poison_handler(marker=""), batch_size=4).embed_chunks(_chunks(4))
+
+
+def test_sanitize_fallback_reraises_when_variant_also_500s():
+    # Sanitize edilmiş metin de 500 verirse (boşluk da zehir) -> içerik-tetikli
+    # değil gerçek arıza -> yükselt, sessizce yutma.
+    with pytest.raises(EmbeddingBackendError):
+        _svc(om.poison_handler(marker=" "), batch_size=4).embed_chunks(
+            [Chunk(0, "a | b", "a | b", 5)])
+
+
 def test_1000_chunks_completes():
     stats = {}
     res = _svc(om.ok_handler(stats), batch_size=64).embed_chunks(_chunks(1000))

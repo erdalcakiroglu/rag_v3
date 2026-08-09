@@ -71,6 +71,22 @@ def size_gated_handler(ok_max_size: int, status: int = 503):
     return handler
 
 
+def poison_handler(marker: str = "|", status: int = 500, stats: dict | None = None):
+    """İçinde `marker` GEÇEN herhangi bir metin varsa `status` (deterministik);
+    aksi halde 200. Uzak embed ucunun pipe-ayraçlı flatten-tablo token dizisinde
+    verdiği içerik-tetikli 500'ü taklit eder (sanitize-fallback testi)."""
+    def handler(request):
+        if stats is not None:
+            stats["calls"] = stats.get("calls", 0) + 1
+        body = json.loads(request.content)
+        texts = body["input"]
+        if any(marker in t for t in texts):
+            return httpx.Response(status, json={"error": "poison token"})
+        embs = [_vec(t) for t in texts]
+        return httpx.Response(200, json={"model": "bge-m3", "embeddings": embs})
+    return handler
+
+
 def unreachable_handler(exc=None):
     """Bağlantı hatası (erişilemezlik) simülasyonu."""
     def handler(request):
