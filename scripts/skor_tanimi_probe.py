@@ -16,9 +16,11 @@ Gerçek chunking kusuru olan tek grup `token_count > max_tokens`: bölünemeyen
 tablo satırları (bütçe tutturulamamış).
 
 NE ÖLÇER (hiçbir şey değiştirmeden, iki tanımı yan yana):
-  §1 ÖLÇÜM-ARACI DOĞRULAMASI — core_chunks'tan yeniden hesaplanan ESKİ skor,
-     core_files.quality_score ile tutuyor mu? Tutmuyorsa modelim yanlıştır ve
-     §3-§5 okunmaz. [[olcum-zemini-dersleri]]
+  §1 SAKLANAN SKOR YENİ TANIMDA MI? — core_chunks'tan yeniden hesaplanan skor,
+     core_files.quality_score ile tutuyor mu? (Yeniden-hesaptan ÖNCE bu bölüm
+     "eski formül üretilebiliyor mu?" idi ve 1119/1119 tutuyordu — ölçüm aracı
+     o zaman doğrulandı. Yeniden-hesap yapıldıktan sonra aynı karşılaştırma
+     doğal olarak YENİ tanımı hedefler.) [[olcum-zemini-dersleri]]
   §2 Korpus token kovaları (min-altı / orta / tam-max / max-üstü)
   §3 Eski vs yeni dağılım (chunk alt skoru + bileşik quality_score)
   §4 En düşük 10 — iki sıralama yan yana: yeni sıralama GERÇEKTEN bozuk
@@ -108,6 +110,18 @@ class _Sahte:
     section_title: str | None
 
 
+def _eski_chunk_score(n: int, min_alti: int, tam_max: int, max_ustu: int) -> float:
+    """5fa341d ÖNCESİ formül — ELLE yazılmış, kasıtlı.
+
+    Bu probe ilk koşumunda eski skoru üretmek için `compute_chunk_metrics`'i
+    çağırıyordu ("doğrulamak istediğim şeyi varsaymayayım"). 5fa341d o
+    fonksiyonu DÜZELTTİ; artık yeni tanımı uyguluyor. Dolayısıyla eski tanım
+    ancak burada elle yaşayabilir — yoksa §3/§4 "eski vs yeni" diye iki AYNI
+    sütun basar (ölçüm aracı sessizce körelir).
+    """
+    return round(100.0 * (1 - (tam_max + max_ustu) / n) * (1 - min_alti / n), 2)
+
+
 def _force_utf8() -> None:
     for stream in (sys.stdout, sys.stderr):
         rc = getattr(stream, "reconfigure", None)
@@ -177,16 +191,15 @@ def main() -> int:
             saklanan = float(saklanan) if saklanan is not None else None
             n, min_alti, tam_max, max_ustu, _tablo = kova
 
-            # ESKİ chunk_score: üretim fonksiyonunun KENDİSİ ile üret (yeniden
+            eski_ch = _eski_chunk_score(n, min_alti, tam_max, max_ustu)
+            # YENİ chunk_score: üretim fonksiyonunun KENDİSİ ile üret (yeniden
             # yazmak, doğrulamak istediğim şeyi varsaymak olurdu).
             sahte = ([_Sahte(min_t - 1, False, None)] * min_alti
                      + [_Sahte(max_t, False, None)] * tam_max
                      + [_Sahte(max_t + 1, False, None)] * max_ustu
                      + [_Sahte(min_t, False, None)] * (n - min_alti - tam_max - max_ustu))
-            eski_ch = compute_chunk_metrics(sahte, max_tokens=max_t,
+            yeni_ch = compute_chunk_metrics(sahte, max_tokens=max_t,
                                             min_tokens=min_t)["chunk_score"]
-            # YENİ: yalnız bütçe AŞIMI ceza; tavana değmek normal pencereleme.
-            yeni_ch = round(100.0 * (1 - max_ustu / n) * (1 - min_alti / n), 2)
 
             subs = qc._extract_sub_scores(per_file_metrics.get(fid, []))  # noqa: SLF001
 
@@ -201,22 +214,24 @@ def main() -> int:
 
         # ---------------------------------------------------------------- §1
         print("\n" + "=" * 78)
-        print("§1 ÖLÇÜM-ARACI DOĞRULAMASI (eski formül yeniden üretilebiliyor mu?)")
+        print("§1 SAKLANAN SKOR, YENİ TANIMLA TUTUYOR MU?")
         print("=" * 78)
-        kiyas = [(f, a, sk, es) for f, a, sk, es, *_ in satirlar if sk is not None]
-        tutan = [1 for _f, _a, sk, es in kiyas if es is not None and abs(sk - es) <= 0.05]
+        print("  (yeniden-hesaptan SONRA 1119/1119 tutmalı; sapan varsa o dosyalar")
+        print("   ya --yaz'dan sonra ingest edildi ya da tanım yine değişti)")
+        kiyas = [(f, a, sk, yn) for f, a, sk, _es, yn, *_ in satirlar if sk is not None]
+        tutan = [1 for _f, _a, sk, yn in kiyas if yn is not None and abs(sk - yn) <= 0.05]
         print(f"  karşılaştırılan dosya : {len(kiyas)}")
         print(f"  birebir tutan (±0.05) : {len(tutan)}")
-        sapan = sorted(((abs(sk - es), f, a, sk, es)
-                        for f, a, sk, es in kiyas if es is not None
-                        and abs(sk - es) > 0.05), reverse=True)[:10]
+        sapan = sorted(((abs(sk - yn), f, a, sk, yn)
+                        for f, a, sk, yn in kiyas if yn is not None
+                        and abs(sk - yn) > 0.05), reverse=True)[:10]
         if sapan:
             print(f"  ⚠ SAPAN {len(kiyas) - len(tutan)} dosya — en büyük 10:")
-            for d, f, a, sk, es in sapan:
-                print(f"      [{f}] {a[:44]:<44} saklanan={sk:6.2f} yeniden={es:6.2f} Δ={d:.2f}")
-            print("  ⚠ Model tutmuyor → §3-§5 OKUNMAZ, önce sapmanın kökü bulunmalı.")
+            for d, f, a, sk, yn in sapan:
+                print(f"      [{f}] {a[:44]:<44} saklanan={sk:6.2f} yeni={yn:6.2f} Δ={d:.2f}")
+            print("  → bu dosyalar için `--yaz` yeniden koşulmalı (idempotent).")
         else:
-            print("  ✓ tutuyor → aşağıdaki yeni-tanım sayıları güvenilir.")
+            print("  ✓ saklanan skorlar yeni tanımda — yeniden-hesap gerekmiyor.")
 
         # ---------------------------------------------------------------- §2
         print("\n" + "=" * 78)
@@ -286,8 +301,10 @@ def main() -> int:
         print("§7 YENİDEN HESAP" + ("" if args.yaz else "  (KOŞULMADI — --yaz ile açılır)"))
         print("=" * 78)
         if not args.yaz:
+            # Ne değişir? SAKLANAN skor ile yeni tanımın farkı — eski/yeni FORMÜL
+            # farkı değil (formül farkı yeniden-hesaptan sonra zaten sıfırlandı).
             degisen = sum(1 for r in satirlar
-                          if r[3] is not None and r[4] is not None and abs(r[4] - r[3]) > 0.005)
+                          if r[2] is not None and r[4] is not None and abs(r[4] - r[2]) > 0.005)
             print(f"  --yaz verilseydi skoru değişecek dosya: {degisen}/{len(satirlar)}")
             print("  yazılacak yerler: metrics_ingestion.detail (3 anahtar), "
                   "core_files.quality_score, qc_findings.resolved")
