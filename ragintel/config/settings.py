@@ -562,8 +562,9 @@ class CleanThresholds(BaseModel):
 class ChunkThresholds(BaseModel):
     soft_flag_truncated_ratio: float = Field(
         default=0.30, ge=0.0, le=1.0,
-        description="max_tokens sınırına dayanıp kesilen chunk'ların oranı bunu aşarsa "
-                    "'chunk_truncation_high' bulgusu — chunking.max_tokens küçük kalıyor olabilir.",
+        description="max_tokens bütçesini AŞAN chunk'ların oranı bunu aşarsa "
+                    "'chunk_truncation_high' bulgusu — bölünemeyen tablo satırları var demektir. "
+                    "Tam max_tokens'ta biten chunk normal pencerelemedir, bu orana GİRMEZ.",
     )
     target_token_p95: int = Field(
         default=512, ge=1, le=4096,

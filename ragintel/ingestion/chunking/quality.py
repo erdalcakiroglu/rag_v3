@@ -1,8 +1,25 @@
 """Chunk aşama kalite ölçümü (Ek-A İP-5). Yalnızca ÖLÇER — eşik sabiti yok.
 
-Girdiler: token dağılımı (ort/p95), min-altı oranı, max'ta kesilen oranı
+Girdiler: token dağılımı (ort/p95), min-altı oranı, bütçe-aşımı oranı
 (truncated_ratio), section hizalama oranı. Kararlar (soft flag) adaptörde
 app_config('quality').chunk'tan okunur.
+
+`truncated_ratio` = token_count > max_tokens (2026-08-09'da DÜZELTİLDİ; eskiden
+`>=` idi). Gerekçe ÖLÇÜLDÜ (1119 dosya / 50065 chunk, canlı korpus):
+  * Tavana DEĞMEK bu boru hattında içerik kaybı değil — gövde pencereleri
+    overlap'li (chunker._window_ranges), tablolar satır-gruplarına bölünüyor,
+    hiçbir chunk bge-m3'ün 8192 penceresini aşmıyor. Tam max'ta bitmek uzun
+    bir bölümün NORMAL sonucudur: korpusun %32.56'sı tam 512'de.
+  * `>=` bunu skora çarpan olarak sokunca skor kaliteyi değil UZUNLUĞU
+    cezalandırıyordu: 991440.pdf (528 chunk, min-altı 0, aşım 0 — kusursuz)
+    chunk skoru 18.37 alıp en kötü 4. sıraya düşüyordu; düzeltmeyle 100.00.
+  * `chunk_truncation_high` bulgusunun 132 örneğinin TAMAMI bu yüzden sahteydi
+    (yeni tanımla 0 dosya). Ölçüm: scripts/skor_tanimi_probe.py.
+Bütçeyi gerçekten AŞAN chunk (>max) ise gerçek bir chunking kusurudur:
+bölünemeyen tablo satırı, bütçe tutturulamamış (korpusta %0.44).
+
+`at_max_ratio` bilgi olarak KALIR (skora girmez) — eski `truncated_ratio` ile
+karşılaştırılabilirlik ve "max_tokens küçük mü?" sorusu için.
 """
 
 from __future__ import annotations
@@ -30,6 +47,7 @@ def compute_chunk_metrics(chunks: list[Chunk], *, max_tokens: int,
     if total == 0:
         return {"chunk_count": 0, "token_avg": 0.0, "token_p95": 0.0,
                 "below_min_ratio": 0.0, "truncated_ratio": 0.0,
+                "at_max_ratio": 0.0,
                 "section_alignment_ratio": 0.0, "table_chunks": 0,
                 "chunk_score": 0.0}
 
@@ -37,7 +55,8 @@ def compute_chunk_metrics(chunks: list[Chunk], *, max_tokens: int,
     body = [c for c in chunks if not c.is_table]
 
     below_min = sum(1 for t in tokens if t < min_tokens)
-    truncated = sum(1 for t in tokens if t >= max_tokens)
+    truncated = sum(1 for t in tokens if t > max_tokens)    # bütçe AŞIMI (bkz. modül başlığı)
+    at_max = sum(1 for t in tokens if t == max_tokens)      # normal pencereleme — yalnız bilgi
     aligned = sum(1 for c in body if c.section_title)
 
     below_min_ratio = below_min / total
@@ -53,6 +72,7 @@ def compute_chunk_metrics(chunks: list[Chunk], *, max_tokens: int,
         "token_max": max(tokens),
         "below_min_ratio": round(below_min_ratio, 4),
         "truncated_ratio": round(truncated_ratio, 4),
+        "at_max_ratio": round(at_max / total, 4),
         "section_alignment_ratio": round(section_alignment, 4),
         "table_chunks": sum(1 for c in chunks if c.is_table),
         "chunk_score": chunk_score,

@@ -11,7 +11,8 @@ import pytest
 
 from ragintel.config.loader import load_config
 from ragintel.ingestion.chunking import ChunkAdapter, WordTokenCounter
-from ragintel.ingestion.parsing.parsed_document import Page, ParsedDocument, Section
+from ragintel.ingestion.parsing.parsed_document import Page, ParsedDocument, Section, Table
+from ragintel.ingestion.parsing.text_utils import flatten_table
 
 pytestmark = pytest.mark.db
 
@@ -57,6 +58,18 @@ def _long_doc():
                           sections=[Section("Bölüm", 1, 1)])
 
 
+def _table_doc():
+    """Satır-grubu bütçeye sığmayan tablo: her (başlık + tek satır) 10 token
+    ('a | b | c' → '|' de token), alt-chunk bütçesi 8 → daha küçüğe bölünemez."""
+    rows = [["bas1", "bas2", "bas3"], ["r1a", "r1b", "r1c"],
+            ["r2a", "r2b", "r2c"], ["r3a", "r3b", "r3c"]]
+    return ParsedDocument(
+        pages=[Page(1, ["Bölüm"])],
+        sections=[Section("Bölüm", 1, 1)],
+        tables=[Table(index=0, data=rows, flattened_text=flatten_table(rows), page_no=1)],
+    )
+
+
 def _cfg(chunking: dict):
     """Fake app_config: chunking DB katmanından gelir (diğerleri default)."""
     return load_config(db_reader=lambda: {"chunking": chunking})
@@ -77,12 +90,28 @@ def test_chunk_metric_written(live_db):
 
 def test_truncation_high_opens_qc_finding(live_db):
     fid = _insert_file(live_db, "ip5t1")
-    # Küçük max -> çoğu chunk tam max'ta -> truncated_ratio > 0.30
-    cfg = _cfg({"strategy": "section", "max_tokens": 10, "overlap_tokens": 2, "min_tokens": 1})
-    out = ChunkAdapter(live_db, config=cfg, counter=WordTokenCounter()).chunk_file(fid, _long_doc())
+    # Bütçeyi AŞAN chunk yalnızca bölünemeyen tablo satırından çıkar: başlık+tek
+    # satır (10 token) alt-chunk bütçesini (8) aşıyor, daha küçüğe bölünemiyor.
+    cfg = _cfg({"strategy": "section", "max_tokens": 8, "overlap_tokens": 2,
+                "min_tokens": 1, "table_subchunk_max_tokens": 8})
+    out = ChunkAdapter(live_db, config=cfg, counter=WordTokenCounter()).chunk_file(fid, _table_doc())
 
     assert out.metrics["truncated_ratio"] > 0.30
     assert "chunk_truncation_high" in _findings(live_db, fid)
+
+
+def test_at_max_chunks_do_not_open_truncation_finding(live_db):
+    """REGRESYON: eski `>=` tanımında bu senaryo (küçük max → her chunk tam
+    max'ta) bulguyu açıyordu. Canlı korpusta 132 `chunk_truncation_high`
+    bulgusunun TAMAMI bu yüzden sahteydi (yeni tanımla 0 dosya). Tavana değmek
+    overlap'li pencerelemenin normal sonucudur, kusur değil."""
+    fid = _insert_file(live_db, "ip5t3")
+    cfg = _cfg({"strategy": "section", "max_tokens": 10, "overlap_tokens": 2, "min_tokens": 1})
+    out = ChunkAdapter(live_db, config=cfg, counter=WordTokenCounter()).chunk_file(fid, _long_doc())
+
+    assert out.metrics["at_max_ratio"] > 0.30        # senaryo gerçekten tavana değiyor
+    assert out.metrics["truncated_ratio"] == 0.0     # ama bütçe aşımı yok
+    assert "chunk_truncation_high" not in _findings(live_db, fid)
 
 
 def test_no_truncation_flag_with_large_max(live_db):
