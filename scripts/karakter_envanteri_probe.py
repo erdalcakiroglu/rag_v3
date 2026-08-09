@@ -308,6 +308,23 @@ def bolum_b(db, dosya_adi: str) -> int:
         print("  Bu teshis yalniz PDF icin anlamli.")
         return 1
 
+    # ------------------------------------------------------------------ KONTROL
+    # DB'de BU dosyada kac ayrik-harf var? Bu sayi olmadan yeniden parse sonucu
+    # YORUMLANAMAZ: parse temiz cikarsa iki ayri anlama gelir --
+    #   (a) DB de temizdi  -> dosya secimi yanlisti, olcum bos dondu
+    #   (b) DB bozuktu     -> depolanan korpus bugunku parse'la AYNI DEGIL
+    # Ilk turda bu kontrolu koymadim; sonucu tek basina okunamaz hale getirdi.
+    with db.connection() as conn:
+        db_n = int(conn.execute(
+            "SELECT coalesce(sum(regexp_count(chunk_text, %s)), 0) "
+            "FROM core_chunks WHERE file_id = %s;",
+            (_ALPHA + " [" + _TR + "] ", fid)).fetchone()[0])
+        db_kar = int(conn.execute(
+            "SELECT coalesce(sum(length(chunk_text)), 0) FROM core_chunks "
+            "WHERE file_id = %s;", (fid,)).fetchone()[0])
+    print(f"\n  KONTROL -- DEPOLANMIS chunk'larda ayrik-harf: {db_n:,} "
+          f"({1000*db_n/(db_kar or 1):.2f}/1000, {db_kar:,} karakter)")
+
     from ragintel.ingestion.cleaning.cleaner import clean_document
     from ragintel.ingestion.parsing.docling_backend import DoclingBackend
 
@@ -357,12 +374,35 @@ def bolum_b(db, dosya_adi: str) -> int:
     print("\n" + "=" * 100)
     print("  KARAR NOTU")
     print("=" * 100)
-    print("  HAM parse'ta sag-bosluk kovasi 1'in YANINDA 2 (veya daha fazla) da")
-    print("  iceriyorsa: kelime siniri bilgisi PDF'ten GELIYOR ve onu temizleme")
-    print("  asamasi (cleaner._INLINE_WS) yok ediyor demektir -> onarim MUMKUN,")
-    print("  yeri de parse ciktisidir (temizlemeden ONCE).")
-    print("  Kovanin tamami 1 ise: bilgi PDF'te ZATEN YOK -> mekanik onarim")
-    print("  imkansiz, ancak sezgisel (S4) veya sozluk tabanli yol kalir.")
+    ham_n = sum(1 for _ in _HAM.finditer(ham))
+    print(f"  DEPOLANMIS: {db_n:,}     YENIDEN PARSE: {ham_n:,}")
+    if db_n > max(20, ham_n * 5):
+        print("  -> Depolanan korpus bugunku parse'la AYNI DEGIL. Ayrik-harf bir")
+        print("     PIPELINE kusuru degil, ESKI CIKTININ kalintisi; adim 5 icin")
+        print("     zaten bekleyen reprocess onu kendiliginden temizler. Onarim")
+        print("     kodu YAZILMAMALI -- yazilsa olmayan bir kusuru kovalardi.")
+    elif ham_n > 20:
+        print("  -> Kusur bugunku parse'ta da UREYOR. Sag-bosluk kovasinda 1'in")
+        print("     yaninda 2 varsa kelime siniri bilgisi PDF'ten geliyor ve onu")
+        print("     cleaner._INLINE_WS yok ediyor -> onarim parse ciktisinda,")
+        print("     temizlemeden ONCE mumkun. Kovanin tamami 1 ise bilgi PDF'te")
+        print("     zaten yok -> geriye sezgisel (S4) veya sozluk yolu kalir.")
+    else:
+        print("  -> Iki taraf da temiz: bu DOSYA ayrik-harf tasimiyor, secim")
+        print("     yanlisti. Asagidaki listeden bir dosyayla tekrarlanmali.")
+    if db_n <= max(20, ham_n * 5):
+        # Dogru hedefi ELDE aramak yerine burada verelim -- ayni kosumda.
+        print("\n  --- ayrik-harf YOGUNLUGU en yuksek 12 dosya (yeniden hedef icin) ---")
+        with db.connection() as conn:
+            satirlar = conn.execute(
+                "SELECT f.file_name, sum(regexp_count(c.chunk_text, %s)) AS n, "
+                "       sum(length(c.chunk_text)) AS kar "
+                "FROM core_chunks c JOIN core_files f USING (file_id) "
+                "GROUP BY f.file_name HAVING sum(regexp_count(c.chunk_text, %s)) > 0 "
+                "ORDER BY n DESC LIMIT 12;",
+                (_ALPHA + " [" + _TR + "] ", _ALPHA + " [" + _TR + "] ")).fetchall()
+        for ad, n, kar in satirlar:
+            print(f"      {ad[:46]:<46} {int(n):>8,}  ({1000*int(n)/max(1,int(kar)):.1f}/1000)")
     return 0
 
 
@@ -384,18 +424,25 @@ _IMZA = _c(0x00D5, 0x00FA, 0x00F7, 0x00F8, 0x00F9, 0x0D88,
 _KAYDIR_ALT, _KAYDIR_UST = 0x21, 0x60
 
 
-def _kaydir(metin: str, n: int) -> str:
-    """Yalniz ASCII penceresini kaydirir; ozel harf TABLOSU UYGULAMAZ.
+def _kaydir(metin: str, n: int, alt: int = _KAYDIR_ALT, ust: int = _KAYDIR_UST,
+            *, bosluk_koru: bool = True) -> str:
+    """Verilen pencereyi kaydirir; ozel harf TABLOSU UYGULAMAZ.
 
     Tablo bilerek yok: amac kaydirmanin kendisini VERIDEN dogrulamak. Islev
     sozcuklerinin hepsi diyakritiksizdir, yani dogru kaydirmada tablo olmadan
     da ortaya cikarlar. Tabloyu once uygulasaydik olcut kendi tahminimizi
     dogrulardi -- bu turda iki kez yanildigim yer tam olarak orasi.
+
+    bosluk_koru: GERCEK bosluk/satirsonu kaydirilmaz. Aile-A metninde iki tur
+    bosluk bir arada bulunuyor -- docling'in span aralarina koydugu gercek
+    U+0020 ile, kodlanmis olan (0x20-n). Ilkini kaydirmak onu '=' yapardi.
     """
-    return "".join(
-        chr(ord(ch) + n) if _KAYDIR_ALT <= ord(ch) <= _KAYDIR_UST else ch
-        for ch in metin
-    )
+    korunan = {0x09, 0x0A, 0x0D} | ({0x20} if bosluk_koru else set())
+    out = []
+    for ch in metin:
+        k = ord(ch)
+        out.append(chr(k + n) if (alt <= k <= ust and k not in korunan) else ch)
+    return "".join(out)
 
 
 def _olcut(metin: str) -> dict:
@@ -410,17 +457,24 @@ def _olcut(metin: str) -> dict:
         "imza": 1000 * sum(metin.count(c) for c in _IMZA) / n,
         "rakam": 1000 * sum(ch.isdigit() for ch in metin) / n,
         "ctrl": 1000 * ctrl / n,
+        # Pencere secimi icin SART: islev/1k pencereleri ayirt EDEMEZ (Python \b
+        # kontrol karakterini zaten sinir sayar, dar pencerede de kelimeler
+        # bolunur). Ayrimi bosluk sayisi yapar -- pencereyi 0x20'ye kadar
+        # genisletmek kodlanmis bosluklari geri getirir, 0x20'yi de kaydirmak
+        # ise GERCEK bosluklari yok eder.
+        "bosluk": 1000 * metin.count(" ") / n,
     }
 
 
 def _basli(bas: str) -> None:
     print(f"\n  {'kaynak':<22} {'karakter':>10} {'islev/1k':>9} {'tr/1k':>8} "
-          f"{'imza/1k':>8} {'rakam/1k':>9} {'ctrl/1k':>8}   {bas}")
+          f"{'imza/1k':>8} {'rakam/1k':>9} {'ctrl/1k':>8} {'bosluk/1k':>10}   {bas}")
 
 
 def _satir(ad: str, o: dict, ek: str = "") -> None:
     print(f"  {ad:<22} {o['kar']:>10,} {o['islev']:>9.2f} {o['tr']:>8.2f} "
-          f"{o['imza']:>8.2f} {o['rakam']:>9.2f} {o['ctrl']:>8.2f}   {ek}")
+          f"{o['imza']:>8.2f} {o['rakam']:>9.2f} {o['ctrl']:>8.2f} "
+          f"{o['bosluk']:>10.2f}   {ek}")
 
 
 def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
@@ -536,17 +590,67 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
         print("  HUKUM: tek-degerli bir ASCII kaydirmasi bu dosyayi ACIKLAMIYOR.")
         print("         Bozulma daha karmasik (font-basina glif tablosu) -> mekanik")
         print("         onarim yerine backend/OCR yolu tercih edilmeli.")
-    else:
-        print(f"  HUKUM: +0x{en_iyi:02X} kaydirmasi metni ACIYOR (islev sozcugu "
-              f"{taban:.2f} -> {en_iyi_puan:.2f}/1k).")
-        print("         Bozulma DETERMINISTIK ve geri cevrilebilir. Geriye yalniz")
-        print("         ~10 Turkce harfin tablosu kalir; onu C3 ornekleri verir.")
-        print(f"\n  --- +0x{en_iyi:02X} ile cozulmus ilk satirlar (ozel harf tablosu")
-        print("      UYGULANMADI; kalan bozuk karakterler onarim tablosuna girecek")
-        print("      olanlardir -- tabloyu bu ciktidan kuracagiz) ---")
-        cozulmus = _kaydir(ham, en_iyi)
-        for sat in [s for s in cozulmus.splitlines() if s.strip()][:12]:
-            print(f"      {sat.strip()[:92]}")
+        return 0
+
+    print(f"  HUKUM: +0x{en_iyi:02X} kaydirmasi metni ACIYOR "
+          f"({taban:.2f} -> {en_iyi_puan:.2f}/1k).")
+
+    # ---------------------------------------------------------------- C2b
+    print("\n" + "-" * 100)
+    print("C2b PENCERE -- kaydirma ASCII'nin ALTINA da mi iniyor?")
+    print("-" * 100)
+    print("  Hedef yazdirilabilir ASCII 0x20..0x7E ise kaynak penceresi")
+    print(f"  0x{0x20-en_iyi:02X}..0x{0x7E-en_iyi:02X} olmali -- yani BOSLUK ve RAKAMLAR C0'a duser.")
+    print("  Dar pencere (0x21..0x60) onlari kacirir; C0'daki kontrol karakteri")
+    print("  yigilmasi tam da bunu isaret ediyor. Hangisinin dogru oldugunu")
+    print("  yine olcum soyler.\n")
+    pencereler = [
+        ("dar 0x21..0x60", _KAYDIR_ALT, _KAYDIR_UST, True),
+        (f"genis 0x{0x20-en_iyi:02X}..0x{0x7E-en_iyi:02X}", 0x20 - en_iyi, 0x7E - en_iyi, True),
+        ("genis + bosluk da", 0x20 - en_iyi, 0x7E - en_iyi, False),
+    ]
+    _basli(f"(+0x{en_iyi:02X})")
+    adaylar_p = []
+    for etiket, alt, ust, bk in pencereler:
+        c = _kaydir(ham, en_iyi, alt, ust, bosluk_koru=bk)
+        o = _olcut(c)
+        _satir(etiket, o)
+        adaylar_p.append((etiket, o, c))
+    # SECIM KURALI (acikca yazili, cunku islev/1k burada ayirt edemez):
+    #   1) ctrl/1k en dusuk olan  -> kodlanmis karakterleri gercekten geri getiren
+    #   2) esitlikte bosluk/1k en yuksek olan -> gercek bosluklari bozmayan
+    etiket, o, cozulmus = max(adaylar_p, key=lambda t: (-round(t[1]["ctrl"], 2),
+                                                        t[1]["bosluk"]))
+    print(f"\n  KAZANAN pencere: {etiket}   ctrl/1k={o['ctrl']:.2f} "
+          f"bosluk/1k={o['bosluk']:.2f} rakam/1k={o['rakam']:.2f}")
+    print("  (secim kurali: once en dusuk ctrl/1k = kodlanmis karakteri geri")
+    print("   getiren; esitlikte en yuksek bosluk/1k = gercek boslugu bozmayan)")
+
+    print("\n  --- cozulmus ilk satirlar (ozel harf tablosu UYGULANMADI) ---")
+    for sat in [s for s in cozulmus.splitlines() if s.strip()][:12]:
+        print(f"      {sat.strip()[:92]}")
+
+    # ---------------------------------------------------------------- C3
+    print("\n" + "-" * 100)
+    print("C3 ARTIK KARAKTERLER -- onarim TABLOSU tam olarak bunlardir")
+    print("-" * 100)
+    print("  Kaydirmadan sonra hala ASCII+Turkce disinda kalan her karakter, bir")
+    print("  Turkce harfin yerine gecmis demektir. Baglamdan hangisi oldugu okunur.\n")
+    artik: dict[str, int] = {}
+    for ch in cozulmus:
+        if ch not in _BEKLENEN:
+            artik[ch] = artik.get(ch, 0) + 1
+    if not artik:
+        print("    (artik yok -- kaydirma tek basina yetiyor)")
+    for ch, n in sorted(artik.items(), key=lambda x: -x[1])[:20]:
+        print(f"    {_ad(ch):<46} {n:>7,}")
+        bulundu = 0
+        for m in re.finditer(re.escape(ch), cozulmus):
+            bas, son = max(0, m.start() - 26), min(len(cozulmus), m.end() + 26)
+            print(f"        {_gorunur(cozulmus[bas:son])}")
+            bulundu += 1
+            if bulundu >= 2:
+                break
 
     print("\n" + "=" * 100)
     print("  KARAR NOTU")
