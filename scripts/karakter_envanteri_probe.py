@@ -31,6 +31,10 @@ BOLUM A (varsayilan, yalniz SELECT):
   S4 Ayrik-harf anatomisi -- hangi harf, ne siklikta ve ardindan gelen kelime
      BUYUK harfle mi basliyor (yeni kelime -> bosluk KALMALI) yoksa kucuk harfle
      mi (kelime ici -> bosluk SILINMELI)? Sezgisel onarimin tavanini olcer.
+  S5 Aile-A KAPSAMI -- kac dosya etkilenmis? S3 en kotu 20'yi gosterir ama sayiyi
+     gostermez; onarim yazma karari tam da o sayiya baglidir. Diyakritik yogunlugu
+     kovalari + aile imzasiyla dogrulama (dusuk yogunluk tek basina "bozuk" DEMEK
+     DEGILDIR -- Ingilizce bir belge de dusuk cikar).
 
 BOLUM B (--parse <dosya_adi>): ayrik-harf kaynak teshisi.
   Dosyayi URETIM ayarlariyla yeniden parse eder, HAM parse ciktisinda ayrik-harf
@@ -53,6 +57,13 @@ BOLUM C (--backend <dosya_adi>): YERINE-GECMIS HARF ailesinin teshisi.
         isi degil CONFIG isidir (parse.pdf_backend) -- cok daha ucuz ve guvenli.
     C2  Cozmuyorsa: kaydirma miktari VERIDEN aranir (1..63 taranir, Turkce islev
         sozcugu kazanci en yuksek olan secilir). Benim tahminim degil, olcum.
+    C5  Kaydirma sonrasi bir CAKISMA kaliyor mu? C4 ayni belgede hem "olarak"
+        (o = o) hem "ioin" (o = c) gosterdi. Tek bir kod noktasi iki harfe
+        karsilik geliyorsa tablo IMKANSIZDIR. Ama cozucu 1:1 konum korudugu icin
+        her cozulmus karakterin ham kaynagi bilinir: cozulmus 'o' ya pencere-ici
+        bir ham kod noktasindan (KODLANMIS akis) ya da pencere-disi gercek bir
+        'o'dan (DUZ akis) gelir. Ikisi ayri akissa cakisma yoktur ve tablo ham
+        kod noktasi uzerinde KAYIPSIZ kurulur. C5 bunu olcer.
 
   Olcut, diyakritik yogunlugu DEGIL -- o bozulmadan etkileniyor. Diyakritigi
   OLMAYAN Turkce islev sozcukleri (ve/bir/bu/ile/olan) kullanilir; bozuk metinde
@@ -303,6 +314,54 @@ def bolum_a(db) -> int:
                 (f".{{0,30}}(?:{desen}).{{0,30}}", desen)).fetchall():
             tek = " ".join((parca or "").split())
             print(f"      {f_ad[:26]:<26} {_gorunur(tek)}")
+
+    # --------------------------------------------------------------- S5
+    print("\n\n" + "=" * 100)
+    print("S5 AILE-A KAPSAMI -- kac dosya? (onarim yazmaya DEGER MI?)")
+    print("=" * 100)
+    print("  S3 en kotu 20 dosyayi gosteriyor ama SAYIYI gostermiyor. Onarim")
+    print("  kararinin dayanagi bu sayidir: 40 dosya icin font cozucusu yazmakla")
+    print("  400 dosya icin yazmak ayni karar degil. Olcut yine diyakritik")
+    print("  yogunlugu (korpus medyani ~72/1000); aile-A dosyalarinda ~0'a duser.\n")
+    tum_y = [(int(fid), ad, int(kar), int(tr or 0))
+             for fid, ad, kar, tr in yogunluk if kar]
+    kovalar = [(0.0, 1.0), (1.0, 5.0), (5.0, 10.0),
+               (10.0, 30.0), (30.0, 60.0), (60.0, float("inf"))]
+    print(f"  {'tr/1000 araligi':<20} {'dosya':>7} {'karakter':>14}")
+    for alt_k, ust_k in kovalar:
+        grup = [r for r in tum_y if alt_k <= 1000 * r[3] / r[2] < ust_k]
+        etiket_k = (f"{alt_k:.0f} - {ust_k:.0f}" if ust_k != float("inf")
+                    else f"{alt_k:.0f} +")
+        print(f"  {etiket_k:<20} {len(grup):>7} {sum(r[2] for r in grup):>14,}")
+
+    supheli = [r for r in tum_y if 1000 * r[3] / r[2] < 10.0]
+    print(f"\n  10/1000 ALTINDA: {len(supheli)} dosya / {len(tum_y)} "
+          f"({100*len(supheli)/max(1,len(tum_y)):.1f}%), "
+          f"{sum(r[2] for r in supheli):,} karakter")
+    if not supheli:
+        return 0
+    # Dusuk yogunluk tek basina "bozuk" DEMEK DEGIL -- Ingilizce/sayisal bir
+    # belge de dusuk cikar. Aile-A imzasi (Ovariant, u-acute, bolme isareti...)
+    # ayrimi yapar: imzasi olan BOZUK, olmayan muhtemelen Turkce degil.
+    ids2 = [r[0] for r in supheli]
+    with db.connection() as conn:
+        imza_satir = conn.execute(
+            "SELECT file_id, "
+            "  coalesce(sum(length(chunk_text) - "
+            "                length(translate(chunk_text, %(imza)s, ''))), 0) "
+            "FROM core_chunks WHERE file_id = ANY(%(ids)s) GROUP BY file_id;",
+            {"imza": _IMZA, "ids": ids2}).fetchall()
+    imza_map = {int(fid): int(n) for fid, n in imza_satir}
+    imzali = [r for r in supheli if imza_map.get(r[0], 0) > 0]
+    print(f"  bunlardan AILE-A imzasi tasiyan: {len(imzali)} dosya, "
+          f"{sum(r[2] for r in imzali):,} karakter")
+    print("  (imzasi olmayanlar muhtemelen Turkce degil -> onarim degil, inceleme)\n")
+    print(f"  {'dosya':<52} {'tr/1000':>8} {'imza/1000':>10}")
+    for fid, ad, kar, tr in sorted(imzali, key=lambda r: -imza_map[r[0]] / r[2])[:25]:
+        print(f"  {ad[:52]:<52} {1000*tr/kar:>8.2f} "
+              f"{1000*imza_map[fid]/kar:>10.2f}")
+    if len(imzali) > 25:
+        print(f"  ... ve {len(imzali) - 25} dosya daha")
     return 0
 
 
@@ -652,12 +711,13 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
         c = _kaydir(ham, en_iyi, alt, ust, bosluk_koru=bk)
         o = _olcut(c)
         _satir(etiket, o)
-        adaylar_p.append((etiket, o, c))
+        adaylar_p.append((etiket, o, c, (alt, ust, bk)))
     # SECIM KURALI (acikca yazili, cunku islev/1k burada ayirt edemez):
     #   1) ctrl/1k en dusuk olan  -> kodlanmis karakterleri gercekten geri getiren
     #   2) esitlikte bosluk/1k en yuksek olan -> gercek bosluklari bozmayan
-    etiket, o, cozulmus = max(adaylar_p, key=lambda t: (-round(t[1]["ctrl"], 2),
-                                                        t[1]["bosluk"]))
+    etiket, o, cozulmus, pencere = max(adaylar_p,
+                                       key=lambda t: (-round(t[1]["ctrl"], 2),
+                                                      t[1]["bosluk"]))
     print(f"\n  KAZANAN pencere: {etiket}   ctrl/1k={o['ctrl']:.2f} "
           f"bosluk/1k={o['bosluk']:.2f} rakam/1k={o['rakam']:.2f}")
     print("  (secim kurali: once en dusuk ctrl/1k = kodlanmis karakteri geri")
@@ -708,6 +768,75 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
     for i in range(0, len(satir_tok), 4):
         print("    " + "  ".join(f"{s:<26}" for s in satir_tok[i:i + 4]))
 
+    # ---------------------------------------------------------------- C5
+    print("\n" + "-" * 100)
+    print("C5 CAKISMA GERCEK MI? -- ayni 'o' hem 'o' hem 'c' olabilir mi?")
+    print("-" * 100)
+    print("  C4 ayni belgede hem 'olarak/olan/Yorum' (o = o, DOGRU) hem 'ioin/")
+    print("  ioinde/geoen' (o = c, YERINE-GECMIS) gosterdi. Bu bir CAKISMA ise")
+    print("  kod-noktasi tablosu imkansizdir. Ama olmayabilir: cozucu 1:1 konum")
+    print("  korur, yani her cozulmus karakterin ham karsiligi bilinir ve")
+    print("  cozulmus 'o' IKI ayri kaynaktan gelebilir --")
+    print(f"    (a) pencere ICI ham 0x{0x6F-en_iyi:02X}  -> KODLANMIS akis (kaydirildi)")
+    print("    (b) pencere DISI ham 0x6F  -> DUZ akis (hic dokunulmadi)")
+    print("  Ikisi ayri akissa cakisma YOKTUR: tablo ham kod noktasi uzerinde")
+    print("  kurulur, duz metin etkilenmez ve onarim KAYIPSIZ olur.\n")
+
+    alt_p, ust_p, bk_p = pencere
+    korunan_p = {0x09, 0x0A, 0x0D} | ({0x20} if bk_p else set())
+    # _kaydir 1:1'dir -> uzunluklar esit, indisler ortusur (asagisi buna dayanir).
+    kodlu = [alt_p <= ord(ch) <= ust_p and ord(ch) not in korunan_p for ch in ham]
+
+    # Akislari AYIRIRKEN silmiyoruz, BOSLUKLA dolduruyoruz: silseydik iki akisin
+    # kelimeleri birbirine yapisir ve islev/1k uydurma sonuc verirdi.
+    akis_k = "".join(cozulmus[i] if kodlu[i] else " " for i in range(len(ham)))
+    akis_d = "".join(" " if kodlu[i] else ham[i] for i in range(len(ham)))
+    n_k = sum(kodlu)
+    print(f"  {'akis':<22} {'karakter':>10} {'pay':>7} {'islev/1k':>9}   (bosluklar haric pay)")
+    for ad_a, metin_a, n_a in (("KODLANMIS", akis_k, n_k),
+                               ("DUZ (dokunulmamis)", akis_d, len(ham) - n_k)):
+        # islev/1k'yi kendi akisinin uzunluguna gore olc, tum dosyaya gore degil.
+        pay_o = 1000 * len(_ISLEV_RE.findall(metin_a)) / max(1, n_a)
+        print(f"  {ad_a:<22} {n_a:>10,} {100*n_a/max(1,len(ham)):>6.1f}% {pay_o:>9.2f}")
+
+    print("\n  --- teshis token'lari: harfleri hangi akistan geliyor? ---")
+    dogru_grup = ["olarak", "olan", "kuruldu", "Kurulu", "Yorum", "Copyright"]
+    bozuk_grup = ["ioin", "ioinde", "geoen", "oal" + _c(0x00D5), "gzaktan", "hmit"]
+    print(f"    {'token':<16} {'adet':>6} {'kodlanmis':>10}   ham hali (ilk gecis)")
+    paylar: dict[str, list[float]] = {"dogru": [], "bozuk": []}
+    for grup, tokenlar in (("dogru", dogru_grup), ("bozuk", bozuk_grup)):
+        for t in tokenlar:
+            yerler = list(re.finditer(re.escape(t), cozulmus))
+            if not yerler:
+                print(f"    {t[:16]:<16} {0:>6}          -   (bu dosyada gecmiyor)")
+                continue
+            oran = sum(sum(kodlu[m.start():m.end()]) / len(t) for m in yerler) / len(yerler)
+            paylar[grup].append(oran)
+            ilk = yerler[0]
+            print(f"    {t[:16]:<16} {len(yerler):>6} {100*oran:>9.0f}%   "
+                  f"{_gorunur(ham[ilk.start():ilk.end()])}")
+
+    print("\n  HUKUM:")
+    d = sum(paylar["dogru"]) / len(paylar["dogru"]) if paylar["dogru"] else None
+    b = sum(paylar["bozuk"]) / len(paylar["bozuk"]) if paylar["bozuk"] else None
+    if d is None or b is None:
+        print("    Iki gruptan biri bu dosyada gecmiyor -> hukum verilemez.")
+    elif b > 0.9 and d < 0.1:
+        print("    IKI AKIS. Dogru cozulen kelimeler DUZ metinden geliyor, yerine-")
+        print("    gecmeler KODLANMIS akistan. Cakisma YOK -> tablo ham kod noktasi")
+        print("    uzerinde kurulabilir ve onarim KAYIPSIZ olur. Sonraki adim: her")
+        print("    pencere-ici ham kod noktasinin hangi Turkce harfe karsilik")
+        print("    geldigini VERIDEN cikarmak (tahminle degil).")
+    elif b > 0.9 and d > 0.9:
+        print("    GERCEK CAKISMA. Iki kullanim da AYNI kodlanmis akisdan geliyor:")
+        print("    tek bir ham kod noktasi hem 'o' hem 'c' demek. Kod-noktasi")
+        print("    tablosu bunu COZEMEZ -- ayrim yalniz font/run bilgisinde var ve")
+        print("    docling metin ciktisi onu tasimiyor. Mekanik onarim burada biter;")
+        print("    geriye force_full_page_ocr veya sozluk-tabanli duzeltme kalir.")
+    else:
+        print(f"    KARARSIZ (dogru={100*d:.0f}% kodlanmis, bozuk={100*b:.0f}%).")
+        print("    Yukaridaki 'ham hali' sutunu elle okunmali.")
+
     print("\n" + "=" * 100)
     print("  KARAR NOTU")
     print("=" * 100)
@@ -715,12 +844,15 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
     print("     + adim 5'in bekleyen reprocess'i. Kod yazilmaz.")
     print("  Yoksa ve C2 kaydirmayi buluyorsa       -> cozum parse SONRASI, clean ONCESI")
     print("     bir cozucu (kaydirma + kucuk harf tablosu), aile imzasiyla tetiklenen.")
-    print("  Yoksa ve C2 de bulmuyorsa              -> geriye OCR (do_ocr=True) kalir.")
-    if not ocr:
-        print("\n  NOT: bu kosum OCR KAPALI. Ayni komutu --ocr ile tekrarlamak")
-        print("  ucuncu yolu olcer. OCR calisiyorsa font tablosu yazmaya GEREK")
-        print("  KALMAZ ve cozum aileden BAGIMSIZ olur (konut_2 gibi baska imzali")
-        print("  dosyalari da kapsar) -- once o denenmeli, kod en son care.")
+    print("  Yoksa ve C2 de bulmuyorsa              -> geriye OCR kalir (asagiya bak).")
+    print("\n  OCR HAKKINDA -- OLCULDU (2026-08-09), yol KAPALI:")
+    print("  `--ocr` (do_ocr=True) bu ailede HICBIR SEY DEGISTIRMEDI: uretim satiri")
+    print("  OCR'siz kosumla bit-bit ayni cikti (21,528 karakter, islev 0.14,")
+    print("  imza 60.62, ctrl 156.59). RapidOCR gercekten yuklendi ve GPU'ya bagli")
+    print("  kosdu -- yani hata degil, MIMARI: docling yalniz METIN KATMANI OLMAYAN")
+    print("  bolgeleri OCR'lar. Bu PDF'lerin metin katmani VAR, bozuk ama var, o")
+    print("  yuzden OCR hic tetiklenmiyor. Geriye tek OCR kolu force_full_page_ocr")
+    print("  kalir; o ayri bir ayardir ve bu arac ONU KOSMAZ.")
     return 0
 
 
