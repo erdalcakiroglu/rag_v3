@@ -173,46 +173,266 @@ $env:RAGINTEL_LLM_API_BASE="http://<host>:11434"
 pytest                 # tümü (canlı DB erişilemezse db-marker testleri atlanır)
 pytest -m "not db"     # yalnızca DB'siz (hermetik) testler
 ```
--- Tum dosyalarin ve chunk'larin silinmesi icin kullanilir.
+## İşletim Runbook: Wipe / Re-ingest / Dump → Restore
+
+Yerelde korpusu sıfırdan işleyip (local DB `192.168.36.15`) H200 üretime
+(`10.50.130.55`) taşıma akışının **tüm** komutları. Kaynak korpus:
+`C:\BDDK-Mevzuat\bddk_mevzuat_pdf` (BDDK mevzuat PDF'leri).
+
+> **Korpus tabloları (7):** `core_files, core_chunks, core_vectors, core_tables,
+> core_figures, metrics_ingestion, qc_findings`.
+> **ASLA dokunulmayan** (korunur): `users, app_config, config_audit,
+> eval_golden_records, eval_golden_sets, conversations, conversation_messages,
+> checkpoint_*` (LangGraph). FK grafiği denetlendi: hiçbir korunan tablo korpusa
+> FK ile bağlı değil → aşağıdaki `TRUNCATE ... CASCADE` golden'ı **silmez**.
+
+### 1) WIPE — yalnız korpus (golden/users/app_config korunur)
+
+psql -h 10.50.130.55 -d ragintel -U ragintel_app -W
+
+```sql
 -- psql "host=192.168.36.15 dbname=ragintel user=ragintel_app"
-BEGIN;
-TRUNCATE ragintel.core_files CASCADE;
-COMMIT;
+-- 7 korpus tablosunu tek işlemde boşaltır; kimlik dizilerini sıfırlar.
+TRUNCATE ragintel.core_files,
+         ragintel.core_chunks,
+         ragintel.core_vectors,
+         ragintel.core_tables,
+         ragintel.core_figures,
+         ragintel.metrics_ingestion,
+         ragintel.qc_findings
+    RESTART IDENTITY CASCADE;
 
--- Doğrulama: hepsi 0 dönmeli
-SELECT (SELECT count(*) FROM ragintel.core_files)   AS files,
+-- Doğrulama: 7 korpus tablosu 0; korunanlar DEĞİŞMEMİŞ olmalı.
+SELECT (SELECT count(*) FROM ragintel.core_files)          AS files,
+       (SELECT count(*) FROM ragintel.core_chunks)         AS chunks,
+       (SELECT count(*) FROM ragintel.core_vectors)        AS vectors,
+       (SELECT count(*) FROM ragintel.core_tables)         AS tables,
+       (SELECT count(*) FROM ragintel.core_figures)        AS figures,
+       (SELECT count(*) FROM ragintel.metrics_ingestion)   AS metrics,
+       (SELECT count(*) FROM ragintel.qc_findings)         AS qc,
+       (SELECT count(*) FROM ragintel.eval_golden_records) AS golden_KORUNUR,
+       (SELECT count(*) FROM ragintel.users)               AS users_KORUNUR,
+       (SELECT count(*) FROM ragintel.app_config)          AS app_config_KORUNUR;
+```
+
+### 2) Şema önkoşulu — Ek4 (embed_sanitized)
+
+`embed_sanitized` qc bulgusu (son-çare pipe→boşluk embed fallback işareti) CHECK
+listesinde olmalı; yoksa o bulguyu içeren dosyanın insert'i patlar ve **tüm dosya
+transaction'ı rollback** olur. **Local + H200'de bir kez** uygulanır:
+
+```bash
+psql "host=192.168.36.15 dbname=ragintel user=ragintel_app" -f docs/FAZ1_Sema_Ek4_Embed_Sanitized.sql   # LOCAL
+psql "host=10.50.130.55  dbname=ragintel user=__ENV_H200_DEN_DOLDUR__" -f docs/FAZ1_Sema_Ek4_Embed_Sanitized.sql   # H200/PROD (dump ÖNCESİ)
+```
+
+### 3) Scan + uçtan uca run (local)
+
+```powershell
+cd C:\Users\erdal.cakiroglu\PycharmProjects\rag_v3
+python -m ragintel ingest scan "C:\BDDK-Mevzuat\bddk_mevzuat_pdf" --scope default
+# manifest.csv belge değildir — intake'ten çıkarın (korpusu kirletmesin):
+#   DELETE FROM ragintel.core_files WHERE file_type='txt' AND file_name='manifest.csv';
+python -m ragintel ingest run              # tüm PENDING'i uçtan uca işler
+python -m ragintel ingest retry            # embed kesintisi vb. sonrası kalanları dener
+python -m ragintel.report ingestion        # korpus özeti + FAZ 1 çıkış kriteri
+```
+
+Durum ve parite izleme:
+
+```sql
+SELECT status, count(*) FROM ragintel.core_files GROUP BY status;
+-- chunk = vector paritesi (eşit olmalı):
+SELECT (SELECT count(*) FROM ragintel.core_chunks)  AS chunks,
+       (SELECT count(*) FROM ragintel.core_vectors) AS vectors;
+-- takılı/işlenmemiş dosyalar:
+SELECT file_id, file_name, status, fail_reason
+FROM ragintel.core_files WHERE status IN ('PROCESSING','PENDING','FAILED') ORDER BY file_id;
+```
+
+### 4) DUMP (local) → RESTORE (H200)
+
+Yalnız korpus tabloları dump edilir; H200'ün `users/app_config/golden`'ı korunur.
+`pg_dump --data-only` tabloları FK bağımlılık sırasında yazar ve dizi `setval`'larını
+içerir. **`file_id` değerleri korunur** (chunk→file bağları bozulmaz).
+
+```bash
+# 4a) LOCAL'de dump (korpus tabloları, veri-only)
+pg_dump "host=192.168.36.15 dbname=ragintel user=ragintel_app" \
+  --data-only --no-owner --no-privileges \
+  -t ragintel.core_files -t ragintel.core_tables -t ragintel.core_chunks \
+  -t ragintel.core_vectors -t ragintel.core_figures \
+  -t ragintel.metrics_ingestion -t ragintel.qc_findings \
+  -f corpus_dump.sql
+
+# 4b) H200'e taşı
+scp corpus_dump.sql __ENV_H200_KULLANICI__@10.50.130.55:/tmp/corpus_dump.sql
+
+# 4c) H200/PROD'da: önce korpusu temizle (users/app_config/golden'a DOKUNMAZ),
+#     sonra restore. Ek4 (adım 2) UYGULANMIŞ olmalı.
+psql "host=10.50.130.55 dbname=ragintel user=__ENV_H200_DEN_DOLDUR__" -c \
+  "TRUNCATE ragintel.core_files, ragintel.core_chunks, ragintel.core_vectors, \
+            ragintel.core_tables, ragintel.core_figures, \
+            ragintel.metrics_ingestion, ragintel.qc_findings RESTART IDENTITY CASCADE;"
+
+psql "host=10.50.130.55 dbname=ragintel user=__ENV_H200_DEN_DOLDUR__" \
+  -v ON_ERROR_STOP=1 -f /tmp/corpus_dump.sql
+```
+
+> Şifre `.pgpass` veya `PGPASSWORD` env ile verilir; komut satırında yazılmaz.
+> FK sırası nadir bir sürümde takılırsa restore'u `SET session_replication_role =
+> replica;` ile sarın (FK trigger'larını geçici kapatır; yetkili rol gerekir).
+
+### 5) H200 doğrulama + smoke
+
+```sql
+-- prod korpus sayıları local ile eşleşmeli; parite tam:
+SELECT (SELECT count(*) FROM ragintel.core_files WHERE status='COMPLETED') AS completed,
        (SELECT count(*) FROM ragintel.core_chunks)  AS chunks,
-       (SELECT count(*) FROM ragintel.core_vectors) AS vectors,
-       (SELECT count(*) FROM ragintel.qc_findings)  AS qc,
-       (SELECT count(*) FROM ragintel.metrics_ingestion) AS metrics;
+       (SELECT count(*) FROM ragintel.core_vectors) AS vectors;
+```
 
-       -------------
--- Dosya durumlarını kontrol etmek için kullanılabilir.
-SELECT file_id, file_name, status, source_path
-FROM ragintel.core_files
-WHERE status IN ('PROCESSING', 'PENDING')
-ORDER BY file_id;
-
-
-
--- UPDATE ragintel.core_files
--- SET status = 'PENDING'
--- WHERE file_id IN (2961, 2962);
-
---- Dosya işleme pipeliemım başlatılması için kullanılabilir.
-ragintel ingest scan .\raw_files
-ragintel ingest run
-ragintel ingest retry
-ragintel ingest run --limit 10   --- 10 dosya işlenir. 10'dan fazla dosya varsa, kalanlar bir sonraki çalıştırmada işlenir.
-python -m ragintel.report ingestion
-
-
-------------------
-select * from ragintel.v_config_flat  -- parametreleri gorelim.
-
-
-# Ragintel container restart etme (h200)
-
+```bash
+# API konteyneri (H200) yeniden başlat + sağlık:
 docker restart ragintel-api
 # ~2 dk warm-up sonra:
 curl -s http://localhost:8000/api/health | grep -o '"status":"[a-z]*"'   # → "healthy"
+# smoke sorgu:
+curl -s -X POST http://localhost:8000/api/ask -H "Content-Type: application/json" \
+  -d '{"question":"Bankacılık Kanunu kaç sayılıdır?"}' | head -c 400
+```
+
+### Yardımcı
+
+```sql
+select * from ragintel.v_config_flat;   -- efektif parametreleri gör
+-- Dosyayı yeniden işlemek için PENDING'e çek (örnek):
+-- UPDATE ragintel.core_files SET status='PENDING', fail_reason=NULL WHERE file_id IN (...);
+```
+
+## H200 Bare-Metal GPU Ingestion (sıfırdan)
+
+Korpusu **doğrudan H200 GPU'sunda** bare-metal (Docker'sız) uçtan uca işlemek için
+tam runbook. Docling TableFormer **ACCURATE** modunda çalışır (GPU'da hızlı, en yüksek
+tablo kalitesi) — CPU'daki `fast/8` yamasına gerek yoktur. Prod DB'ye (`10.50.130.55`)
+yazar; kod `/opt/ragintel` (deploy'lu commit), venv ve veri `/datafile/ragintel`.
+
+> **Ön koşullar:** GPU görülüyor (`nvidia-smi` → H200 NVL, sürücü 570/CUDA 12.8),
+> ham PDF'ler host'ta (`/home/erdal.cakiroglu/raw_files`), Ollama host'ta systemd ile
+> ayakta (`bge-m3:latest` yüklü), DB ayarları `/opt/ragintel/.env.h200` içinde.
+
+### 0) Sistem kütüphanesi — libGL (bir kez)
+
+Docling OpenCV (cv2) kullanır; headless sunucuda `libGL.so.1` yoktur → **headless
+OpenCV** kur (X11/libGL bağımlılığı olmayan sürüm). Bu olmadan her dosya
+`libGL.so.1: cannot open shared object file` ile FAILED olur.
+
+```bash
+pip uninstall -y opencv-python opencv-contrib-python
+pip install opencv-python-headless
+python -c "import cv2; print('cv2 ok', cv2.__version__)"
+```
+
+### 1) Python 3.12 venv (bir kez)
+
+`lingua-language-detector==2.2.0` yalnız Python 3.12'de çözülür (3.9/3.11'de yok).
+
+```bash
+dnf install -y python3.12 python3.12-devel
+python3.12 -m venv /datafile/ragintel/venv
+source /datafile/ragintel/venv/bin/activate
+python -V            # >>> Python 3.12.x
+```
+
+### 2) torch — cu128 build (bir kez, KRİTİK)
+
+PyPI-default torch **cu130** çeker; sürücü CUDA **12.8** olduğundan "driver too old
+(12080)" der. Doğru hedef **cu128** wheel'i. En yeni cu128 build = `2.11.0`.
+
+```bash
+pip install "torch==2.11.0" torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128
+python -c "import torch;print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+#   >>> 2.11.0+cu128 12.8 True NVIDIA H200 NVL   (True + isim görmeden devam etme)
+```
+
+### 3) Projeyi kur (bir kez)
+
+```bash
+pip install -e /opt/ragintel
+python -c "import torch, torchvision, docling, ragintel; assert torch.cuda.is_available(); print('OK', torch.__version__, 'tv', torchvision.__version__)"
+#   >>> OK 2.11.0+cu128 tv 0.26.0+cu128
+# NOT: -e kurulumu torch'u cu130'a geri yükseltirse adım 2'yi bir kez daha koştur.
+```
+
+### 4) Env (HER yeni SSH oturumunda)
+
+```bash
+source /datafile/ragintel/venv/bin/activate
+set -a; source /opt/ragintel/.env.h200; set +a          # DB (host=10.50.130.55) vb.
+export RAGINTEL_OLLAMA_BASE_URL=http://localhost:11434   # bare-metal: host Ollama
+export RAGINTEL_STORAGE_ROOT=/datafile/ragintel/storage
+export HF_HOME=/datafile/ragintel/hf_cache
+mkdir -p "$RAGINTEL_STORAGE_ROOT" "$HF_HOME"
+echo "DB host = $RAGINTEL_DB_HOST"                        # boş DEĞİL olmalı
+```
+
+### 5) Smoke (bağlantı + embed wire teyidi)
+
+```bash
+python -m ragintel ingest status          # DB'ye bağlanır, korpus sayaçları (boşsa {})
+# embed wire: BAAI/bge-m3 (HF id) → Ollama etiketi bge-m3:latest → 1024-dim
+python - <<'PY'
+from ragintel.config.settings import OllamaSettings
+from ragintel.ingestion.embedding.embedder import OllamaEmbedder
+s = OllamaSettings()
+e = OllamaEmbedder(s.require_base_url(), model="BAAI/bge-m3", timeout=s.timeout, api_key=s.api_key)
+print("wire:", e.model, "| stamp:", e.model_name, "| dim:", len(e.embed_batch(["merhaba"])[0]))
+# >>> wire: bge-m3:latest | stamp: bge-m3@ollama | dim: 1024
+PY
+```
+
+### 6) Scan (envantere al — PENDING)
+
+```bash
+python -m ragintel ingest scan /datafile/ragintel/storage/ --scope default
+python -m ragintel ingest status                         # >>> {"PENDING": <adet>}
+find /datafile/ragintel/storage -type f -iname '*.pdf' | wc -l   # çapraz kontrol
+```
+
+### 7) Run — önce trial, sonra tam korpus
+
+```bash
+# 7a) Trial: 3 dosya önplanda (zincirin yazdığını kanıtla)
+python -m ragintel ingest run --limit 3
+python -m ragintel ingest status         # >>> 3 COMPLETED / 0 FAILED beklenir
+
+# 7b) Tam run: SSH kopsa da sürsün (nohup + log)
+mkdir -p /datafile/ragintel/logs
+nohup python -m ragintel ingest run > /datafile/ragintel/logs/ingest_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+echo "PID: $!"
+```
+
+> Altyapı (libGL/torch/Ollama) hatasıyla düşen dosyalar FAILED olur; kök düzeltilince
+> `python -m ragintel ingest retry` (retry_count<3) hepsini yeniden dener.
+
+### 8) İzleme + parite doğrulama
+
+```bash
+tail -f /datafile/ragintel/logs/ingest_*.log            # canlı akış (Ctrl+C çıkış)
+watch -n 30 'python -m ragintel ingest status'          # sayaç ilerlemesi
+```
+
+```bash
+python - <<'PY'
+import os, psycopg
+sch=os.environ.get("RAGINTEL_DB_SCHEMA","ragintel")
+c=psycopg.connect(host=os.environ["RAGINTEL_DB_HOST"],port=os.environ.get("RAGINTEL_DB_PORT","5432"),
+  dbname=os.environ["RAGINTEL_DB_NAME"],user=os.environ["RAGINTEL_DB_USER"],password=os.environ["RAGINTEL_DB_PASSWORD"])
+cur=c.cursor()
+for t in ("core_files","core_chunks","core_vectors","core_tables","core_figures"):
+    cur.execute(f"SELECT count(*) FROM {sch}.{t}"); print(t, cur.fetchone()[0])
+cur.execute(f"SELECT status,count(*) FROM {sch}.core_files GROUP BY status"); print("status:", dict(cur.fetchall()))
+cur.execute(f"SELECT DISTINCT model_name FROM {sch}.core_vectors"); print("vector model:", cur.fetchall())
+PY
+# Sağlıklı bitiş: core_chunks == core_vectors, FAILED=0, vector model = bge-m3@ollama
+```
