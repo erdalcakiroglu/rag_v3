@@ -859,7 +859,8 @@ def _c7_mekanizma(ham: str) -> None:
             break
 
 
-def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool, tam_ocr: bool = False) -> int:
+def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool, tam_ocr: bool = False,
+            bas_sayfa: int = 1) -> int:
     print("=" * 100)
     print(f"BOLUM C  YERINE-GECMIS HARF TESHISI -- {dosya_adi}")
     print("=" * 100)
@@ -876,7 +877,14 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool, tam_ocr: bool = False) ->
         print("  Bu teshis yalniz PDF icin anlamli.")
         return 1
     print(f"  file_id={fid}  yol={yol}")
-    print(f"  sayfa siniri: {sayfa or 'YOK (tam dosya)'}   OCR: {'ACIK' if ocr else 'kapali'}")
+    # SAYFA PENCERESI NEDEN KAYDIRILABILIR OLMALI (2026-08-09'da eklendi):
+    # Bankacilik_Kanunu_2'nin ilk 12 sayfasi ICINDEKILER'di. Orada islev
+    # sozcugu neredeyse yok, dolayisiyla C2'nin islev/1k olcutu kaydirmayi
+    # GOREMEDI (+0.00) -- oysa ayni dosya elle cozuldugunde tastamam +0x1D
+    # ailesi cikti ('*HoGGFGG 0DGGH' -> 'Gecici Madde'). Yani "ilk N sayfa"
+    # varsayilani bir dosyanin en AZ temsili kismini olcebiliyor.
+    pencere = (f"{bas_sayfa}-{bas_sayfa + sayfa - 1}" if sayfa else "TAM DOSYA")
+    print(f"  sayfa penceresi: {pencere}   OCR: {'ACIK' if ocr else 'kapali'}")
 
     from ragintel.ingestion.cleaning.cleaner import clean_document
     from ragintel.ingestion.parsing import docling_backend as dbk
@@ -892,13 +900,16 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool, tam_ocr: bool = False) ->
             parse_num_threads=int(ing.parse_num_threads),
         )
         conv = be._converter(ocr)         # uretim converter'inin AYNISI
+        return dbk._map_document(_cevir(conv).document, ocr=ocr)
+
+    def _cevir(conv):
         try:
-            res = conv.convert(yol, page_range=(1, sayfa)) if sayfa else conv.convert(yol)
+            return (conv.convert(yol, page_range=(bas_sayfa, bas_sayfa + sayfa - 1))
+                    if sayfa else conv.convert(yol))
         except TypeError:
             # docling surumu page_range bilmiyorsa tam dosya parse edilir.
             print("    (page_range desteklenmiyor -> tam dosya)", flush=True)
-            res = conv.convert(yol)
-        return dbk._map_document(res.document, ocr=ocr)
+            return conv.convert(yol)
 
     # ------------------------------------------------------------------ C0/C1
     print("\n" + "-" * 100)
@@ -932,15 +943,25 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool, tam_ocr: bool = False) ->
         for etiket, kur in _tam_ocr_kollari(ing, ps):
             print(f"    ({etiket} kosuyor -- yavas)", flush=True)
             try:
-                conv = kur()
-                res = (conv.convert(yol, page_range=(1, sayfa)) if sayfa
-                       else conv.convert(yol))
-                p = dbk._map_document(res.document, ocr=True)
+                p = dbk._map_document(_cevir(kur()).document, ocr=True)
             except Exception as exc:                      # noqa: BLE001 - teshis araci
                 print(f"  {etiket[:22]:<22} HATA: {type(exc).__name__}: {str(exc)[:52]}")
                 continue
             sonuc[etiket] = p
             _satir(etiket[:22], _olcut(p.body_text), "metin katmani YOK SAYILDI")
+            # METRIK YETMEZ. tr/1k'nin yuksek cikmasi diyakritiklerin GERI
+            # GELDIGINI gosterir ama dogru KELIMELERI olusturdugunu gostermez;
+            # OCR motoru (PP-OCR) Cince/Ingilizce icin egitilmis ve Turkce
+            # kelimeleri bozabilir. Sayiya degil metne bakilmali.
+            print(f"    --- {etiket} ilk satirlari ---")
+            basilan = 0
+            for s in p.body_text.splitlines():
+                if len(s.strip()) < 12:
+                    continue
+                print(f"      {_gorunur(s)[:150]}")
+                basilan += 1
+                if basilan >= 12:
+                    break
 
     if not sonuc:
         print("  Hicbir backend parse edemedi -- teshis burada duruyor.")
@@ -1610,6 +1631,10 @@ def main() -> int:
     ap.add_argument("--tam-ocr", action="store_true", dest="tam_ocr",
                     help="Bolum C: force_full_page_ocr kollari -- metin katmanini "
                          "YOK SAYAR. Glif tablosunu tanimi geregi atlar (cok yavas)")
+    ap.add_argument("--bas-sayfa", type=int, default=1, dest="bas_sayfa", metavar="N",
+                    help="Bolum C: pencere bu sayfadan BASLAR (varsayilan 1). Onyuz/"
+                         "icindekiler dosyanin en az temsili kismidir -- govde "
+                         "sayfalarini olcmek icin sart")
     a = ap.parse_args()
 
     from ragintel.config.settings import DbSettings
@@ -1623,7 +1648,7 @@ def main() -> int:
             return bolum_d(db, a.dis, 12 if a.sayfa is None else a.sayfa)
         if a.backend:
             return bolum_c(db, a.backend, 12 if a.sayfa is None else a.sayfa,
-                           a.ocr, a.tam_ocr)
+                           a.ocr, a.tam_ocr, max(1, a.bas_sayfa))
         return bolum_b(db, a.parse, a.sayfa or 0) if a.parse else bolum_a(db)
     finally:
         db.close()
