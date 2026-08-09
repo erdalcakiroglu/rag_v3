@@ -636,6 +636,16 @@ class GlyphRepair(BaseModel):
         description="Dosya başına azami tam-sayfa OCR denemesi. Tam-sayfa OCR metin katmanı "
                     "parse'ının ~3 katı sürer (ölçüldü: 1.0-1.2 s/sayfa).",
     )
+    min_broken_page_ratio: float = Field(
+        default=0.02, ge=0.0, le=1.0,
+        description="Bozuk sayfa oranı bu değerin altındaysa onarım ATLANIR (bulgu yine "
+                    "yazılır). Tam-sayfa OCR dosya düzeyinde bir bayraktır: 562 sayfalık bir "
+                    "kitabın 2 bozuk sayfası için 562 sayfa yeniden okunur. Ölçüldü "
+                    "(2026-08-09, 1118 dosya): dağılım iki tepeli — gerçekten bozuk dosyalar "
+                    "%4..%99.7, kuyruktakiler %0.4'ün altında ve içerikleri istisnasız "
+                    "kapak/künye/arka kapak; 3-25 bozuk chunk bandı BOŞ. Kuyruk toplam OCR "
+                    "bütçesinin %58'ini yiyordu. 0.0 vermek kapıyı kaldırır.",
+    )
 
 
 class QualityConfig(BaseModel):

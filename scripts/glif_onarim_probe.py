@@ -196,7 +196,10 @@ b AS (
 ),
 d AS (SELECT file_id, count(*) AS n FROM b GROUP BY file_id)
 SELECT f.file_name, d.n, b.chunk_index, b.kar, 1000.0 * b.im / b.kar,
-       substring(b.chunk_text from 1 for 240)
+       substring(b.chunk_text from 1 for 240),
+       -- imzalar TUM chunk'tan toplanir: yogunluk da oyle olcduldu, yalnizca
+       -- basilan 240 karakteri taramak listeyi yaniltici sekilde bos gosterir.
+       left(regexp_replace(b.chunk_text, '[^' || %(imza)s || ']', '', 'g'), 400)
 FROM b
 JOIN d USING (file_id)
 JOIN core_files f ON f.file_id = b.file_id
@@ -218,12 +221,16 @@ def bolum_h2(db, bin_deger: float, tavan: int) -> int:
     if not satirlar:
         print("  Sinir vakasi YOK.")
         return 0
-    for ad, n, idx, kar, yog, metin in satirlar:
-        gecen = sorted({ch for ch in IMZA if ch in metin})
+    for ad, n, idx, kar, yog, metin, imzalar in satirlar:
+        gecen = sorted(set(imzalar or ""))
+        disarida = sorted({c for c in gecen if c not in metin})
         print(f"  --- {ad[:70]}  (dosyada {int(n)} bozuk chunk) ---")
         print(f"      chunk_index={int(idx)}  {int(kar):,} karakter  "
-              f"imza/1000={float(yog):.1f}  gecen imza: "
-              + " ".join(f"U+{ord(c):04X}" for c in gecen))
+              f"imza/1000={float(yog):.1f}  gecen imza (tum chunk): "
+              + " ".join(f"U+{ord(c):04X}" for c in gecen)
+              + (f"   [basilan 240 karakter DISINDA: "
+                 + " ".join(f"U+{ord(c):04X}" for c in disarida) + "]"
+                 if disarida else ""))
         for parca in (metin[:120], metin[120:240]):
             if parca.strip():
                 print(f"      {parca}")

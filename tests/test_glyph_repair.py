@@ -8,6 +8,8 @@ invaryantını koruyor.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 from ragintel.ingestion.parsing.glyph_repair import (
     birlestir,
     bozuk_sayfalar,
@@ -160,3 +162,85 @@ def test_uyari_onarilan_sayfalari_sayiyla_bildirir():
     ocr = _belge(_sayfa(1, SAGLAM), _sayfa(2, SAGLAM))
     out = birlestir(ref, ocr, {1, 2})
     assert any("2 sayfa tam-sayfa OCR" in u for u in out.parse_warnings)
+
+
+# --- maliyet kapısı (adapter) -----------------------------------------------
+# Tam-sayfa OCR dosya düzeyinde bir bayraktır: 2 bozuk sayfa için tüm dosya
+# yeniden okunur. Ölçüldü (2026-08-09): kuyruktaki 22 dosya toplam OCR
+# bütçesinin %58'ini yiyor ve bozuk içerikleri istisnasız kapak/künye.
+
+class _SahteBackend:
+    """Tam-sayfa OCR destekler ama çağrılırsa patlar — kapı geçildi mi kanıtı."""
+
+    name = "sahte"
+    supports_full_page_ocr = True
+
+    def parse(self, *a, **kw):  # pragma: no cover - çağrılmamalı
+        raise AssertionError("OCR kolu koşmamalıydı")
+
+
+class _SahteDb:
+    """Metrik yazımını yutar — kapı AÇILDIĞINDA koşan yolun DB'ye uzanması
+    testin konusu değil; konu OCR kolunun gerçekten çağrılmış olması."""
+
+    @contextmanager
+    def connection(self):
+        yield None
+
+
+def _adapter(esik: float | None = None, *, db=None):
+    from ragintel.config.loader import load_config
+    from ragintel.ingestion.parsing import ParseAdapter
+
+    env = ({"RAGINTEL_QUALITY_GLYPH_REPAIR": '{"min_broken_page_ratio":%r}' % esik}
+           if esik is not None else None)
+    cfg = load_config(db_reader=None, environ=env)
+    return ParseAdapter(db=db, config=cfg, backend=_SahteBackend())
+
+
+def _kapi_acildi(monkeypatch, esik=None) -> str:
+    """Kapıyı geçen kol sahte backend'i çağırır; hata detaya yazılır."""
+    from ragintel.ingestion.parsing import adapter as _ad
+
+    monkeypatch.setattr(_ad, "insert_metric", lambda *a, **k: None)
+    att = _seyrek_bozuk(100, 7) if esik == 0.0 else _seyrek_bozuk(10, 3)
+    _final, glif = _adapter(esik, db=_SahteDb())._glif_onar(1, "x.pdf", "pdf", att, [])
+    return glif["detail"]
+
+
+def _seyrek_bozuk(n_sayfa: int, bozuk_no: int):
+    """n_sayfa sayfalık, tek sayfası bozuk belge -> gerçek kuyruk profili."""
+    from ragintel.ingestion.parsing.adapter import ParseAttempt
+
+    pd = _belge(*[_sayfa(i, BOZUK if i == bozuk_no else SAGLAM)
+                  for i in range(1, n_sayfa + 1)])
+    return ParseAttempt(1, False, 5, metrics={}, parsed=pd)
+
+
+def test_maliyet_kapisi_seyrek_bozulmada_onarimi_atlar():
+    att = _seyrek_bozuk(100, 7)                      # oran 0.01 < 0.02
+    final, glif = _adapter()._glif_onar(1, "x.pdf", "pdf", att, [])
+    assert final is att                              # belge DEĞİŞMEDİ
+    assert glif["finding"] == "encoding_broken"      # ama sessiz de geçilmedi
+    assert "ATLANDI" in glif["detail"]
+    assert "oran=0.0100" in glif["detail"]
+
+
+def test_maliyet_kapisi_yogun_bozulmayi_gecirir(monkeypatch):
+    """Eşik üstünde (oran 0.10) kapı açılır ve OCR kolu gerçekten koşar."""
+    detay = _kapi_acildi(monkeypatch)
+    assert "ATLANDI" not in detay
+    assert "koşmamalıydı" in detay                   # sahte backend çağrıldı
+
+
+def test_maliyet_kapisi_configten_okunur_kodda_sabit_yok():
+    """Aynı belge (oran 0.01): eşik 0.5'te kapı kapalı — eşik kodda sabit değil."""
+    att = _seyrek_bozuk(100, 7)
+    assert "ATLANDI" in _adapter(0.5)._glif_onar(1, "x.pdf", "pdf", att, [])[1]["detail"]
+
+
+def test_maliyet_kapisi_sifir_esikle_tamamen_kalkar(monkeypatch):
+    """0.0 kapıyı kaldırır: oran 0.01 olan belge bile onarım koluna girer."""
+    detay = _kapi_acildi(monkeypatch, esik=0.0)
+    assert "ATLANDI" not in detay
+    assert "koşmamalıydı" in detay

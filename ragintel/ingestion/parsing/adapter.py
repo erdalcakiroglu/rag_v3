@@ -314,6 +314,18 @@ class ParseAdapter:
             return final, {"finding": "encoding_broken",
                            "detail": f"{ozet} onarim=YOK (backend/config)"}
 
+        # MALİYET KAPISI: tam-sayfa OCR dosya düzeyinde bir bayraktır, sayfa
+        # düzeyinde seçilemez -> 2 bozuk sayfa için 562 sayfa yeniden okunur.
+        # Kapı bulguyu susturmaz, yalnız onarımı atlar; eşik düşürülüp
+        # yeniden koşulabilsin diye orana detayda yer verilir.
+        oran = len(bozuk) / n_sayfa
+        if oran < float(cfg.min_broken_page_ratio):
+            return final, {
+                "finding": "encoding_broken",
+                "detail": (f"{ozet} oran={oran:.4f} < {cfg.min_broken_page_ratio} "
+                           f"onarim=ATLANDI (maliyet kapisi)"),
+            }
+
         att = self._attempt_and_record(
             file_id, path, file_type, ocr=True,
             attempt_no=len(attempts) + 1, full_page_ocr=True,
