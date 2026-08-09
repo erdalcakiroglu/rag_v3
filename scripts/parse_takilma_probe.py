@@ -69,6 +69,36 @@ def _force_utf8() -> None:
                 pass
 
 
+def _hizlandirici() -> list[str]:
+    """docling'in 'auto' cihazı neye çözdüğü — TableFormer GPU'da mı CPU'da mı?
+
+    Ölçüldü (2026-08-09): parse süresinin %74-93'ü TableFormer'da. Bu yüzden
+    cihaz seçimi eşik tartışmasından ÖNCE gelir: model CPU'ya düşmüşse çözüm
+    'timeout'u yükselt' değil, GPU'yu geri vermektir.
+    """
+    satir: list[str] = []
+    try:
+        import torch
+        cuda = torch.cuda.is_available()
+        satir.append(f"  torch              = {torch.__version__} (cuda derlemesi: {torch.version.cuda})")
+        satir.append(f"  torch.cuda         = {cuda}"
+                     + (f" → {torch.cuda.get_device_name(0)}" if cuda else "  ⚠ CPU'ya düşüyor"))
+    except Exception as exc:
+        satir.append(f"  torch              = OKUNAMADI: {type(exc).__name__}: {exc}")
+
+    cozum = None
+    for modul, fn in (("docling.utils.accelerator_utils", "decide_device"),
+                      ("docling.utils.utils", "decide_device")):
+        try:
+            mod = __import__(modul, fromlist=[fn])
+            cozum = getattr(mod, fn)("auto")
+            break
+        except Exception:
+            continue
+    satir.append(f"  docling 'auto' →     {cozum if cozum is not None else 'çözülemedi (sürüm farkı)'}")
+    return satir
+
+
 def _pdf_anatomy(path: str) -> dict:
     """Docling'e girmeden ham PDF anatomisi (pypdfium2 — saniyeler sürer)."""
     try:
@@ -193,6 +223,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  pdf_backend        = {ParsingSettings().pdf_backend}  (ENV/kod — DB'de değil)")
         print(f"  figure_images      = {ing.figure_images} (scale {ing.figure_image_scale})")
         print(f"  max_retry          = {ing.max_retry}")
+        for s in _hizlandirici():
+            print(s)
 
         with db.connection() as conn:
             cur = conn.cursor()
