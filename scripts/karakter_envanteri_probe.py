@@ -86,17 +86,26 @@ BOLUM C (--backend <dosya_adi>): YERINE-GECMIS HARF ailesinin teshisi.
   (Bankacilik_Kanunu_2 ve konut_2 C2'de eledi) once bu kol denenmelidir:
   isliyorsa 39 dosyalik glif-tablosu isi tumuyle gereksizlesir.
 
+  `--ocr-kalite`: Bolum F. Yukaridaki kol BOZUK dosyada isliyor -- ama ayni
+  bayrak SAGLAM sayfalari da piksel olarak yeniden okur. Kismen bozuk 32 dosyada
+  kazanc ile kayip yarisir. F, saglam bir dosyada metin katmanini referans alip
+  OCR ciktisini token token hizalar; boylece "OCR saglam metne ne kadar zarar
+  veriyor" sorusu tahminle degil sayiyla yanitlanir.
+
 KOSUM (H200, venv + .env.h200 yuklu):
     python scripts/karakter_envanteri_probe.py
     python scripts/karakter_envanteri_probe.py --parse 261_2.pdf
     python scripts/karakter_envanteri_probe.py --backend 60._Yilinda_Turkiye_Bankalar_Birligi_2.pdf
+    python scripts/karakter_envanteri_probe.py --ocr-kalite <SAGLAM_DOSYA.pdf>
 """
 
 from __future__ import annotations
 
 import argparse
+import difflib
 import re
 import sys
+import time
 
 
 def _c(*kod_noktalari: int) -> str:
@@ -1608,6 +1617,257 @@ def bolum_e(db) -> int:
     return 0
 
 
+# =============================================================== BOLUM F =====
+# i/I NOKTA EKSENI: OCR ciktisinda gozlenen tek sistematik hata bu eksende
+# (dogru 'tarafindan' yerine noktali i, 'Istatistik' yerine noktasiz I gibi
+# karisikliklar; 2026-08-09 orneklerinde tek tekrar eden sinif buydu).
+# Dotted-dotless ayrimi Latin
+# modeller icin en zor Turkce ayrimdir. Bu tabloyla i-Ii-I dortlusu TEK harfe
+# indirgenir; boylece "yalniz nokta hatasi" ile "gercek kelime hatasi" ayrilir.
+_NOKTA_TABLO = {k: "i" for k in (0x0131, 0x0130, 0x0049, 0x0069)}
+
+# Tum Turkce diyakritikleri ASCII tabanina indirir -- "baska diyakritik hatasi"
+# kovasi icin. (Coskun/Coskun gibi.)
+_DIYAKRITIK_TABLO = {
+    0x0131: "i", 0x00E7: "c", 0x011F: "g", 0x00F6: "o", 0x015F: "s", 0x00FC: "u",
+    0x0130: "I", 0x00C7: "C", 0x011E: "G", 0x00D6: "O", 0x015E: "S", 0x00DC: "U",
+}
+
+
+def _harfli(t: str) -> bool:
+    return any(ch in _KUCUK or ch in _BUYUK for ch in t)
+
+
+def _fark_sinifi(a: str, b: str) -> str:
+    """Iki token arasindaki farki SINIFLANDIRIR -- sira onemli, en dar once."""
+    if a == b:
+        return "ayni"
+    if a.translate(_NOKTA_TABLO) == b.translate(_NOKTA_TABLO):
+        return "nokta"
+    if a.translate(_DIYAKRITIK_TABLO) == b.translate(_DIYAKRITIK_TABLO):
+        return "diyakritik"
+    if a.lower() == b.lower():
+        return "buyuk-kucuk"
+    return "gercek"
+
+
+def _f_adaylar(db) -> int:
+    """SAGLAM referans adaylari -- dosyayi ben secmem, veri secer.
+
+    Kosullar: imza YOK (hic), diyakritik yogunlugu korpus medyani civari,
+    metin PDF ve olcum penceresini dolduracak kadar uzun.
+    """
+    print("=" * 100)
+    print("BOLUM F  SAGLAM REFERANS ADAYLARI -- birini secip --ocr-kalite ile kosun")
+    print("=" * 100)
+    with db.connection() as conn:
+        satirlar = conn.execute(
+            "SELECT f.file_name, count(*) AS chunk, sum(length(c.chunk_text)) AS kar, "
+            "       1000.0 * sum(length(c.chunk_text) "
+            "               - length(translate(c.chunk_text, %s, ''))) "
+            "               / sum(length(c.chunk_text)) AS tr, "
+            "       sum(length(c.chunk_text) "
+            "           - length(translate(c.chunk_text, %s, ''))) AS im "
+            "FROM core_chunks c JOIN core_files f USING (file_id) "
+            "WHERE f.file_type = 'pdf' AND length(c.chunk_text) > 0 "
+            "GROUP BY f.file_name "
+            "HAVING sum(length(c.chunk_text)) > 40000 "
+            "   AND sum(length(c.chunk_text) "
+            "           - length(translate(c.chunk_text, %s, ''))) = 0 "
+            "ORDER BY abs(1000.0 * sum(length(c.chunk_text) "
+            "         - length(translate(c.chunk_text, %s, ''))) "
+            "         / sum(length(c.chunk_text)) - 71.8) "
+            "LIMIT 12;",
+            (_TR, _IMZA, _IMZA, _TR)).fetchall()
+    if not satirlar:
+        print("  Kosullari saglayan dosya YOK -> esikleri gevsetin.")
+        return 1
+    print(f"\n  {'dosya':<60} {'chunk':>6} {'karakter':>10} {'tr/1k':>7} {'imza':>5}")
+    for ad, chunk, kar, tr, im in satirlar:
+        print(f"  {ad[:60]:<60} {int(chunk):>6,} {int(kar):>10,} "
+              f"{float(tr):>7.2f} {int(im):>5}")
+    print("\n  Bunlar imza TASIMAYAN ve diyakritik yogunlugu medyana en yakin")
+    print("  dosyalar -- yani metin katmani dogru kabul edilebilir olanlar.")
+    return 0
+
+
+def bolum_f(db, dosya_adi: str, sayfa: int, bas_sayfa: int) -> int:
+    """Tam-sayfa OCR'in SAGLAM metne MALIYETI -- her dosyaya uygulanabilir mi?
+
+    Bolum C tam-sayfa OCR'in BOZUK dosyalari kurtardigini olctu (imza 0.00,
+    tr/1k korpus medyaninin ustunde, uc dosyada da okunabilir Turkce). Ama
+    Bolum E korpusta 32 KISMEN bozuk dosya buldu ve force_full_page_ocr DOSYA
+    duzeyinde bir bayraktir: saglam sayfalari da piksel olarak yeniden okur ve
+    oradaki DOGRU metni OCR ciktisiyla DEGISTIRIR. Kismen bozuk bir dosyada
+    kazanc ile kayip yarisir; hangisinin agir bastigi TAHMIN edilemez.
+
+    Bu yuzden kaybi olcuyoruz: SAGLAM bir dosyada metin katmani (dogru kabul
+    edilen referans) ile tam-sayfa OCR ciktisi token token hizalanir.
+
+    OLCUT BILEREK KOTUMSER: OCR'in okuma sirasi metin katmanindan farkli
+    olabilir ve bu fark burada "uyusmazlik" olarak sayilir. Yani cikan gercek
+    fark orani OCR'in gercek hata oraninin UST SINIRIDIR, kendisi degil.
+    """
+    print("=" * 100)
+    print(f"BOLUM F  OCR'IN SAGLAM METNE MALIYETI -- {dosya_adi}")
+    print("=" * 100)
+    with db.connection() as conn:
+        satir = conn.execute(
+            "SELECT file_id, source_path, file_type FROM core_files "
+            "WHERE file_name = %s ORDER BY file_id LIMIT 1;",
+            (dosya_adi,)).fetchone()
+        if satir is None:
+            print(f"  HATA: core_files'ta '{dosya_adi}' yok.")
+            return 1
+        fid, yol, tur = satir
+        kar, im, tr = conn.execute(
+            "SELECT coalesce(sum(length(chunk_text)), 0), "
+            "       coalesce(sum(length(chunk_text) "
+            "                    - length(translate(chunk_text, %s, ''))), 0), "
+            "       coalesce(sum(length(chunk_text) "
+            "                    - length(translate(chunk_text, %s, ''))), 0) "
+            "FROM core_chunks WHERE file_id = %s;",
+            (_IMZA, _TR, fid)).fetchone()
+    if tur != "pdf":
+        print("  Bu olcum yalniz PDF icin anlamli.")
+        return 1
+    kar, im, tr = int(kar) or 1, int(im), int(tr)
+
+    # F0 -- REFERANSIN SAGLAM OLDUGU DOGRULANMADAN olcum anlamsiz. Bozuk bir
+    # dosyada "OCR referanstan sapiyor" demek OCR'i degil referansi olcerdi.
+    print("\n" + "-" * 100)
+    print("F0 REFERANS SAGLAM MI? -- depolanmis chunk'lardan (parse yok)")
+    print("-" * 100)
+    im_yog, tr_yog = 1000 * im / kar, 1000 * tr / kar
+    print(f"  file_id={fid}  yol={yol}")
+    print(f"  imza/1000 = {im_yog:.2f}   tr/1000 = {tr_yog:.2f}   "
+          f"(korpus tr medyani ~71.8)")
+    if im_yog >= 1.0 or tr_yog < 40.0:
+        print("  UYARI: bu dosya SAGLAM REFERANS DEGIL (imza>=1 ya da tr<40).")
+        print("         Asagidaki fark orani OCR'in maliyetini OLCMEZ; iki")
+        print("         bozuk metni karsilastirir. Baska bir dosya secin.")
+    else:
+        print("  -> saglam: metin katmani dogru kabul edilebilir.")
+
+    from ragintel.ingestion.parsing import docling_backend as dbk
+
+    ing, ps = _parse_ayarlari(db)
+    pencere = (f"{bas_sayfa}-{bas_sayfa + sayfa - 1}" if sayfa else "TAM DOSYA")
+    print(f"  sayfa penceresi: {pencere}")
+
+    def _cevir(conv):
+        try:
+            return (conv.convert(yol, page_range=(bas_sayfa, bas_sayfa + sayfa - 1))
+                    if sayfa else conv.convert(yol))
+        except TypeError:
+            print("    (page_range desteklenmiyor -> tam dosya)", flush=True)
+            return conv.convert(yol)
+
+    # ------------------------------------------------------------------ F1
+    print("\n" + "-" * 100)
+    print("F1 IKI OKUMA -- metin katmani (referans) vs tam-sayfa OCR")
+    print("-" * 100)
+    be = dbk.DoclingBackend(
+        figure_images=False,
+        figure_image_scale=float(ing.figure_image_scale),
+        pdf_backend=str(ps.pdf_backend or "pypdfium2"),
+        tableformer_mode=str(ing.tableformer_mode),
+        parse_num_threads=int(ing.parse_num_threads),
+    )
+    _basli("(ham parse ciktisi)")
+    t0 = time.perf_counter()
+    ref = dbk._map_document(_cevir(be._converter(False)).document, ocr=False)
+    t_ref = time.perf_counter() - t0
+    _satir("REFERANS/metin", _olcut(ref.body_text), f"{t_ref:.1f}s")
+
+    kollar = _tam_ocr_kollari(ing, ps)
+    if not kollar:
+        print("  Tam-sayfa OCR kolu YOK -> olcum yapilamaz.")
+        return 1
+    etiket, kur = kollar[0]
+    print(f"    ({etiket} kosuyor -- yavas)", flush=True)
+    t0 = time.perf_counter()
+    ocr = dbk._map_document(_cevir(kur()).document, ocr=True)
+    t_ocr = time.perf_counter() - t0
+    _satir(etiket[:22], _olcut(ocr.body_text), f"{t_ocr:.1f}s")
+    n_sayfa = sayfa or 0
+    if n_sayfa:
+        print(f"\n  MALIYET: OCR {t_ocr:.1f}s / {n_sayfa} sayfa = "
+              f"{t_ocr / n_sayfa:.2f} s/sayfa   (referans {t_ref / n_sayfa:.2f} s/sayfa, "
+              f"{t_ocr / max(t_ref, 0.01):.1f}x)")
+
+    # ------------------------------------------------------------------ F2
+    print("\n" + "-" * 100)
+    print("F2 TOKEN HIZALAMA -- OCR referanstan nerede ayriliyor?")
+    print("-" * 100)
+    a_tok = _tokenler(ref.body_text)
+    b_tok = _tokenler(ocr.body_text)
+    # autojunk=False SART: varsayilan hali >200 ogeli dizide sik gecen ogeleri
+    # ("ve", "bir") junk sayip hizalamayi bozar.
+    sm = difflib.SequenceMatcher(None, a_tok, b_tok, autojunk=False)
+    sayim = {"ayni": 0, "nokta": 0, "diyakritik": 0, "buyuk-kucuk": 0,
+             "gercek": 0, "eksik": 0, "fazla": 0}
+    ornek: dict[str, list[tuple[str, str]]] = {"nokta": [], "diyakritik": [],
+                                               "buyuk-kucuk": [], "gercek": []}
+    for etiket_op, i1, i2, j1, j2 in sm.get_opcodes():
+        if etiket_op == "equal":
+            sayim["ayni"] += i2 - i1
+            continue
+        sol, sag = a_tok[i1:i2], b_tok[j1:j2]
+        for a, b in zip(sol, sag):
+            s = _fark_sinifi(a, b)
+            sayim[s] += 1
+            if s != "ayni" and len(ornek[s]) < 25:
+                ornek[s].append((a, b))
+        sayim["eksik"] += max(0, len(sol) - len(sag))   # referansta var, OCR'da yok
+        sayim["fazla"] += max(0, len(sag) - len(sol))   # OCR'in ekledigi
+
+    n_ref = len(a_tok) or 1
+    print(f"  referans token : {len(a_tok):,}")
+    print(f"  OCR token      : {len(b_tok):,}\n")
+    print(f"  {'ESLESEN (bire bir ayni)':<32} {sayim['ayni']:>8,} "
+          f"{100 * sayim['ayni'] / n_ref:>7.1f}%")
+    for anahtar, ad in (("nokta", "yalniz i/I nokta ekseni"),
+                        ("diyakritik", "baska diyakritik farki"),
+                        ("buyuk-kucuk", "yalniz buyuk/kucuk harf"),
+                        ("gercek", "GERCEK FARK"),
+                        ("eksik", "referansta var, OCR'da YOK"),
+                        ("fazla", "OCR'in EKLEDIGI")):
+        print(f"  {ad:<32} {sayim[anahtar]:>8,} "
+              f"{100 * sayim[anahtar] / n_ref:>7.1f}%")
+
+    # ------------------------------------------------------------------ F3
+    print("\n" + "-" * 100)
+    print("F3 ORNEKLER -- sayiya degil metne bakilir")
+    print("-" * 100)
+    for anahtar, ad in (("gercek", "GERCEK FARK"), ("nokta", "nokta ekseni"),
+                        ("diyakritik", "diyakritik"), ("buyuk-kucuk", "buyuk/kucuk")):
+        if not ornek[anahtar]:
+            continue
+        print(f"\n  --- {ad} (ilk {len(ornek[anahtar])}) ---")
+        print(f"    {'REFERANS':<40} {'OCR':<40}")
+        for a, b in ornek[anahtar]:
+            print(f"    {_gorunur(a)[:40]:<40} {_gorunur(b)[:40]:<40}")
+
+    # ------------------------------------------------------------------ F4
+    print("\n" + "-" * 100)
+    print("F4 OKUMA KURALI -- karar buradan CIKMAZ, buraya DAYANIR")
+    print("-" * 100)
+    gercek_oran = 100 * (sayim["gercek"] + sayim["eksik"]) / n_ref
+    print("  'GERCEK FARK + eksik' orani OCR'in saglam metne verdigi ZARARIN")
+    print("  UST SINIRIDIR (okuma sirasi farki da buraya dusuyor).")
+    print(f"  Bu dosyada: {gercek_oran:.1f}%\n")
+    print("    <2%   -> tam-sayfa OCR TUM bozuk dosyalara (kismi olanlar dahil)")
+    print("             dosya duzeyinde uygulanabilir; tek mekanizma yeter.")
+    print("    2-8%  -> yalniz TAM bozuk dosyalara uygulanir; kismen bozuk 32")
+    print("             dosya icin sayfa duzeyinde secim ya da ayri yol gerekir.")
+    print("    >8%   -> tam-sayfa OCR genel cozum DEGILDIR; glif tablosu yolu")
+    print("             yeniden acilir.")
+    print("\n  Nokta ekseni ayri okunur: bu hata sinifi retrieval'i embed")
+    print("  duzeyinde az, sozcuk-esleme (BM25/quote) duzeyinde cok etkiler.")
+    return 0
+
+
 def main() -> int:
     _force_utf8()
     ap = argparse.ArgumentParser()
@@ -1619,6 +1879,10 @@ def main() -> int:
                     help="Bolum D: harici cikaricilar + PDF'in ToUnicode beyani")
     ap.add_argument("--tetik", action="store_true",
                     help="Bolum E: onarim tetikleyicisi dosya mi chunk mi? (SQL, parse yok)")
+    ap.add_argument("--ocr-kalite", metavar="DOSYA_ADI|SEC", dest="ocr_kalite",
+                    help="Bolum F: SAGLAM bir dosyada metin katmani vs tam-sayfa "
+                         "OCR token karsilastirmasi -- OCR'in maliyetini olcer. "
+                         "SEC yazilirsa once aday saglam dosyalari listeler.")
     # Varsayilan bilerek bolume gore FARKLI (asagida cozuluyor): C uc backend
     # kosar -> tam kitap dakikalar surer, 12 sayfa yeter. B tek kosumdur ve
     # sonucu DEPOLANMIS sayimla kiyaslanir -> varsayilani tam dosya olmali,
@@ -1644,6 +1908,11 @@ def main() -> int:
     try:
         if a.tetik:
             return bolum_e(db)
+        if a.ocr_kalite:
+            if a.ocr_kalite.strip().upper() == "SEC":
+                return _f_adaylar(db)
+            return bolum_f(db, a.ocr_kalite, 12 if a.sayfa is None else a.sayfa,
+                           max(1, a.bas_sayfa))
         if a.dis:
             return bolum_d(db, a.dis, 12 if a.sayfa is None else a.sayfa)
         if a.backend:
