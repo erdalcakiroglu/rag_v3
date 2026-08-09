@@ -14,22 +14,30 @@ def _docling_available() -> bool:
 
 
 def get_backend(name: str = "auto", *, figure_images: bool = True,
-                figure_image_scale: float = 2.0):
+                figure_image_scale: float = 2.0, pdf_backend: str = "pypdfium2",
+                tableformer_mode: str = "accurate", parse_num_threads: int = 4):
     """İsimden backend nesnesi döndürür. name: auto | docling | fallback.
 
     M-7: görsel çıkarma ayarları (config-first) docling backend'ine geçer.
     Fallback backend görsel üretmez — bu ayarlar onu ilgilendirmez.
+    pdf_backend: docling içi PDF alt-parser (config: parse.pdf_backend).
+    İP-2: tableformer_mode/parse_num_threads parse hızını ayarlar (docling backend).
     """
+    def _docling():
+        from .docling_backend import DoclingBackend
+        return DoclingBackend(figure_images=figure_images,
+                              figure_image_scale=figure_image_scale, pdf_backend=pdf_backend,
+                              tableformer_mode=tableformer_mode,
+                              parse_num_threads=parse_num_threads)
+
     if name == "fallback":
         from .fallback_backend import FallbackBackend
         return FallbackBackend()
     if name == "docling":
-        from .docling_backend import DoclingBackend
-        return DoclingBackend(figure_images=figure_images, figure_image_scale=figure_image_scale)
+        return _docling()
     if name == "auto":
         if _docling_available():
-            from .docling_backend import DoclingBackend
-            return DoclingBackend(figure_images=figure_images, figure_image_scale=figure_image_scale)
+            return _docling()
         from .fallback_backend import FallbackBackend
         return FallbackBackend()
     raise ValueError(f"Bilinmeyen parse backend: {name!r}")

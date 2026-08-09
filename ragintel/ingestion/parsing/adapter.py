@@ -95,10 +95,14 @@ class ParseAdapter:
         else:
             from ...config.settings import ParsingSettings
             ing = self.cfg.group("ingestion")   # M-7: görsel çıkarma config-first
+            ps = ParsingSettings()
             self.backend = get_backend(
-                ParsingSettings().backend,
+                ps.backend,
                 figure_images=bool(ing.figure_images),
                 figure_image_scale=float(ing.figure_image_scale),
+                pdf_backend=ps.pdf_backend,
+                tableformer_mode=str(getattr(ing, "tableformer_mode", "accurate")),
+                parse_num_threads=int(getattr(ing, "parse_num_threads", 4)),
             )
         self.log = logger or get_logger("ingestion.parse")
 

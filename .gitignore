@@ -36,3 +36,6 @@ docs/langfuse.env
 # Geçici smoke korpusu
 tmp/
 docs/Langfuse_Dokumani.md
+
+# Eval/karne koşum çıktıları (runtime artefaktı — repoya girmez)
+logs/

@@ -12,14 +12,44 @@ from .parsed_document import Figure, Page, ParsedDocument, Section, Table
 from .text_utils import detect_language, flatten_table
 
 
+def _resolve_pdf_backend(name: str):
+    """PDF alt-parser sınıfını isimden çözer (import tembel; docling ağır).
+
+    None dönerse docling KENDİ varsayılanını kullanır (dlparse). pypdfium2
+    varsayılan çünkü docling-parse native katmanı bazı doğuştan-dijital banka
+    PDF'lerinde std::bad_alloc atıp sayfayı sessizce düşürüyor (ölçüldü).
+    """
+    n = (name or "").strip().lower()
+    if n in ("pypdfium2", "pdfium"):
+        from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
+        return PyPdfiumDocumentBackend
+    if n in ("docling_parse", "dlparse", "dlparse_v4", "default", "auto", ""):
+        return None
+    if n in ("dlparse_v2", "docling_parse_v2"):
+        from docling.backend.docling_parse_v2_backend import DoclingParseV2DocumentBackend
+        return DoclingParseV2DocumentBackend
+    raise ValueError(f"Bilinmeyen pdf_backend: {name!r}")
+
+
 class DoclingBackend:
     name = "docling"
 
-    def __init__(self, *, figure_images: bool = True, figure_image_scale: float = 2.0) -> None:
+    def __init__(self, *, figure_images: bool = True, figure_image_scale: float = 2.0,
+                 pdf_backend: str = "pypdfium2", tableformer_mode: str = "accurate",
+                 parse_num_threads: int = 4) -> None:
         self._converters: dict[bool, object] = {}
         # M-7: görsel çıkarma config'ten gelir (ingestion.figure_images/_scale).
         self.figure_images = figure_images
         self.figure_image_scale = figure_image_scale
+        # PDF alt-parser (config: parse.pdf_backend). docling-parse native C++
+        # katmanı bazı banka PDF'lerinde std::bad_alloc atıp sayfayı sessizce
+        # düşürüyor; pypdfium2 varsayılan (bkz. ParsingSettings.pdf_backend).
+        self.pdf_backend = pdf_backend
+        # İP-2 (parse hızlandırma): TableFormer modu + thread sayısı (config-first).
+        # 'fast' tabloyu KAPATMADAN CPU'da belirgin hızlandırır; GPU yokken
+        # tablo-yoğun büyük PDF'lerin timeout'unu bu çözer (ölçüldü).
+        self.tableformer_mode = (tableformer_mode or "accurate").strip().lower()
+        self.parse_num_threads = int(parse_num_threads)
 
     def supports(self, file_type: str) -> bool:
         return file_type in ("pdf", "docx")
@@ -28,20 +58,39 @@ class DoclingBackend:
         if ocr not in self._converters:
             from docling.document_converter import DocumentConverter, PdfFormatOption
             from docling.datamodel.base_models import InputFormat
-            from docling.datamodel.pipeline_options import PdfPipelineOptions
+            from docling.datamodel.pipeline_options import (
+                AcceleratorOptions, PdfPipelineOptions, TableFormerMode,
+            )
 
             opts = PdfPipelineOptions()
             opts.do_ocr = ocr
             opts.do_table_structure = True
+            # İP-2: TableFormer modu (config-first). 'fast' tablo çıkarımını
+            # KAPATMADAN CPU'da belirgin hızlandırır (mühürlü ACCURATE korpusa
+            # dokunmaz; yalnız config 'fast' iken devrede). Savunmacı: bilinmeyen
+            # değer 'accurate'a düşer.
+            opts.table_structure_options.mode = (
+                TableFormerMode.FAST if self.tableformer_mode == "fast"
+                else TableFormerMode.ACCURATE
+            )
+            # İP-2: sinir-ağı thread sayısı (docling default 4; CPU'da yükseltmek
+            # büyük PDF parse süresini kısaltır, GPU'da etkisiz).
+            opts.accelerator_options = AcceleratorOptions(
+                num_threads=self.parse_num_threads, device="auto",
+            )
             if self.figure_images:
                 # M-7: bu bayrak OLMADAN pic.image None kalır (görüntü hiç üretilmez).
                 # Ölçüldü (2 dosya × 2 tur, ısınma elenmiş): parse süresine ölçülebilir
                 # etkisi YOK (±2%, gürültü) — maliyet yalnızca disk (~10-20 KB/görsel).
                 opts.generate_picture_images = True
                 opts.images_scale = self.figure_image_scale
+            fmt_kwargs = {"pipeline_options": opts}
+            backend_cls = _resolve_pdf_backend(self.pdf_backend)
+            if backend_cls is not None:   # None = docling'in kendi varsayılanı (dlparse)
+                fmt_kwargs["backend"] = backend_cls
             self._converters[ocr] = DocumentConverter(
                 format_options={
-                    InputFormat.PDF: PdfFormatOption(pipeline_options=opts)
+                    InputFormat.PDF: PdfFormatOption(**fmt_kwargs)
                 }
             )
         return self._converters[ocr]

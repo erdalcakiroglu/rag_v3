@@ -151,6 +151,10 @@ def test_danger_badges_on_reprocess_fields_only():
         # M-7: görseller parse anında çıkarılır → değiştirmek yeniden işleme gerektirir
         # (mevcut belgelerin görselleri geriye dönük OLUŞMAZ).
         "ingestion.figure_images", "ingestion.figure_image_scale",
+        # İP-2: TableFormer modu tablo YAPISINI parse anında belirler → accurate↔fast
+        # geçişi korpusu ayrıştırır (eski dosyalar accurate'la çıkarıldı, yenileri
+        # fast'la). parse_num_threads rozetsiz: yalnız hız, çıktı aynı.
+        "ingestion.tableformer_mode",
     }
     # Karşı-örnekler: bunlar mevcut veriyi geçersizleştirmez → rozet OLMAMALI.
     leaves = {g: _leaves(gs["fields"]) for g, gs in schema["groups"].items()}

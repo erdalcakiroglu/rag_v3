@@ -204,6 +204,16 @@ class ParsingSettings(DotenvFirstSettings):
 
     backend: str = "auto"   # auto | docling | fallback
 
+    # PDF alt-parser (docling içi). VARSAYILAN pypdfium2 (ölçüldü 2026-08-05):
+    # docling-parse'ın native C++ katmanı (dlparse_v4/v2) bazı DOĞUŞTAN-DİJİTAL
+    # banka PDF'lerinde sıradan A4 metin sayfasında std::bad_alloc atıyor ve o
+    # sayfayı SESSİZCE düşürüyor (5411 Bankacılık Kanunu: 119 sayfa → dlparse_v2
+    # 18 sayfayı kaybediyor, 909 vs 1291 metin parçası; dlparse_v4 dosyayı komple
+    # FAILED yapıyor). pypdfium2 aynı dosyayı TÜM sayfalarıyla, AYNI 9 tabloyla,
+    # sıfır hatayla ayrıştırıyor → (b) sessiz-degradasyon yasağı. Geri alma:
+    # RAGINTEL_PARSE_PDF_BACKEND=docling_parse (docling'in kendi varsayılanı).
+    pdf_backend: str = "pypdfium2"   # pypdfium2 | docling_parse | dlparse_v2
+
 
 class OllamaSettings(DotenvFirstSettings):
     """Embedding backend (İP-7 / ADR-012): remote Ollama HTTP /api/embed."""
@@ -456,6 +466,25 @@ class IngestionConfig(BaseModel):
                     "(~10 KB/görsel, ekranda bulanık olabilir) · 2.0 = iki katı (~20 KB/görsel, "
                     "önerilen). Süreyi etkilemez, yalnızca diski ve okunabilirliği.",
         json_schema_extra={"danger": DANGER_REPROCESS},
+    )
+    # İP-2 (parse hızlandırma): Docling TableFormer modu. 'accurate' = varsayılan
+    # (yüksek doğruluk, CPU'da yavaş) · 'fast' = tabloyu KAPATMADAN belirgin hızlı,
+    # çizgili/ızgara mali tablolarda kalite farkı küçük. Ölçüldü (mevzuat_1045,
+    # 76 sayfa/44 tablo, CPU): accurate 600s'e takıldı (0 tablo), fast 442s'de 44
+    # tablo. GPU yokken tablo-yoğun büyük PDF'lerin timeout'unu bu çözer.
+    tableformer_mode: Literal["accurate", "fast"] = Field(
+        default="accurate",
+        description="Docling tablo-yapısı modeli modu. 'accurate' (varsayılan, doğru ama "
+                    "CPU'da yavaş) · 'fast' (tablo çıkarımı açık kalır, belirgin hızlı, mali "
+                    "tablolarda kalite kaybı küçük). GPU yoksa büyük/tablo-yoğun PDF parse "
+                    "timeout'unu aşmak için 'fast' seçin.",
+        json_schema_extra={"danger": DANGER_REPROCESS},
+    )
+    parse_num_threads: int = Field(
+        default=4, ge=1, le=32,
+        description="Docling sinir-ağı çıkarımının kullanacağı thread sayısı (AcceleratorOptions). "
+                    "Varsayılan 4; CPU'da çekirdek sayısına yakın (ör. 8) yükseltmek büyük "
+                    "PDF parse süresini kısaltır. GPU'da etkisizdir.",
     )
 
 
