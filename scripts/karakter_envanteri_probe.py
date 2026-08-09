@@ -32,14 +32,33 @@ BOLUM A (varsayilan, yalniz SELECT):
      BUYUK harfle mi basliyor (yeni kelime -> bosluk KALMALI) yoksa kucuk harfle
      mi (kelime ici -> bosluk SILINMELI)? Sezgisel onarimin tavanini olcer.
 
-BOLUM B (--parse <dosya_adi>): kaynak teshisi.
+BOLUM B (--parse <dosya_adi>): ayrik-harf kaynak teshisi.
   Dosyayi URETIM ayarlariyla yeniden parse eder, HAM parse ciktisinda ayrik-harf
   cevresindeki bosluk sayilarini sayar, sonra ayni metni clean_document'ten
   gecirip tekrar sayar. Hicbir sey yazmaz.
 
+BOLUM C (--backend <dosya_adi>): YERINE-GECMIS HARF ailesinin teshisi.
+  Bolum A'nin S2 baglamlari bu ailenin bir KAYDIRMA oldugunu gosterdi:
+  "%DQNDODU" -> "Bankalar" (her ASCII karakter +0x1D). Bundan iki soru dogar ve
+  ikisi de yalniz yeniden parse ile yanitlanir:
+
+    C0  Temizleme ONCESI karakter envanteri. DB'deki envanter clean SONRASIDIR;
+        ftfy.fix_text kontrol karakterlerini siler. Kaydirmada kucuk 'u-umlaut'
+        ve RAKAMLAR C0/C1 araligina dusuyor olabilir -- oyleyse temizleme onlari
+        yok etmistir ve DB'den GORULEMEZ. Kayip burada olculur.
+    C1  Baska bir PDF alt-parseri dogru coz-uyor mu? Coziyorsa onarim bir KOD
+        isi degil CONFIG isidir (parse.pdf_backend) -- cok daha ucuz ve guvenli.
+    C2  Cozmuyorsa: kaydirma miktari VERIDEN aranir (1..63 taranir, Turkce islev
+        sozcugu kazanci en yuksek olan secilir). Benim tahminim degil, olcum.
+
+  Olcut, diyakritik yogunlugu DEGIL -- o bozulmadan etkileniyor. Diyakritigi
+  OLMAYAN Turkce islev sozcukleri (ve/bir/bu/ile/olan) kullanilir; bozuk metinde
+  sifira yakin, dogru cozulmus metinde yuksek cikarlar.
+
 KOSUM (H200, venv + .env.h200 yuklu):
     python scripts/karakter_envanteri_probe.py
     python scripts/karakter_envanteri_probe.py --parse 261_2.pdf
+    python scripts/karakter_envanteri_probe.py --backend 60._Yilinda_Turkiye_Bankalar_Birligi_2.pdf
 """
 
 from __future__ import annotations
@@ -335,11 +354,210 @@ def bolum_b(db, dosya_adi: str) -> int:
     return 0
 
 
+# =============================================================== BOLUM C =====
+# Diyakritigi OLMAYAN Turkce islev sozcukleri. Yerine-gecmis-harf bozulmasindan
+# ETKILENMEZLER: bozuk metinde ~0, dogru cozulmus metinde yuksek cikarlar. Bu
+# yuzden "hangi cozum dogru" sorusunun olcutu diyakritik yogunlugu DEGIL budur.
+_ISLEV = ["ve", "bir", "bu", "ile", "olan", "olarak", "daha", "gibi",
+          "ancak", "veya", "kadar", "sonra", "icin", "ise"]
+_ISLEV_RE = re.compile(r"\b(?:" + "|".join(_ISLEV) + r")\b", re.IGNORECASE)
+
+# Bolum A S2/S3'te GOZLENEN aile-A imzasi (tahmin degil, envanterden).
+_IMZA = _c(0x00D5, 0x00FA, 0x00F7, 0x00F8, 0x00F9, 0x0D88,
+           0x00BD, 0x00BE, 0x00BF, 0x00C0, 0x00C1,
+           0x203A, 0x2039, 0x00A4)
+
+# ASCII araliginda kaydirmanin gecerli oldugu pencere: 0x21..0x60 kaynak
+# karakterleri 0x3E..0x7D'ye tasinir (A-Z <- 0x24..0x3D, a-z <- 0x44..0x5D).
+_KAYDIR_ALT, _KAYDIR_UST = 0x21, 0x60
+
+
+def _kaydir(metin: str, n: int) -> str:
+    """Yalniz ASCII penceresini kaydirir; ozel harf TABLOSU UYGULAMAZ.
+
+    Tablo bilerek yok: amac kaydirmanin kendisini VERIDEN dogrulamak. Islev
+    sozcuklerinin hepsi diyakritiksizdir, yani dogru kaydirmada tablo olmadan
+    da ortaya cikarlar. Tabloyu once uygulasaydik olcut kendi tahminimizi
+    dogrulardi -- bu turda iki kez yanildigim yer tam olarak orasi.
+    """
+    return "".join(
+        chr(ord(ch) + n) if _KAYDIR_ALT <= ord(ch) <= _KAYDIR_UST else ch
+        for ch in metin
+    )
+
+
+def _olcut(metin: str) -> dict:
+    import unicodedata
+    n = len(metin) or 1
+    ctrl = sum(1 for ch in metin
+               if unicodedata.category(ch).startswith("C") and ch not in "\t\n\r")
+    return {
+        "kar": len(metin),
+        "islev": 1000 * len(_ISLEV_RE.findall(metin)) / n,
+        "tr": 1000 * sum(metin.count(c) for c in _TR) / n,
+        "imza": 1000 * sum(metin.count(c) for c in _IMZA) / n,
+        "rakam": 1000 * sum(ch.isdigit() for ch in metin) / n,
+        "ctrl": 1000 * ctrl / n,
+    }
+
+
+def _basli(bas: str) -> None:
+    print(f"\n  {'kaynak':<22} {'karakter':>10} {'islev/1k':>9} {'tr/1k':>8} "
+          f"{'imza/1k':>8} {'rakam/1k':>9} {'ctrl/1k':>8}   {bas}")
+
+
+def _satir(ad: str, o: dict, ek: str = "") -> None:
+    print(f"  {ad:<22} {o['kar']:>10,} {o['islev']:>9.2f} {o['tr']:>8.2f} "
+          f"{o['imza']:>8.2f} {o['rakam']:>9.2f} {o['ctrl']:>8.2f}   {ek}")
+
+
+def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
+    print("=" * 100)
+    print(f"BOLUM C  YERINE-GECMIS HARF TESHISI -- {dosya_adi}")
+    print("=" * 100)
+    with db.connection() as conn:
+        satir = conn.execute(
+            "SELECT file_id, source_path, file_type FROM core_files "
+            "WHERE file_name = %s ORDER BY file_id LIMIT 1;",
+            (dosya_adi,)).fetchone()
+    if satir is None:
+        print(f"  HATA: core_files'ta '{dosya_adi}' yok.")
+        return 1
+    fid, yol, tur = satir
+    if tur != "pdf":
+        print("  Bu teshis yalniz PDF icin anlamli.")
+        return 1
+    print(f"  file_id={fid}  yol={yol}")
+    print(f"  sayfa siniri: {sayfa or 'YOK (tam dosya)'}   OCR: {'ACIK' if ocr else 'kapali'}")
+
+    from ragintel.config.loader import load_config
+    from ragintel.database.config_store import make_db_reader
+    from ragintel.ingestion.cleaning.cleaner import clean_document
+    from ragintel.ingestion.parsing import docling_backend as dbk
+
+    ing = load_config(db_reader=make_db_reader(db)).ingestion
+
+    def _parse(be_adi: str):
+        be = dbk.DoclingBackend(
+            figure_images=False,          # teshis metin uzerine; gorsel maliyeti gereksiz
+            figure_image_scale=float(ing.figure_image_scale),
+            pdf_backend=be_adi,
+            tableformer_mode=str(ing.tableformer_mode),
+            parse_num_threads=int(ing.parse_num_threads),
+        )
+        conv = be._converter(ocr)         # uretim converter'inin AYNISI
+        try:
+            res = conv.convert(yol, page_range=(1, sayfa)) if sayfa else conv.convert(yol)
+        except TypeError:
+            # docling surumu page_range bilmiyorsa tam dosya parse edilir.
+            print("    (page_range desteklenmiyor -> tam dosya)", flush=True)
+            res = conv.convert(yol)
+        return dbk._map_document(res.document, ocr=ocr)
+
+    # ------------------------------------------------------------------ C0/C1
+    print("\n" + "-" * 100)
+    print("C1 ALT-PARSER KARSILASTIRMASI -- baska bir backend dogru cozuyor mu?")
+    print("-" * 100)
+    print("  islev/1k YUKSEK + imza/1k ~0 olan kaynak DOGRU cozmustur.")
+    print("  Uretim satiri referanstir; digerleri ondan iyi degilse config cozum degildir.")
+
+    uretim_adi = str(getattr(ing, "pdf_backend", "") or "pypdfium2")
+    adaylar = [uretim_adi] + [b for b in ("dlparse", "dlparse_v2", "pypdfium2")
+                              if b != uretim_adi]
+    sonuc: dict[str, object] = {}
+    _basli("(ham parse ciktisi)")
+    for be_adi in adaylar:
+        try:
+            p = _parse(be_adi)
+        except Exception as exc:                          # noqa: BLE001 - teshis araci
+            print(f"  {be_adi:<22} HATA: {type(exc).__name__}: {str(exc)[:52]}")
+            continue
+        sonuc[be_adi] = p                                 # ParsedDocument saklanir:
+        _satir(be_adi, _olcut(p.body_text),               # C0 clean icin gerekli,
+               "URETIM" if be_adi == uretim_adi else "")  # ikinci parse'a gerek kalmaz
+    if not sonuc:
+        print("  Hicbir backend parse edemedi -- teshis burada duruyor.")
+        return 1
+
+    parsed_uretim = sonuc.get(uretim_adi) or next(iter(sonuc.values()))
+    ham = parsed_uretim.body_text
+
+    # ------------------------------------------------------------------ C0
+    print("\n" + "-" * 100)
+    print("C0 TEMIZLEME KAYBI -- clean ONCESI vs SONRASI (DB yalniz SONRASINI gorur)")
+    print("-" * 100)
+    try:
+        temiz_metin = clean_document(parsed_uretim).cleaned_text
+    except Exception as exc:                              # noqa: BLE001
+        print(f"  clean asamasi calistirilamadi: {type(exc).__name__}: {exc}")
+        temiz_metin = None
+    if temiz_metin is not None:
+        _basli("(ayni dosya)")
+        _satir("HAM parse", _olcut(ham))
+        _satir("CLEAN sonrasi", _olcut(temiz_metin))
+        import unicodedata
+        yok = {}
+        for ch in ham:
+            if unicodedata.category(ch).startswith("C") and ch not in "\t\n\r":
+                yok[ch] = yok.get(ch, 0) + 1
+        print("\n  HAM parse'taki kontrol karakterleri (clean bunlari SILER):")
+        if not yok:
+            print("    (yok) -> kaydirma C0/C1'e dusmuyor, rakam/harf kaybi bu yoldan DEGIL")
+        for ch, n in sorted(yok.items(), key=lambda x: -x[1])[:12]:
+            print(f"    {_ad(ch):<46} {n:>8,}")
+
+    # ------------------------------------------------------------------ C2
+    print("\n" + "-" * 100)
+    print("C2 KAYDIRMA ARAMASI -- miktar VERIDEN bulunur (1..63), tahminden degil")
+    print("-" * 100)
+    taban = _olcut(ham)["islev"]
+    puanlar = [(_olcut(_kaydir(ham, n))["islev"], n) for n in range(1, 64)]
+    puanlar.sort(reverse=True)
+    print(f"  kaydirmasiz islev/1k: {taban:.2f}\n")
+    print(f"  {'kaydirma':>9} {'islev/1k':>9} {'kazanc':>9}")
+    for puan, n in puanlar[:5]:
+        print(f"  {n:>4} (0x{n:02X}) {puan:>9.2f} {puan - taban:>+9.2f}")
+    en_iyi_puan, en_iyi = puanlar[0]
+    print()
+    if en_iyi_puan < max(2.0, taban * 3):
+        print("  HUKUM: tek-degerli bir ASCII kaydirmasi bu dosyayi ACIKLAMIYOR.")
+        print("         Bozulma daha karmasik (font-basina glif tablosu) -> mekanik")
+        print("         onarim yerine backend/OCR yolu tercih edilmeli.")
+    else:
+        print(f"  HUKUM: +0x{en_iyi:02X} kaydirmasi metni ACIYOR (islev sozcugu "
+              f"{taban:.2f} -> {en_iyi_puan:.2f}/1k).")
+        print("         Bozulma DETERMINISTIK ve geri cevrilebilir. Geriye yalniz")
+        print("         ~10 Turkce harfin tablosu kalir; onu C3 ornekleri verir.")
+        print(f"\n  --- +0x{en_iyi:02X} ile cozulmus ilk satirlar (ozel harf tablosu")
+        print("      UYGULANMADI; kalan bozuk karakterler onarim tablosuna girecek")
+        print("      olanlardir -- tabloyu bu ciktidan kuracagiz) ---")
+        cozulmus = _kaydir(ham, en_iyi)
+        for sat in [s for s in cozulmus.splitlines() if s.strip()][:12]:
+            print(f"      {sat.strip()[:92]}")
+
+    print("\n" + "=" * 100)
+    print("  KARAR NOTU")
+    print("=" * 100)
+    print("  C1'de uretimden IYI bir backend varsa  -> cozum CONFIG (parse.pdf_backend)")
+    print("     + adim 5'in bekleyen reprocess'i. Kod yazilmaz.")
+    print("  Yoksa ve C2 kaydirmayi buluyorsa       -> cozum parse SONRASI, clean ONCESI")
+    print("     bir cozucu (kaydirma + kucuk harf tablosu), aile imzasiyla tetiklenen.")
+    print("  Yoksa ve C2 de bulmuyorsa              -> geriye OCR (do_ocr=True) kalir.")
+    return 0
+
+
 def main() -> int:
     _force_utf8()
     ap = argparse.ArgumentParser()
     ap.add_argument("--parse", metavar="DOSYA_ADI",
                     help="Bolum B: dosyayi yeniden parse edip bosluk sinyalini olcer")
+    ap.add_argument("--backend", metavar="DOSYA_ADI",
+                    help="Bolum C: alt-parser karsilastirmasi + kaydirma aramasi")
+    ap.add_argument("--sayfa", type=int, default=12, metavar="N",
+                    help="Bolum C: yalniz ilk N sayfa (0 = tam dosya). "
+                         "Buyuk kitaplarda 3 backend x tam dosya cok uzun surer.")
+    ap.add_argument("--ocr", action="store_true",
+                    help="Bolum C: OCR acik parse et (yavas; son care yolunu olcer)")
     a = ap.parse_args()
 
     from ragintel.config.settings import DbSettings
@@ -347,6 +565,8 @@ def main() -> int:
 
     db = Database(DbSettings()).open()
     try:
+        if a.backend:
+            return bolum_c(db, a.backend, a.sayfa, a.ocr)
         return bolum_b(db, a.parse) if a.parse else bolum_a(db)
     finally:
         db.close()
