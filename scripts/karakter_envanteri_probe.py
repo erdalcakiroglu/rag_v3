@@ -715,9 +715,16 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
     print("  Dar pencere (0x21..0x60) onlari kacirir; C0'daki kontrol karakteri")
     print("  yigilmasi tam da bunu isaret ediyor. Hangisinin dogru oldugunu")
     print("  yine olcum soyler.\n")
+    # UST UC AYRI BIR ADAY: ilk yazimda yalniz alt uc degisiyordu ve secim
+    # ctrl/1k'ye bakiyordu -- ust uc ctrl uretmedigi icin OLCULMEDEN 0x7E'de
+    # kaldi. C5b bunun bedelini gosterdi: hedef 0x7E ('~') Turkce metinde
+    # gecmez, yani ham 0x61 ('a') kodlanmis olamaz; pencereye alinirsa DUZ
+    # metnin 'a'lari '~' olur. En yuksek gercek hedef 'z' (0x7A)'dir.
     pencereler = [
         ("dar 0x21..0x60", _KAYDIR_ALT, _KAYDIR_UST, True),
         (f"genis 0x{0x20-en_iyi:02X}..0x{0x7E-en_iyi:02X}", 0x20 - en_iyi, 0x7E - en_iyi, True),
+        (f"ust uc 'z' 0x{0x20-en_iyi:02X}..0x{0x7A-en_iyi:02X}",
+         0x20 - en_iyi, 0x7A - en_iyi, True),
         ("genis + bosluk da", 0x20 - en_iyi, 0x7E - en_iyi, False),
     ]
     _basli(f"(+0x{en_iyi:02X})")
@@ -730,13 +737,28 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
     # SECIM KURALI (acikca yazili, cunku islev/1k burada ayirt edemez):
     #   1) ctrl/1k en dusuk olan  -> kodlanmis karakterleri gercekten geri getiren
     #   2) esitlikte bosluk/1k en yuksek olan -> gercek bosluklari bozmayan
+    #   3) esitlikte '{|}~' en az ureten -> UST UCU olcen kural. Ilk ikisi ust
+    #      uca KOR: ust ucu buyutmek ne ctrl azaltir ne bosluk uretir, o yuzden
+    #      0x7E'ye kadar giden pencere OLCULMEDEN kazaniyordu. Bu dort karakter
+    #      Turkce metinde pratikte gecmez; uretiliyorlarsa pencere fazla genis
+    #      demektir ve fazlalik DUZ metnin harflerini yiyor.
+    def _ustuc_zarar(metin: str) -> int:
+        # HAM SAYIM YANILTIR: '|' bu korpusta MESRU bir glif ('o' umlaut'un
+        # yerine geciyor, C3'te gorunuyor) ve pencereden bagimsiz olarak
+        # oldugu gibi gecer. O yuzden kaydirmanin KENDI katkisi olculur:
+        # cozulmusteki sayidan hamdaki taban cikarilir.
+        return sum(metin.count(ch) - ham.count(ch) for ch in "{|}~")
+
     etiket, o, cozulmus, pencere = max(adaylar_p,
                                        key=lambda t: (-round(t[1]["ctrl"], 2),
-                                                      t[1]["bosluk"]))
+                                                      t[1]["bosluk"],
+                                                      -_ustuc_zarar(t[2])))
     print(f"\n  KAZANAN pencere: {etiket}   ctrl/1k={o['ctrl']:.2f} "
-          f"bosluk/1k={o['bosluk']:.2f} rakam/1k={o['rakam']:.2f}")
+          f"bosluk/1k={o['bosluk']:.2f} rakam/1k={o['rakam']:.2f} "
+          f"'{{|}}~'={_ustuc_zarar(cozulmus)}")
     print("  (secim kurali: once en dusuk ctrl/1k = kodlanmis karakteri geri")
-    print("   getiren; esitlikte en yuksek bosluk/1k = gercek boslugu bozmayan)")
+    print("   getiren; esitlikte en yuksek bosluk/1k = gercek boslugu bozmayan;")
+    print("   esitlikte en az '{|}~' = ust ucu fazla genis olmayan)")
 
     print("\n  --- cozulmus ilk satirlar (ozel harf tablosu UYGULANMADI) ---")
     for sat in [s for s in cozulmus.splitlines() if s.strip()][:12]:
