@@ -872,8 +872,23 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
     print("  belgede '1958' DOGRU cozuluyor, yani o kodlanmis. Belge iki turu")
     print("  KARISTIRIYOR ve ikisi de pencere icinde -- cozucu ayirt edemez.")
     print("  Onarim kodu yazilacaksa bu koslarin payi bilinmelidir.\n")
-    print("  Olcut: satir bazinda HARF ORANI. Kodlanmis satirda ham metin")
-    print("  noktalama corbasidir, kaydirinca harflenir. Duz satirda tersi olur.\n")
+    print("  ILK YAZIMDA olcut satir bazinda HARF ORANI idi ve 'duz kos YOK'")
+    print("  dedi -- YANLISTI. Ayni kosumun C3 ciktisinda NVVS hala duruyordu.")
+    print("  Iki kusuru vardi: (a) len<8 satirlari atliyordu, oysa duz koslarin")
+    print("  TAMAMI kisa satir (kronoloji yil etiketleri); (b) 4 karakterlik bir")
+    print("  satirda harf orani zaten ayirt edemez. Olcut degistirildi.\n")
+    print("  YENI OLCUT -- iki TEK YONLU kesin isaret (sezgi degil, tanim):")
+    print("    ham C0 (0x03..0x1F) -> KODLANMIS. Duz metinde kontrol karakteri")
+    print("       yoktur; kodlanmis bosluk/noktalama tam da oraya duser.")
+    print("    ham RAKAM (0x30..0x39) -> DUZ. Kodlanmis rakam 0x13..0x1C'ye,")
+    print("       yani C0'a duser; kodlanmis akis ham rakam URETEMEZ.")
+    print("  Belirsiz karakterler OY KULLANMAZ. Iki isaret ayni satirda ise")
+    print("  satir KARISIK'tir ve satir-bazli onarim orada da yetmez.\n")
+
+    def _isaret(s: str) -> tuple[int, int]:
+        k = sum(1 for ch in s if 0x03 <= ord(ch) <= 0x1F and ch not in "\t\r")
+        d = sum(1 for ch in s if 0x30 <= ord(ch) <= 0x39)
+        return k, d
 
     def _harf_orani(s: str) -> float:
         g = [ch for ch in s if not ch.isspace()]
@@ -881,25 +896,40 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
             return 0.0
         return sum(1 for ch in g if ch.isalpha()) / len(g)
 
-    duz_satir, kod_satir, kars_satir = [], [], []
+    kod_s, duz_s, kar_s, yok_s = [], [], [], []
     for s in ham.splitlines():
-        if len(s.strip()) < 8:            # kisa satir ayirt edemez, sayilmaz
+        if not s.strip():
             continue
-        r, k = _harf_orani(s), _harf_orani(_kaydir(s, en_iyi, alt_p, ust_p, bosluk_koru=bk_p))
-        (duz_satir if r > k + 0.05 else
-         kod_satir if k > r + 0.05 else kars_satir).append(s)
-    top_s = len(duz_satir) + len(kod_satir) + len(kars_satir)
-    print(f"  {'satir turu':<22} {'satir':>7} {'pay':>7} {'karakter':>10}")
-    for ad_s, grup in (("KODLANMIS", kod_satir), ("DUZ (kaydirma BOZAR)", duz_satir),
-                       ("kararsiz", kars_satir)):
-        print(f"  {ad_s:<22} {len(grup):>7} {100*len(grup)/max(1,top_s):>6.1f}% "
+        k, d = _isaret(s)
+        (kar_s if k and d else kod_s if k else duz_s if d else yok_s).append(s)
+    top_s = max(1, len(kod_s) + len(duz_s) + len(kar_s) + len(yok_s))
+    print(f"  {'satir turu':<26} {'satir':>7} {'pay':>7} {'karakter':>10}")
+    for ad_s, grup in (("KODLANMIS (C0 var)", kod_s),
+                       ("DUZ (ham rakam var)", duz_s),
+                       ("KARISIK (ikisi de)", kar_s),
+                       ("isaretsiz (oy yok)", yok_s)):
+        print(f"  {ad_s:<26} {len(grup):>7} {100*len(grup)/top_s:>6.1f}% "
               f"{sum(len(s) for s in grup):>10,}")
-    if duz_satir:
-        print("\n  --- DUZ satir ornekleri (kaydirma bunlari bozar) ---")
-        for s in duz_satir[:8]:
-            print(f"      {s.strip()[:88]}")
-        print("\n  -> Onarim satir/kos BAZINDA karar vermeli: harf orani hangi")
-        print("     yonde artiyorsa o secilir. Global kaydirma bu satirlari bozar.")
+
+    # Isaretsiz satirlar oy kullanmaz ama pay tasir; harf-orani ONLARA
+    # uygulanabilir -- kesin degil, ama buyuklugu gorunur kilar.
+    if yok_s:
+        y_duz = sum(1 for s in yok_s
+                    if _harf_orani(s) > _harf_orani(
+                        _kaydir(s, en_iyi, alt_p, ust_p, bosluk_koru=bk_p)) + 0.05)
+        print(f"\n  isaretsiz {len(yok_s)} satirin {y_duz}'i harf-oranina gore DUZ"
+              f" gorunuyor ({100*y_duz/len(yok_s):.0f}%) -- KESIN DEGIL, gosterge.")
+
+    for ad_s, grup in (("DUZ", duz_s), ("KARISIK", kar_s)):
+        if grup:
+            print(f"\n  --- {ad_s} satir ornekleri (kaydirma bunlari BOZAR) ---")
+            for s in grup[:6]:
+                print(f"      ham: {_gorunur(s.strip()[:76])}")
+                print(f"      -> : {_gorunur(_kaydir(s, en_iyi, alt_p, ust_p, bosluk_koru=bk_p).strip()[:76])}")
+
+    if duz_s or kar_s:
+        print("\n  -> GLOBAL KAYDIRMA GUVENLI DEGIL. Onarim kos bazinda karar")
+        print("     vermeli ve isaret tasimayan koslar komsularindan miras almali.")
     else:
         print("\n  -> Duz kos YOK: global kaydirma guvenli.")
 
@@ -1081,6 +1111,108 @@ def bolum_d(db, dosya_adi: str, sayfa: int) -> int:
     return 0
 
 
+# =============================================================== BOLUM E =====
+def bolum_e(db) -> int:
+    """Onarim tetikleyicisi DOSYA basina mi, CHUNK basina mi olmali?
+
+    S5 kapsami dosya duzeyinde verdi ve orada bir TEHLIKE gorunuyor: listenin
+    alt ucundaki dosyalarin (OSMANLI imza 1.73 / tr 67.97, Catikkas 4.60 /
+    67.28) Turkce diyakritik yogunlugu NORMAL (korpus medyani ~72). Yani
+    metinleri saglam ama az miktarda imza tasiyorlar. Iki aciklama var ve
+    ikisi ZIT karar gerektirir:
+      (a) mesru kullanim (tek bir bolme isareti, tek bir yarim kesri)
+          -> dosya onarim disi birakilmali; kaydirma uygulanirsa metin YOK OLUR
+      (b) dosya KISMEN bozuk -- bazi sayfalar kodlanmis, cogu saglam
+          -> onarim dosyayi degil, BOZUK PARCAYI hedeflemeli
+    Ayrimi tahminle yapmak, saglam bir kitabi kaydirmayla imha etme riski
+    demektir. Chunk duzeyinde bakinca ikisi ayrilir: (a)'da hicbir chunk
+    yogun degildir, (b)'de az sayida chunk cok yogundur.
+
+    Parse YOK -- depolanmis chunk'lar uzerinde SQL. Clean C0 isaretlerini
+    siliyor ama imza (O-tilde/u-acute/...) ve diyakritik SAG KALIYOR; S5 de
+    zaten onlarla olctu. Bu yuzden olcum burada gecerlidir.
+    """
+    print("=" * 100)
+    print("BOLUM E  TETIKLEYICI KAPSAMI -- onarim dosyayi mi, chunk'i mi hedeflemeli?")
+    print("=" * 100)
+    print("  BOZUK esigi : imza/1000 >= 10   (S5'te gercekten bozuk dosyalar 27..120)")
+    print("  SAGLAM esigi: imza/1000 <  1    (S5 aile esigi ile ayni)")
+    print("  arada olan chunk'lar ayrica sayilir -- elle bakilacak gri bolge.\n")
+
+    sorgu = """
+        WITH k AS (
+          SELECT f.file_name AS ad,
+                 length(c.chunk_text)::numeric AS n,
+                 (length(c.chunk_text)
+                  - length(translate(c.chunk_text, %(im)s, '')))::numeric AS im,
+                 (length(c.chunk_text)
+                  - length(translate(c.chunk_text, %(tr)s, '')))::numeric AS tr
+          FROM core_chunks c JOIN core_files f USING (file_id)
+          WHERE length(c.chunk_text) > 0
+        ), y AS (
+          SELECT ad, n, tr, 1000*im/n AS yog FROM k
+        )
+        SELECT ad,
+               count(*)                                        AS chunk,
+               count(*) FILTER (WHERE yog >= 10)                AS bozuk,
+               count(*) FILTER (WHERE yog > 0 AND yog < 10)     AS arada,
+               coalesce(sum(n) FILTER (WHERE yog >= 10), 0)     AS bozuk_kar,
+               sum(n)                                           AS kar,
+               coalesce(1000*sum(tr) FILTER (WHERE yog >= 10)
+                        / nullif(sum(n) FILTER (WHERE yog >= 10), 0), 0) AS tr_bozuk,
+               coalesce(1000*sum(tr) FILTER (WHERE yog < 10)
+                        / nullif(sum(n) FILTER (WHERE yog < 10), 0), 0)  AS tr_saglam
+        FROM y GROUP BY ad
+        HAVING count(*) FILTER (WHERE yog > 0) > 0
+        ORDER BY 3 DESC, 4 DESC;
+    """
+    with db.connection() as conn:
+        satirlar = conn.execute(sorgu, {"im": _IMZA, "tr": _TR}).fetchall()
+        korpus_kar = int(conn.execute(
+            "SELECT coalesce(sum(length(chunk_text)), 0) FROM core_chunks;").fetchone()[0])
+
+    print(f"  {'dosya':<44} {'chunk':>6} {'bozuk':>6} {'arada':>6} "
+          f"{'bozuk kar':>11} {'pay':>6} {'tr/1k boz':>10} {'tr/1k sag':>10}")
+    t_bozuk_kar = t_bozuk = t_arada = 0
+    tam_bozuk, kismi, temiz = [], [], []
+    for ad, chunk, bozuk, arada, bozuk_kar, kar, tr_b, tr_s in satirlar:
+        chunk, bozuk, arada = int(chunk), int(bozuk), int(arada)
+        bozuk_kar, kar = int(bozuk_kar), int(kar)
+        t_bozuk_kar += bozuk_kar
+        t_bozuk += bozuk
+        t_arada += arada
+        pay = bozuk / chunk if chunk else 0.0
+        (tam_bozuk if pay >= 0.9 else kismi if bozuk else temiz).append(ad)
+        if bozuk or arada >= 20:          # gri bolgesi genis olanlar da gorunsun
+            print(f"  {ad[:44]:<44} {chunk:>6,} {bozuk:>6,} {arada:>6,} "
+                  f"{bozuk_kar:>11,} {100*pay:>5.1f}% {float(tr_b):>10.2f} "
+                  f"{float(tr_s):>10.2f}")
+
+    print(f"\n  TOPLAM bozuk chunk: {t_bozuk:,}   karakter: {t_bozuk_kar:,} "
+          f"({100*t_bozuk_kar/max(1,korpus_kar):.1f}% korpus metni)")
+    print(f"  gri bolge (0 < imza/1k < 10): {t_arada:,} chunk")
+    print(f"  tam bozuk dosya: {len(tam_bozuk)}   KISMEN bozuk: {len(kismi)}   "
+          f"imzali ama bozuk chunk'i olmayan: {len(temiz)}")
+
+    print("\n  HUKUM:")
+    if kismi:
+        print(f"    KISMI BOZULMA GERCEK ({len(kismi)} dosya). Tetikleyici DOSYA")
+        print("    BASINA OLAMAZ: bu dosyalarda saglam chunk'lar da var ve global")
+        print("    kaydirma onlari imha eder. Onarim chunk/kos duzeyinde tetiklenmeli.")
+        for ad in kismi[:10]:
+            print(f"      - {ad[:80]}")
+    else:
+        print("    Kismen bozuk dosya YOK: bozulma dosya-genelinde ya hep ya hic.")
+        print("    Tetikleyici dosya basina kurulabilir (yine de kos-bazli")
+        print("    guvenlik kalmali -- C6 duz kos buldu).")
+    if temiz:
+        print(f"\n    {len(temiz)} dosya imza tasiyor ama HICBIR chunk'i yogun degil")
+        print("    -> mesru kullanim (bolme isareti/kesir). Onarim DISI birakilmali.")
+        for ad in temiz[:10]:
+            print(f"      - {ad[:80]}")
+    return 0
+
+
 def main() -> int:
     _force_utf8()
     ap = argparse.ArgumentParser()
@@ -1090,6 +1222,8 @@ def main() -> int:
                     help="Bolum C: alt-parser karsilastirmasi + kaydirma aramasi")
     ap.add_argument("--dis", metavar="DOSYA_ADI",
                     help="Bolum D: harici cikaricilar + PDF'in ToUnicode beyani")
+    ap.add_argument("--tetik", action="store_true",
+                    help="Bolum E: onarim tetikleyicisi dosya mi chunk mi? (SQL, parse yok)")
     # Varsayilan bilerek bolume gore FARKLI (asagida cozuluyor): C uc backend
     # kosar -> tam kitap dakikalar surer, 12 sayfa yeter. B tek kosumdur ve
     # sonucu DEPOLANMIS sayimla kiyaslanir -> varsayilani tam dosya olmali,
@@ -1106,6 +1240,8 @@ def main() -> int:
 
     db = Database(DbSettings()).open()
     try:
+        if a.tetik:
+            return bolum_e(db)
         if a.dis:
             return bolum_d(db, a.dis, 12 if a.sayfa is None else a.sayfa)
         if a.backend:
