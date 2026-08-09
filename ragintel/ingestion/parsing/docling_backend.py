@@ -33,6 +33,9 @@ def _resolve_pdf_backend(name: str):
 
 class DoclingBackend:
     name = "docling"
+    # Glif onarımı (parsing/glyph_repair.py) bu yeteneği sorgular; fallback
+    # backend'de bayrak yoktur ve onarım kolu sessizce atlanır.
+    supports_full_page_ocr = True
 
     def __init__(self, *, figure_images: bool = True, figure_image_scale: float = 2.0,
                  pdf_backend: str = "pypdfium2", tableformer_mode: str = "accurate",
@@ -54,8 +57,9 @@ class DoclingBackend:
     def supports(self, file_type: str) -> bool:
         return file_type in ("pdf", "docx")
 
-    def _converter(self, ocr: bool):
-        if ocr not in self._converters:
+    def _converter(self, ocr: bool, full_page: bool = False):
+        anahtar = (bool(ocr), bool(full_page))
+        if anahtar not in self._converters:
             from docling.document_converter import DocumentConverter, PdfFormatOption
             from docling.datamodel.base_models import InputFormat
             from docling.datamodel.pipeline_options import (
@@ -63,7 +67,15 @@ class DoclingBackend:
             )
 
             opts = PdfPipelineOptions()
-            opts.do_ocr = ocr
+            opts.do_ocr = ocr or full_page
+            if full_page:
+                # İKİSİ AYNI ŞEY DEĞİL: `do_ocr=True` yalnızca metin katmanı
+                # OLMAYAN bölgeleri OCR'lar. Bozuk kodlamalı PDF'lerin metin
+                # katmanı VARDIR (yalnız anlamsızdır), bu yüzden do_ocr hiç
+                # tetiklenmez — ölçüldü, çıktı OCR'sız koşumla bit-bit aynı
+                # çıktı. `force_full_page_ocr` metin katmanını yok sayıp
+                # sayfayı piksellerinden okur; bozuk aileleri kurtaran TEK kol.
+                opts.ocr_options.force_full_page_ocr = True
             opts.do_table_structure = True
             # İP-2: TableFormer modu (config-first). 'fast' tablo çıkarımını
             # KAPATMADAN CPU'da belirgin hızlandırır (mühürlü ACCURATE korpusa
@@ -88,18 +100,19 @@ class DoclingBackend:
             backend_cls = _resolve_pdf_backend(self.pdf_backend)
             if backend_cls is not None:   # None = docling'in kendi varsayılanı (dlparse)
                 fmt_kwargs["backend"] = backend_cls
-            self._converters[ocr] = DocumentConverter(
+            self._converters[anahtar] = DocumentConverter(
                 format_options={
                     InputFormat.PDF: PdfFormatOption(**fmt_kwargs)
                 }
             )
-        return self._converters[ocr]
+        return self._converters[anahtar]
 
-    def parse(self, path: str, file_type: str, *, ocr: bool = False) -> ParsedDocument:
-        conv = self._converter(ocr)
+    def parse(self, path: str, file_type: str, *, ocr: bool = False,
+              full_page_ocr: bool = False) -> ParsedDocument:
+        conv = self._converter(ocr, full_page_ocr)
         result = conv.convert(path)
         document = result.document
-        return _map_document(document, ocr=ocr)
+        return _map_document(document, ocr=ocr, full_page_ocr=full_page_ocr)
 
 
 def _picture_png(pic) -> bytes | None:
@@ -126,7 +139,7 @@ def _page_no_of(item) -> int | None:
     return None
 
 
-def _map_document(document, *, ocr: bool) -> ParsedDocument:
+def _map_document(document, *, ocr: bool, full_page_ocr: bool = False) -> ParsedDocument:
     pd = ParsedDocument()
 
     # Sayfa iskeleti (numara sırasıyla).
@@ -185,7 +198,9 @@ def _map_document(document, *, ocr: bool) -> ParsedDocument:
     pd.pages = [pages[k] for k in sorted(pages)]
     if not pd.pages:
         pd.pages.append(Page(page_no=1, text_blocks=[]))
-    if ocr:
+    if full_page_ocr:
+        pd.warn("docling: tam-sayfa OCR etkin (metin katmanı yok sayıldı)")
+    elif ocr:
         pd.warn("docling: OCR modu etkin")
     pd.language = detect_language(pd.body_text)
     return pd

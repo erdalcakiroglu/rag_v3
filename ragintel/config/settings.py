@@ -605,6 +605,39 @@ class OcrFallback(BaseModel):
     )
 
 
+class GlyphRepair(BaseModel):
+    """Bozuk font kodlaması onarımı (2026-08-09'da ölçüldü; bkz. parsing/glyph_repair.py).
+
+    `ocr_fallback`tan AYRI bir koldur ve karıştırılmamalıdır: o kol metin
+    katmanı YOK olduğunda (taranmış PDF, coverage düşük) devreye girer; bu kol
+    metin katmanı VAR ama anlamsız olduğunda. İkincisinde coverage yüksek
+    çıkar, garbage_ratio 0.000000 ölçülür ve quality_score 99 verir — hiçbir
+    mevcut gösterge kırmızı yanmaz. Tetik bu yüzden ayrı bir ölçüte dayanır.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Metin katmanı bozuk kodlamalı sayfalar tam-sayfa OCR ile yeniden "
+                    "okunsun mu? Kapatmak bu sayfaların erişilemez metinle gömülmesi demektir.",
+    )
+    signature_per_1k: float = Field(
+        default=10.0, ge=0.0, le=1000.0,
+        description="Sayfa metninde 1000 karakter başına imza karakteri (Õ ú ÷ › ‹ ¤ ...) "
+                    "bu değeri aşarsa sayfa bozuk sayılır. Ölçüldü: gerçekten bozuk dosyalar "
+                    "27..120, metni sağlam olup meşru imza taşıyanlar 5'in altında.",
+    )
+    min_page_chars: int = Field(
+        default=200, ge=0, le=100000,
+        description="Bu uzunluğun altındaki sayfalar tetiği hiç değerlendirmez — kapak/boş "
+                    "sayfada yoğunluk tek bir karakterle patlar.",
+    )
+    max_retry: int = Field(
+        default=1, ge=0, le=3,
+        description="Dosya başına azami tam-sayfa OCR denemesi. Tam-sayfa OCR metin katmanı "
+                    "parse'ının ~3 katı sürer (ölçüldü: 1.0-1.2 s/sayfa).",
+    )
+
+
 class QualityConfig(BaseModel):
     weights: QualityWeights = Field(default_factory=QualityWeights,
                                     description="Kalite skorunun aşama ağırlıkları (toplam 1.0).")
@@ -618,6 +651,9 @@ class QualityConfig(BaseModel):
                                    description="Embedding aşamasının eşikleri.")
     ocr_fallback: OcrFallback = Field(default_factory=OcrFallback,
                                       description="Düşük kapsamda OCR ile yeniden parse davranışı.")
+    glyph_repair: GlyphRepair = Field(
+        default_factory=GlyphRepair,
+        description="Metin katmanı VAR ama bozuk kodlamalı sayfalarda tam-sayfa OCR onarımı.")
     # M-4: ingest raporunun parse başarı hedefi (eskiden report.PARSE_SUCCESS_TARGET sabiti).
     parse_success_target: float = Field(
         default=0.95, ge=0.0, le=1.0,

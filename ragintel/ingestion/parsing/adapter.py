@@ -6,6 +6,10 @@ Sorumluluklar:
   - Parse kalite ölçümü + metrics_ingestion(step='parse') — deneme başına AYRI kayıt.
   - OCR fallback: coverage < trigger VE pdf ise 1 (config: max_retry) kez OCR ile
     yeniden dene; ikinci sonuç kabul edilir (Ek-A İP-2).
+  - Glif onarımı: metin katmanı VAR ama bozuk kodlamalı (subset font, ToUnicode
+    düşmüş) sayfalar tam-sayfa OCR ile yeniden okunur ve SAYFA BAZINDA
+    birleştirilir (config: quality.glyph_repair). OCR fallback'ten ayrı koldur —
+    orada coverage düşüktür, burada yüksektir ve hiçbir gösterge yanmaz.
   - Hard fail (coverage/garbage eşikleri, config'ten) -> core_files FAILED;
     pipeline diğer dosyalarla devam eder. Başarıda language yazılır.
   - Tablolar/şekiller ParsedDocument'te taşınır; DB'ye YAZILMAZ (İP-8 transaksiyonu).
@@ -107,8 +111,17 @@ class ParseAdapter:
         self.log = logger or get_logger("ingestion.parse")
 
     # -- saf dispatch (DB yok) ------------------------------------------------
-    def parse_path(self, path: str, file_type: str, *, ocr: bool = False) -> ParsedDocument:
+    def parse_path(self, path: str, file_type: str, *, ocr: bool = False,
+                   full_page_ocr: bool = False) -> ParsedDocument:
         if file_type in ("pdf", "docx"):
+            if full_page_ocr:
+                # Yetenek sorulur, varsayılmaz: fallback backend'de bu bayrak
+                # yoktur ve TypeError ile dosyayı FAILED yapardı.
+                if not getattr(self.backend, "supports_full_page_ocr", False):
+                    raise ValueError(
+                        f"backend {getattr(self.backend, 'name', '?')} tam-sayfa OCR desteklemiyor"
+                    )
+                return self.backend.parse(path, file_type, ocr=True, full_page_ocr=True)
             return self.backend.parse(path, file_type, ocr=ocr)
         if file_type == "xlsx":
             return parse_xlsx(path)
@@ -157,6 +170,10 @@ class ParseAdapter:
                         attempts.append(a)
                         final = a
 
+                final, glif = self._glif_onar(
+                    file_id, path, file_type, final, attempts
+                )
+
                 status, reason = self._judge(final, file_type)
                 set_span_attributes(
                     parse_attempts=len(attempts),
@@ -179,8 +196,14 @@ class ParseAdapter:
                                 conn, file_id=file_id, finding="low_coverage",
                                 detail=f"coverage={final.metrics.get('coverage')}",
                             )
+                        if glif is not None:
+                            insert_qc_finding(
+                                conn, file_id=file_id, finding=glif["finding"],
+                                detail=glif["detail"],
+                            )
                         self.log.info("parse_ok", language=lang,
-                                      attempts=len(attempts), low_coverage=soft_low)
+                                      attempts=len(attempts), low_coverage=soft_low,
+                                      glyph_repair=(glif or {}).get("finding"))
 
                 return ParseResult(file_id, status, final.parsed, attempts, reason)
         finally:
@@ -198,11 +221,14 @@ class ParseAdapter:
         return results
 
     # -- internals ------------------------------------------------------------
-    def _attempt(self, path: str, file_type: str, ocr: bool, attempt_no: int) -> ParseAttempt:
+    def _attempt(self, path: str, file_type: str, ocr: bool, attempt_no: int,
+                 *, full_page_ocr: bool = False) -> ParseAttempt:
         t0 = time.perf_counter()
         try:
             parsed = run_with_timeout(
-                lambda: self.parse_path(path, file_type, ocr=ocr), self.timeout_sec
+                lambda: self.parse_path(path, file_type, ocr=ocr,
+                                        full_page_ocr=full_page_ocr),
+                self.timeout_sec,
             )
         except TimeoutError as exc:
             dur = int((time.perf_counter() - t0) * 1000)
@@ -214,12 +240,14 @@ class ParseAdapter:
         metrics = compute_parse_metrics(parsed, file_type)
         return ParseAttempt(attempt_no, ocr, dur, metrics=metrics, parsed=parsed)
 
-    def _attempt_and_record(self, file_id, path, file_type, *, ocr, attempt_no) -> ParseAttempt:
-        att = self._attempt(path, file_type, ocr, attempt_no)
+    def _attempt_and_record(self, file_id, path, file_type, *, ocr, attempt_no,
+                            full_page_ocr: bool = False) -> ParseAttempt:
+        att = self._attempt(path, file_type, ocr, attempt_no, full_page_ocr=full_page_ocr)
         hard_fail, soft_low = self._flags(att, file_type)
         detail = {
             "attempt": attempt_no,
             "ocr": ocr,
+            "full_page_ocr": full_page_ocr,
             "backend": getattr(self.backend, "name", "?") if file_type in ("pdf", "docx") else "office",
             "attempt_duration_ms": att.duration_ms,
             "timed_out": att.timed_out,
@@ -240,6 +268,82 @@ class ParseAdapter:
                 detail=detail,
             )
         return att
+
+    # -- glif onarımı (bozuk font kodlaması) ----------------------------------
+    def _glif_onar(self, file_id, path, file_type, final: ParseAttempt,
+                   attempts: list[ParseAttempt]) -> tuple[ParseAttempt, dict | None]:
+        """Bozuk kodlamalı sayfaları tam-sayfa OCR ile yeniden okur ve birleştirir.
+
+        `ocr_fallback`tan AYRI çalışır ve onun ARDINDAN gelir: o kol metin
+        katmanı YOK olduğunda (coverage düşük), bu kol metin katmanı VAR ama
+        anlamsız olduğunda devreye girer. İkinci durumda coverage yüksek,
+        garbage_ratio 0.000000 ve quality_score 99 çıkar — mevcut göstergelerin
+        hiçbiri yanmaz, tetik bu yüzden ayrı bir ölçüte (imza yoğunluğu) dayanır.
+
+        BULGU HER HÂLÜKÂRDA YAZILIR: onarım kapalıysa ya da backend
+        desteklemiyorsa bile bozukluk 'encoding_broken' olarak kaydedilir.
+        Ölçülemeyen kusur yönetilemez; sessiz geçmek bu kusurun korpusa ilk
+        girişindeki hatanın aynısı olurdu.
+        """
+        if file_type != "pdf" or final.parsed is None or final.timed_out:
+            return final, None
+        try:
+            cfg = self.quality.glyph_repair
+        except AttributeError:            # eski config şeması -> kol yok
+            return final, None
+        if not cfg.enabled:
+            return final, None
+
+        from .glyph_repair import birlestir, bozuk_sayfalar
+
+        bozuk = bozuk_sayfalar(
+            final.parsed,
+            imza_bin=float(cfg.signature_per_1k),
+            min_karakter=int(cfg.min_page_chars),
+        )
+        if not bozuk:
+            return final, None
+
+        n_sayfa = len(final.parsed.pages) or 1
+        ozet = f"bozuk_sayfa={len(bozuk)}/{n_sayfa} sayfa={sorted(bozuk)[:20]}"
+        self.log.warning("glyph_repair_triggered", broken_pages=len(bozuk),
+                         total_pages=n_sayfa)
+        add_event("glyph_repair_triggered", broken_pages=len(bozuk), total_pages=n_sayfa)
+
+        if not getattr(self.backend, "supports_full_page_ocr", False) or cfg.max_retry < 1:
+            return final, {"finding": "encoding_broken",
+                           "detail": f"{ozet} onarim=YOK (backend/config)"}
+
+        att = self._attempt_and_record(
+            file_id, path, file_type, ocr=True,
+            attempt_no=len(attempts) + 1, full_page_ocr=True,
+        )
+        attempts.append(att)
+        if att.parsed is None:
+            return final, {"finding": "encoding_broken",
+                           "detail": f"{ozet} onarim=BASARISIZ ({att.error or 'timeout'})"}
+
+        birlesik = birlestir(final.parsed, att.parsed, bozuk)
+        kalan = bozuk_sayfalar(
+            birlesik,
+            imza_bin=float(cfg.signature_per_1k),
+            min_karakter=int(cfg.min_page_chars),
+        )
+        # İDDİA ETME, DOĞRULA: birleştirme sonrası bozuk sayfa gerçekten
+        # düştü mü? Düşmediyse bu bir onarım değildir ve öyle kaydedilmez.
+        onarilan = len(bozuk) - len(kalan)
+        yeni = ParseAttempt(
+            attempt_no=att.attempt_no, ocr=True,
+            duration_ms=final.duration_ms + att.duration_ms,
+            metrics=compute_parse_metrics(birlesik, file_type), parsed=birlesik,
+        )
+        detail = f"{ozet} onarilan={onarilan} kalan={len(kalan)}"
+        if onarilan <= 0:
+            # Kazanç yoksa BİRLEŞTİRME UYGULANMAZ: sağlam sayfaları OCR
+            # gürültüsüne maruz bırakmanın karşılığı yok.
+            return final, {"finding": "encoding_broken",
+                           "detail": f"{detail} (birlestirme UYGULANMADI)"}
+        return yeni, {"finding": "encoding_repaired", "detail": detail}
 
     def _flags(self, att: ParseAttempt, file_type: str) -> tuple[bool, bool]:
         if att.timed_out or att.error is not None or not att.metrics:
