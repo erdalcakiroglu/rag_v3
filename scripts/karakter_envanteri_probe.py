@@ -863,6 +863,41 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
         print(f"    KARARSIZ (dogru={100*d:.0f}%, bozuk={100*b:.0f}% pencere ici).")
         print("    Yukaridaki 'ham hali' sutunu elle okunmali.")
 
+    # ---------------------------------------------------------------- C5b
+    print("\n" + "-" * 100)
+    print("C5b PENCERENIN UST UCU -- 0x61 gercekten iceride mi?")
+    print("-" * 100)
+    print("  C2b ust sinirI BAGIMSIZ DEGISTIRMEDI: yalniz 'dar 0x21..0x60' ile")
+    print("  'genis 0x03..0x61' kiyaslandi ve fark ALT uctan geldi (bosluk ve")
+    print("  rakamlar). Ust uc olcusuz kaldi, oysa asagidaki karar ona dayaniyor:")
+    print("  ham 0x61 ('a') pencere ICINDE sayilirsa '~'e cevrilir; DISINDA")
+    print("  sayilirsa duz metnin isareti olur. Ikisi ZIT sonuc verir.")
+    print("  Gercek metinde en yuksek hedef 'z' (0x7A) = ham 0x5D; yani ham")
+    print("  0x5E..0x61 ('^ _ ` a') kodlanmis akista pratikte HIC olusmamali.")
+    print("  Olusuyorlarsa kodlanmis degildirler.\n")
+    print(f"  {'ham':<10} {'-> kaydirilmis':<16} {'adet':>7}   ornek baglam")
+    for kod in (0x5E, 0x5F, 0x60, 0x61):
+        ch = chr(kod)
+        n_h = ham.count(ch)
+        if not n_h:
+            print(f"  {_gorunur(ch)+f' (0x{kod:02X})':<10} "
+                  f"{_gorunur(chr(kod + en_iyi)):<16} {0:>7}")
+            continue
+        i = ham.find(ch)
+        bag = _gorunur(ham[max(0, i - 26):i + 26].replace("\n", " "))
+        print(f"  {_gorunur(ch)+f' (0x{kod:02X})':<10} "
+              f"{_gorunur(chr(kod + en_iyi)):<16} {n_h:>7}   {bag}")
+    n_a = ham.count("a")
+    print(f"\n  -> ham 'a' {n_a} kez geciyor. Kodlanmis olsalardi kaynakta o kadar")
+    print("     '~' olmasi gerekirdi. Turkce metinde '~' pratikte gecmedigine")
+    if n_a:
+        print("     gore bunlar DUZ metindir ve pencere 0x60'ta bitmelidir.")
+        print("     SINIR: bir font 0x61'i glif yuvasi olarak kullaniyorsa bu")
+        print("     cikarim o dosyada tutmaz -- tablo dosya basina turetilirken")
+        print("     0x61 ayrica denetlenmeli.")
+    else:
+        print("     gore ust uc sorusu bu dosyada BOS: ham 'a' hic yok.")
+
     # ---------------------------------------------------------------- C6
     print("\n" + "-" * 100)
     print("C6 DUZ METIN KOSLARI -- kaydirma NEYI BOZUYOR?")
@@ -877,61 +912,85 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
     print("  Iki kusuru vardi: (a) len<8 satirlari atliyordu, oysa duz koslarin")
     print("  TAMAMI kisa satir (kronoloji yil etiketleri); (b) 4 karakterlik bir")
     print("  satirda harf orani zaten ayirt edemez. Olcut degistirildi.\n")
-    print("  YENI OLCUT -- iki TEK YONLU kesin isaret (sezgi degil, tanim):")
-    print("    ham C0 (0x03..0x1F) -> KODLANMIS. Duz metinde kontrol karakteri")
-    print("       yoktur; kodlanmis bosluk/noktalama tam da oraya duser.")
-    print("    ham RAKAM (0x30..0x39) -> DUZ. Kodlanmis rakam 0x13..0x1C'ye,")
-    print("       yani C0'a duser; kodlanmis akis ham rakam URETEMEZ.")
-    print("  Belirsiz karakterler OY KULLANMAZ. Iki isaret ayni satirda ise")
-    print("  satir KARISIK'tir ve satir-bazli onarim orada da yetmez.\n")
+    print("  IKINCI YAZIM DA YANLISTI -- 'ham rakam -> DUZ' isareti CURUK.")
+    print("  'kodlanmis akis ham rakam uretemez' demistim; aritmetik tersini")
+    print("  soyluyor: 'T'=0x54 kodlanmis hali 0x54-0x1D=0x37, yani '7'. Buyuk")
+    print("  M..V harfleri ham 0x30..0x39'a, yani tam da rakamlara duser. Kanit")
+    print("  ciktidan geldi: '%X oDO..PDQ..Q W..P' satiri DUZ diye etiketlendi")
+    print("  cunku '7..UNL\\H' icinde ham '7' var -- oysa kaydirinca 'Bu")
+    print("  oal..man..n t..m yay..n haklar.. T..rkiye' oluyor, apacik KODLANMIS.")
+    print("  Rakam isareti KALDIRILDI.\n")
+    print("  UC KESIN ISARET (hepsi TEK YONLU, aritmetikten cikar):")
+    print("    ham C0 (0x03..0x1F, \\t\\r haric) -> KODLANMIS. Duz metinde")
+    print("       kontrol karakteri yoktur; kodlanmis bosluk/noktalama oraya duser.")
+    print("    ham '\\' (0x5C) ya da ']' (0x5D) -> KODLANMIS. Bunlar 'y' ve 'z'nin")
+    print("       kodlanmis halidir; Turkce duzyazida ters bolu/kose parantez")
+    print("       pratikte gecmez ama 'y'/'z' cok gecer, yani asimetri buyuk.")
+    print("    ham kucuk 'a' (0x61) -> OFFSET-0. Kodlanmis bir 'a' ancak kaynak")
+    print("       metinde '~' (0x61+0x1D=0x7E) varsa olusur; Turkce metinde '~'")
+    print("       pratikte gecmez. Rakam isaretinin aksine bu aritmetik AYAKTA.")
+    print("  SINIR: ucu de duzyazi varsayar. Formul/kod tasiyan bir belgede")
+    print("  ters bolu mesru olabilir; o dosyada bu isaret zayiflar.")
+    print("  Isaretsiz satirlar PUANLA ayrilir: ham ve kaydirilmis hallerin")
+    print("  Turkce islev sozcugu sayisi kiyaslanir (C2'de kaydirmayi bulan")
+    print("  olcut). Ikisi de 0 ise satir KARARSIZ'dir -- ortulmez, raporlanir.\n")
 
-    def _isaret(s: str) -> tuple[int, int]:
-        k = sum(1 for ch in s if 0x03 <= ord(ch) <= 0x1F and ch not in "\t\r")
-        d = sum(1 for ch in s if 0x30 <= ord(ch) <= 0x39)
-        return k, d
+    def _puan(s: str) -> int:
+        """KAYDIRMAYA DUYARLI islev sozcugu sayisi.
 
-    def _harf_orani(s: str) -> float:
-        g = [ch for ch in s if not ch.isspace()]
-        if not g:
-            return 0.0
-        return sum(1 for ch in g if ch.isalpha()) / len(g)
+        Duyarlilik sart kosuldu: pencere 0x03..0x61 kucuk harflerden yalniz
+        'a'yi, buyuklerden hepsini icerir. 'ile'/'bir'/'bu'/'ve'/'gibi' gibi
+        tamami kucuk ve 'a'siz sozcukler kaydirmadan SAG CIKAR, yani ham ve
+        kaydirilmis halde ayni puani verip iki akisi ayirt EDEMEZLER. Yerel
+        testte duz bir satir tam bu yuzden ('ile') KARARSIZ'a dustu. Sayilan
+        eslesme icinde 'a' ya da bir buyuk harf OLMALI.
+        """
+        return sum(1 for m in _ISLEV_RE.finditer(s)
+                   if any(ch == "a" or ch.isupper() for ch in m.group()))
 
-    kod_s, duz_s, kar_s, yok_s = [], [], [], []
+    def _c0(s: str) -> int:
+        return sum(1 for ch in s
+                   if (0x03 <= ord(ch) <= 0x1F and ch not in "\t\r") or ch in "\\]")
+
+    kod_s, duz_s, krsz_s = [], [], []
     for s in ham.splitlines():
         if not s.strip():
             continue
-        k, d = _isaret(s)
-        (kar_s if k and d else kod_s if k else duz_s if d else yok_s).append(s)
-    top_s = max(1, len(kod_s) + len(duz_s) + len(kar_s) + len(yok_s))
-    print(f"  {'satir turu':<26} {'satir':>7} {'pay':>7} {'karakter':>10}")
-    for ad_s, grup in (("KODLANMIS (C0 var)", kod_s),
-                       ("DUZ (ham rakam var)", duz_s),
-                       ("KARISIK (ikisi de)", kar_s),
-                       ("isaretsiz (oy yok)", yok_s)):
-        print(f"  {ad_s:<26} {len(grup):>7} {100*len(grup)/top_s:>6.1f}% "
-              f"{sum(len(s) for s in grup):>10,}")
+        cev = _kaydir(s, en_iyi, alt_p, ust_p, bosluk_koru=bk_p)
+        p_ham, p_kay = _puan(s), _puan(cev)
+        if _c0(s) or p_kay > p_ham:
+            kod_s.append(s)
+        elif "a" in s or p_ham > p_kay:
+            duz_s.append(s)
+        else:
+            krsz_s.append(s)
+    top_s = max(1, len(kod_s) + len(duz_s) + len(krsz_s))
+    top_k = max(1, sum(len(s) for s in kod_s + duz_s + krsz_s))
+    print(f"  {'satir turu':<34} {'satir':>7} {'pay':>7} {'karakter':>10} {'pay':>7}")
+    for ad_s, grup in (("KODLANMIS (C0 ya da puan)", kod_s),
+                       ("OFFSET-0 (kaydirma BOZAR)", duz_s),
+                       ("KARARSIZ (puanlanamaz)", krsz_s)):
+        print(f"  {ad_s:<34} {len(grup):>7} {100*len(grup)/top_s:>6.1f}% "
+              f"{sum(len(s) for s in grup):>10,} "
+              f"{100*sum(len(s) for s in grup)/top_k:>6.1f}%")
 
-    # Isaretsiz satirlar oy kullanmaz ama pay tasir; harf-orani ONLARA
-    # uygulanabilir -- kesin degil, ama buyuklugu gorunur kilar.
-    if yok_s:
-        y_duz = sum(1 for s in yok_s
-                    if _harf_orani(s) > _harf_orani(
-                        _kaydir(s, en_iyi, alt_p, ust_p, bosluk_koru=bk_p)) + 0.05)
-        print(f"\n  isaretsiz {len(yok_s)} satirin {y_duz}'i harf-oranina gore DUZ"
-              f" gorunuyor ({100*y_duz/len(yok_s):.0f}%) -- KESIN DEGIL, gosterge.")
-
-    for ad_s, grup in (("DUZ", duz_s), ("KARISIK", kar_s)):
+    for ad_s, grup in (("OFFSET-0", duz_s), ("KARARSIZ", krsz_s)):
         if grup:
-            print(f"\n  --- {ad_s} satir ornekleri (kaydirma bunlari BOZAR) ---")
-            for s in grup[:6]:
+            print(f"\n  --- {ad_s} ornekleri ---")
+            for s in sorted(grup, key=len, reverse=True)[:6]:
                 print(f"      ham: {_gorunur(s.strip()[:76])}")
                 print(f"      -> : {_gorunur(_kaydir(s, en_iyi, alt_p, ust_p, bosluk_koru=bk_p).strip()[:76])}")
 
-    if duz_s or kar_s:
-        print("\n  -> GLOBAL KAYDIRMA GUVENLI DEGIL. Onarim kos bazinda karar")
-        print("     vermeli ve isaret tasimayan koslar komsularindan miras almali.")
+    if duz_s:
+        print("\n  -> GLOBAL KAYDIRMA GUVENLI DEGIL: puanlanabilen offset-0 satir VAR.")
     else:
-        print("\n  -> Duz kos YOK: global kaydirma guvenli.")
+        print("\n  -> Puanlanabilen satirlarin TAMAMI kodlanmis; offset-0 kos")
+        print("     bulunamadi. Risk KARARSIZ kovasinda toplaniyor.")
+    print("  KARARSIZ kovasi bu olcutun TAVANIDIR: cok kisa satirlar (tek harf,")
+    print("  tek sayi, kronoloji yil etiketi) islev sozcugu tasimaz ve satir")
+    print("  bazinda AYIRT EDILEMEZ. C3'te gorulen NVVS (duz 1996) tam olarak")
+    print("  bu kovadadir. Onarim bu satirlari komsularindan miras almali ya da")
+    print("  DOKUNMADAN birakmali; kovanin karakter payi o riskin buyuklugudur.")
 
     print("\n" + "=" * 100)
     print("  KARAR NOTU")
