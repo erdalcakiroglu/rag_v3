@@ -15,9 +15,11 @@ DEGILDIR -- korpus bu prob ile degismez.
 
   G bolumu (--dosya): tek dosyada uctan uca onarim + sayfa sayfa karar tablosu
   H bolumu (varsayilan): korpus geneli tetik envanteri + OCR butcesi (SQL, parse yok)
+  H2 bolumu (--sinir N): kuyruktaki (az bozuk chunk'li) dosyalarin chunk METNI
 
 Kullanim (H200, /opt/ragintel):
     python scripts/glif_onarim_probe.py
+    python scripts/glif_onarim_probe.py --sinir 2
     python scripts/glif_onarim_probe.py --dosya 60._Yilinda_Turkiye_Bankalar_Birligi_2.pdf --sayfa 12
     python scripts/glif_onarim_probe.py --dosya Bankacilik_Kanunu_%2528Turkce%2529_2.pdf --sayfa 24 --bas-sayfa 10
 """
@@ -154,6 +156,81 @@ def bolum_h(db, bin_deger: float, sn_sayfa: float) -> int:
     print(f"  ek sure          : {ek / 60:.0f} dk  ({ek / 3600:.2f} sa)")
     print("\n  Bu sure reprocess'in USTUNE binen EK yuktur; onarim kolu ancak")
     print("  bozuk sayfa bulununca acilir, diger dosyalar hic etkilenmez.")
+
+    # H1b -- maliyet ile KAZANC ayni birimde degil: maliyet SAYFA (dosya
+    # duzeyinde OCR), kazanc BOZUK KARAKTER. Ikisini yan yana koymadan
+    # "esik konsun mu" sorusu cevaplanamaz.
+    print("\n" + "-" * 100)
+    print("H1b MALIYET/KAZANC AYRISMASI -- butce nereye gidiyor?")
+    print("-" * 100)
+    kovalar = (("10+ bozuk chunk", 10, 10 ** 9),
+               ("3-9 bozuk chunk", 3, 9),
+               ("1-2 bozuk chunk", 1, 2))
+    print(f"  {'kova':<18} {'dosya':>6} {'sayfa':>7} {'sure':>8} "
+          f"{'bozuk_kar':>12} {'kazanc payi':>12}")
+    for ad, alt, ust in kovalar:
+        grup = [r for r in satirlar if alt <= int(r[2]) <= ust]
+        s = sum(int(r[7]) for r in grup)
+        k = sum(int(r[4]) for r in grup)
+        print(f"  {ad:<18} {len(grup):>6} {s:>7,} {s * sn_sayfa / 60:>6.0f} dk "
+              f"{k:>12,} {100.0 * k / max(bozuk_kar, 1):>11.2f}%")
+    print("\n  Kuyruk kovasi (1-2 chunk) butcenin buyuk kismini yiyip kazancin")
+    print("  ihmal edilebilir kismini getiriyorsa `min_broken_pages` turu bir")
+    print("  dosya-duzeyi kapisi tartisilir. Once H2: o chunk'lar GERCEKTEN")
+    print("  bozuk mu, yoksa mesru imza mi? Karar metni gormeden verilmez.")
+    return 0
+
+
+# H2 -- sinir vakalarinin METNI. Sayi "bozuk chunk=2" der, ama o iki chunk
+# gercek bozulma da olabilir tablo/kaynakca isaretlerinin yogunlastigi mesru
+# bir parca da. Ayrimi yalnizca metin gosterir ([[on-veri-kontrolu-kural]]).
+_SQL_SINIR = """
+WITH c AS (
+    SELECT c.file_id, c.chunk_index, c.chunk_text,
+           length(c.chunk_text)                                             AS kar,
+           length(c.chunk_text) - length(translate(c.chunk_text, %(imza)s, '')) AS im
+    FROM core_chunks c
+),
+b AS (
+    SELECT * FROM c WHERE kar >= 200 AND 1000.0 * im / kar >= %(bin)s
+),
+d AS (SELECT file_id, count(*) AS n FROM b GROUP BY file_id)
+SELECT f.file_name, d.n, b.chunk_index, b.kar, 1000.0 * b.im / b.kar,
+       substring(b.chunk_text from 1 for 240)
+FROM b
+JOIN d USING (file_id)
+JOIN core_files f ON f.file_id = b.file_id
+WHERE d.n <= %(tavan)s
+ORDER BY d.n, f.file_name, b.chunk_index;
+"""
+
+
+def bolum_h2(db, bin_deger: float, tavan: int) -> int:
+    print("=" * 100)
+    print(f"BOLUM H2  SINIR VAKALARI -- bozuk chunk sayisi <= {tavan} olan dosyalarin METNI")
+    print("=" * 100)
+    print("  Soru: bu chunk'lar gercek bozulma mi, yoksa mesru imza yogunlasmasi mi?")
+    print("  Gercekse kuyruk dosyalarini onarim disinda birakmak VERI KAYBIDIR;")
+    print("  mesruysa butcenin yarisi bosa gidiyor demektir.\n")
+    with db.connection() as conn:
+        satirlar = conn.execute(
+            _SQL_SINIR, {"imza": IMZA, "bin": bin_deger, "tavan": tavan}).fetchall()
+    if not satirlar:
+        print("  Sinir vakasi YOK.")
+        return 0
+    for ad, n, idx, kar, yog, metin in satirlar:
+        gecen = sorted({ch for ch in IMZA if ch in metin})
+        print(f"  --- {ad[:70]}  (dosyada {int(n)} bozuk chunk) ---")
+        print(f"      chunk_index={int(idx)}  {int(kar):,} karakter  "
+              f"imza/1000={float(yog):.1f}  gecen imza: "
+              + " ".join(f"U+{ord(c):04X}" for c in gecen))
+        for parca in (metin[:120], metin[120:240]):
+            if parca.strip():
+                print(f"      {parca}")
+        print()
+    print(f"  {len(satirlar)} sinir chunk basildi. Okuma kurali: metin Turkce ve")
+    print("  okunabiliyorsa imza MESRUDUR (tablo cizgisi, kaynakca, tirnak);")
+    print("  okunamiyorsa gercek bozulmadir ve dosya onarim koluna girmelidir.")
     return 0
 
 
@@ -352,16 +429,22 @@ def main() -> int:
                     metavar="N", help="Esigi gecici olarak degistir (config'e DOKUNMAZ)")
     ap.add_argument("--sn-sayfa", type=float, default=1.0, dest="sn_sayfa",
                     metavar="N", help="Bolum H butcesi icin s/sayfa (olculen: 1.00)")
+    ap.add_argument("--sinir", type=int, default=None, metavar="N",
+                    help="Bolum H2: bozuk chunk sayisi <= N olan dosyalarin "
+                         "chunk METNINI basar (kuyruk gercek mi mesru mu)")
     a = ap.parse_args()
 
     from ragintel.config.settings import DbSettings
     from ragintel.database import Database
 
     db = Database(DbSettings()).open()
+    esik = a.imza_bin if a.imza_bin is not None else 10.0
     try:
         if a.dosya:
             return bolum_g(db, a.dosya, max(0, a.sayfa), max(1, a.bas_sayfa), a.imza_bin)
-        return bolum_h(db, a.imza_bin if a.imza_bin is not None else 10.0, a.sn_sayfa)
+        if a.sinir is not None:
+            return bolum_h2(db, esik, max(1, a.sinir))
+        return bolum_h(db, esik, a.sn_sayfa)
     finally:
         db.close()
 
