@@ -1639,16 +1639,47 @@ def _harfli(t: str) -> bool:
 
 
 def _fark_sinifi(a: str, b: str) -> str:
-    """Iki token arasindaki farki SINIFLANDIRIR -- sira onemli, en dar once."""
+    """Iki token arasindaki farki SINIFLANDIRIR -- sira onemli, en dar once.
+
+    'charset' KOVASI NEDEN VAR (2026-08-09, ilk F kosumu duzeltmesi): mevzuat_
+    1334 kosumunda 14 "GERCEK FARK"in 14'u de `DIGER -> DIC-caron-ER`,
+    `BAGLI -> BAC-caron-LI`, `VEKALETI -> VEKALET-I-acute` cikti. Bunlar yanlis
+    KELIME degil: OCR modelinin karakter kumesinde Turkce'ye ozgu buyuk harfler
+    (G-breve, I-dot) YOK, en yakin bicimi (C-caron, I-acute) basiyor. Ayirt edici
+    olcut TAHMIN degil TANIM: Turkce yazimda BULUNMAYAN bir harf, Turkce bir
+    metinde dogru OLAMAZ -- yani bu tokenlar referans OLMADAN da saptanabilir ve
+    sabit 1:1 tabloyla onarilabilir. Onlari "gercek fark" saymak OCR'in zararini
+    OLDUGUNDAN BUYUK gosterirdi. Kume `_BEKLENEN` ile ayni (ASCII + Turkce).
+    """
     if a == b:
         return "ayni"
     if a.translate(_NOKTA_TABLO) == b.translate(_NOKTA_TABLO):
         return "nokta"
     if a.translate(_DIYAKRITIK_TABLO) == b.translate(_DIYAKRITIK_TABLO):
         return "diyakritik"
+    if any(ch not in _BEKLENEN for ch in b):
+        return "charset"
     if a.lower() == b.lower():
         return "buyuk-kucuk"
     return "gercek"
+
+
+def _ikame_sayimi(ciftler: list[tuple[str, str]]) -> list[tuple[str, str, int]]:
+    """Uyusmayan token ciftlerinde HANGI karakter hangisiyle degismis?
+
+    Sinifa degil VERIYE bakmak icin: onarim tablosu (varsa) buradan kurulur,
+    tahminden degil. Yalniz esit uzunluklu ciftler sayilir -- farkli uzunlukta
+    hizalama karakter duzeyinde belirsizdir ve uydurma esleme uretir.
+    """
+    sayac: dict[tuple[str, str], int] = {}
+    for a, b in ciftler:
+        if len(a) != len(b):
+            continue
+        for x, y in zip(a, b):
+            if x != y:
+                sayac[(x, y)] = sayac.get((x, y), 0) + 1
+    return sorted(((x, y, n) for (x, y), n in sayac.items()),
+                  key=lambda t: -t[2])
 
 
 def _f_adaylar(db) -> int:
@@ -1805,19 +1836,31 @@ def bolum_f(db, dosya_adi: str, sayfa: int, bas_sayfa: int) -> int:
     # autojunk=False SART: varsayilan hali >200 ogeli dizide sik gecen ogeleri
     # ("ve", "bir") junk sayip hizalamayi bozar.
     sm = difflib.SequenceMatcher(None, a_tok, b_tok, autojunk=False)
-    sayim = {"ayni": 0, "nokta": 0, "diyakritik": 0, "buyuk-kucuk": 0,
-             "gercek": 0, "eksik": 0, "fazla": 0}
-    ornek: dict[str, list[tuple[str, str]]] = {"nokta": [], "diyakritik": [],
-                                               "buyuk-kucuk": [], "gercek": []}
+    kovalar = ("nokta", "diyakritik", "charset", "buyuk-kucuk", "gercek")
+    sayim = dict.fromkeys((*kovalar, "ayni", "eksik", "fazla"), 0)
+    ornek: dict[str, list[tuple[str, str]]] = {k: [] for k in kovalar}
+    tum_cift: list[tuple[str, str]] = []
+    # BUYUK HARF AYRIMI SART: i/I nokta ayrimi BUYUK harfte kelime bicimi
+    # ipucu tasimaz (TURKIYE/TURKIYE ayni govdeye oturur), kucuk harfte tasir.
+    # Ayrim yapilmazsa tablo/baslik agirlikli bir pencere tum dosyalari temsil
+    # ediyormus gibi okunur -- ilk F kosumunda tam bu oldu (hesap plani sayfasi).
+    caps = {"ref": 0, "hata": 0}
+    dus = {"ref": 0, "hata": 0}
     for etiket_op, i1, i2, j1, j2 in sm.get_opcodes():
+        sol, sag = a_tok[i1:i2], b_tok[j1:j2]
+        for a in sol:
+            kova = caps if (_harfli(a) and a == a.upper()) else dus
+            kova["ref"] += 1
         if etiket_op == "equal":
             sayim["ayni"] += i2 - i1
             continue
-        sol, sag = a_tok[i1:i2], b_tok[j1:j2]
         for a, b in zip(sol, sag):
             s = _fark_sinifi(a, b)
             sayim[s] += 1
-            if s != "ayni" and len(ornek[s]) < 25:
+            tum_cift.append((a, b))
+            kova = caps if (_harfli(a) and a == a.upper()) else dus
+            kova["hata"] += 1
+            if len(ornek[s]) < 25:
                 ornek[s].append((a, b))
         sayim["eksik"] += max(0, len(sol) - len(sag))   # referansta var, OCR'da yok
         sayim["fazla"] += max(0, len(sag) - len(sol))   # OCR'in ekledigi
@@ -1825,23 +1868,45 @@ def bolum_f(db, dosya_adi: str, sayfa: int, bas_sayfa: int) -> int:
     n_ref = len(a_tok) or 1
     print(f"  referans token : {len(a_tok):,}")
     print(f"  OCR token      : {len(b_tok):,}\n")
-    print(f"  {'ESLESEN (bire bir ayni)':<32} {sayim['ayni']:>8,} "
+    print(f"  {'ESLESEN (bire bir ayni)':<34} {sayim['ayni']:>8,} "
           f"{100 * sayim['ayni'] / n_ref:>7.1f}%")
     for anahtar, ad in (("nokta", "yalniz i/I nokta ekseni"),
                         ("diyakritik", "baska diyakritik farki"),
+                        ("charset", "OCR charset ikamesi (TR-disi harf)"),
                         ("buyuk-kucuk", "yalniz buyuk/kucuk harf"),
                         ("gercek", "GERCEK FARK"),
                         ("eksik", "referansta var, OCR'da YOK"),
                         ("fazla", "OCR'in EKLEDIGI")):
-        print(f"  {ad:<32} {sayim[anahtar]:>8,} "
+        print(f"  {ad:<34} {sayim[anahtar]:>8,} "
               f"{100 * sayim[anahtar] / n_ref:>7.1f}%")
+
+    print("\n  BUYUK/kucuk harf ayrimi (nokta ekseninin en kotu hali BUYUK harftedir):")
+    for ad, k in (("BUYUK harf token", caps), ("diger token", dus)):
+        oran = 100 * k["hata"] / k["ref"] if k["ref"] else 0.0
+        print(f"    {ad:<20} {k['ref']:>6,} token   uyusmayan {k['hata']:>5,} "
+              f"({oran:.1f}%)")
+
+    # ------------------------------------------------------------------ F2b
+    print("\n  F2b KARAKTER IKAMELERI -- onarim tablosu (varsa) BURADAN kurulur")
+    ikameler = _ikame_sayimi(tum_cift)
+    if not ikameler:
+        print("    (esit uzunluklu uyusmayan cift yok)")
+    else:
+        print(f"    {'REF':<28} {'OCR':<28} {'adet':>6}")
+        for x, y, n in ikameler[:15]:
+            print(f"    U+{ord(x):04X} {_gorunur(x):<21} "
+                  f"U+{ord(y):04X} {_gorunur(y):<21} {n:>6,}")
+        tr_disi = sum(n for _x, y, n in ikameler if y not in _BEKLENEN)
+        print(f"\n    bunlarin {tr_disi:,} tanesinde OCR TURKCE'DE OLMAYAN bir harf")
+        print("    basmis -> referans OLMADAN saptanabilir, 1:1 tabloyla onarilir.")
 
     # ------------------------------------------------------------------ F3
     print("\n" + "-" * 100)
     print("F3 ORNEKLER -- sayiya degil metne bakilir")
     print("-" * 100)
-    for anahtar, ad in (("gercek", "GERCEK FARK"), ("nokta", "nokta ekseni"),
-                        ("diyakritik", "diyakritik"), ("buyuk-kucuk", "buyuk/kucuk")):
+    for anahtar, ad in (("gercek", "GERCEK FARK"), ("charset", "charset ikamesi"),
+                        ("nokta", "nokta ekseni"), ("diyakritik", "diyakritik"),
+                        ("buyuk-kucuk", "buyuk/kucuk")):
         if not ornek[anahtar]:
             continue
         print(f"\n  --- {ad} (ilk {len(ornek[anahtar])}) ---")
@@ -1856,7 +1921,9 @@ def bolum_f(db, dosya_adi: str, sayfa: int, bas_sayfa: int) -> int:
     gercek_oran = 100 * (sayim["gercek"] + sayim["eksik"]) / n_ref
     print("  'GERCEK FARK + eksik' orani OCR'in saglam metne verdigi ZARARIN")
     print("  UST SINIRIDIR (okuma sirasi farki da buraya dusuyor).")
-    print(f"  Bu dosyada: {gercek_oran:.1f}%\n")
+    print(f"  Bu dosyada: {gercek_oran:.1f}%")
+    print(f"  (charset ikamesi {sayim['charset']:,} token ONARILABILIR sayildi ve")
+    print("   bu orana GIRMEDI -- F2b'deki ikameler bunu dogrulamali.)\n")
     print("    <2%   -> tam-sayfa OCR TUM bozuk dosyalara (kismi olanlar dahil)")
     print("             dosya duzeyinde uygulanabilir; tek mekanizma yeter.")
     print("    2-8%  -> yalniz TAM bozuk dosyalara uygulanir; kismen bozuk 32")
