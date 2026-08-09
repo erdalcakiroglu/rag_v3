@@ -317,12 +317,13 @@ def bolum_a(db) -> int:
 
     # --------------------------------------------------------------- S5
     print("\n\n" + "=" * 100)
-    print("S5 AILE-A KAPSAMI -- kac dosya? (onarim yazmaya DEGER MI?)")
+    print("S5 AILE KAPSAMI -- kac dosya, kac karakter? (onarim DEGER MI?)")
     print("=" * 100)
     print("  S3 en kotu 20 dosyayi gosteriyor ama SAYIYI gostermiyor. Onarim")
-    print("  kararinin dayanagi bu sayidir: 40 dosya icin font cozucusu yazmakla")
-    print("  400 dosya icin yazmak ayni karar degil. Olcut yine diyakritik")
-    print("  yogunlugu (korpus medyani ~72/1000); aile-A dosyalarinda ~0'a duser.\n")
+    print("  kararinin dayanagi bu sayidir: 20 dosya icin font cozucusu yazmakla")
+    print("  200 dosya icin yazmak ayni karar degil. Asagida ONCE diyakritik")
+    print("  yogunlugu dagilimi (korpus medyani ~72/1000) verilir, SONRA asil")
+    print("  olcut olan imza yogunlugu -- ikisi ayni sonucu VERMEZ.\n")
     tum_y = [(int(fid), ad, int(kar), int(tr or 0))
              for fid, ad, kar, tr in yogunluk if kar]
     kovalar = [(0.0, 1.0), (1.0, 5.0), (5.0, 10.0),
@@ -334,34 +335,43 @@ def bolum_a(db) -> int:
                     else f"{alt_k:.0f} +")
         print(f"  {etiket_k:<20} {len(grup):>7} {sum(r[2] for r in grup):>14,}")
 
-    supheli = [r for r in tum_y if 1000 * r[3] / r[2] < 10.0]
-    print(f"\n  10/1000 ALTINDA: {len(supheli)} dosya / {len(tum_y)} "
-          f"({100*len(supheli)/max(1,len(tum_y)):.1f}%), "
-          f"{sum(r[2] for r in supheli):,} karakter")
-    if not supheli:
-        return 0
-    # Dusuk yogunluk tek basina "bozuk" DEMEK DEGIL -- Ingilizce/sayisal bir
-    # belge de dusuk cikar. Aile-A imzasi (Ovariant, u-acute, bolme isareti...)
-    # ayrimi yapar: imzasi olan BOZUK, olmayan muhtemelen Turkce degil.
-    ids2 = [r[0] for r in supheli]
+    # tr/1000 esigi KAPSAMI OLCMEK ICIN YANLIS OLCUT: 2tbb50yil (13.80) ve
+    # Ayse_kaya (30.90) ayni imzayi tasidiklari halde dusuk esiklerin USTUNDE
+    # kaliyorlar. Dogru olcut imza YOGUNLUGU -- bozulma ne kadar diyakritik
+    # birakmis olursa olsun imza karakteri metinde durur.
+    print("\n  --- IMZA YOGUNLUGU (kapsamin dogru olcutu) ---")
     with db.connection() as conn:
         imza_satir = conn.execute(
             "SELECT file_id, "
             "  coalesce(sum(length(chunk_text) - "
-            "                length(translate(chunk_text, %(imza)s, ''))), 0) "
-            "FROM core_chunks WHERE file_id = ANY(%(ids)s) GROUP BY file_id;",
-            {"imza": _IMZA, "ids": ids2}).fetchall()
-    imza_map = {int(fid): int(n) for fid, n in imza_satir}
-    imzali = [r for r in supheli if imza_map.get(r[0], 0) > 0]
-    print(f"  bunlardan AILE-A imzasi tasiyan: {len(imzali)} dosya, "
-          f"{sum(r[2] for r in imzali):,} karakter")
-    print("  (imzasi olmayanlar muhtemelen Turkce degil -> onarim degil, inceleme)\n")
-    print(f"  {'dosya':<52} {'tr/1000':>8} {'imza/1000':>10}")
-    for fid, ad, kar, tr in sorted(imzali, key=lambda r: -imza_map[r[0]] / r[2])[:25]:
-        print(f"  {ad[:52]:<52} {1000*tr/kar:>8.2f} "
-              f"{1000*imza_map[fid]/kar:>10.2f}")
-    if len(imzali) > 25:
-        print(f"  ... ve {len(imzali) - 25} dosya daha")
+            "                length(translate(chunk_text, %(a)s, ''))), 0), "
+            "  coalesce(sum(length(chunk_text) - "
+            "                length(translate(chunk_text, %(b)s, ''))), 0) "
+            "FROM core_chunks GROUP BY file_id;",
+            {"a": _IMZA_A, "b": _IMZA_B}).fetchall()
+    a_map = {int(fid): int(na) for fid, na, _nb in imza_satir}
+    b_map = {int(fid): int(nb) for fid, _na, nb in imza_satir}
+    ad_map = {fid: (ad, kar, tr) for fid, ad, kar, tr in tum_y}
+
+    for etiket_a, harita in (("AILE-A (kaydirma)", a_map), ("AILE-B (eski font)", b_map)):
+        etkilenen = [(fid, n) for fid, n in harita.items()
+                     if n > 0 and fid in ad_map
+                     and 1000 * n / ad_map[fid][1] >= 1.0]
+        kar_top = sum(ad_map[fid][1] for fid, _n in etkilenen)
+        korpus_kar = sum(r[2] for r in tum_y)
+        print(f"\n  {etiket_a}: {len(etkilenen)} dosya, {kar_top:,} karakter "
+              f"({100*kar_top/max(1, korpus_kar):.1f}% korpus metni)")
+        if not etkilenen:
+            continue
+        print(f"    {'dosya':<50} {'tr/1000':>8} {'imza/1000':>10} {'karakter':>12}")
+        for fid, n in sorted(etkilenen, key=lambda t: -t[1] / ad_map[t[0]][1])[:20]:
+            ad_f, kar_f, tr_f = ad_map[fid]
+            print(f"    {ad_f[:50]:<50} {1000*tr_f/kar_f:>8.2f} "
+                  f"{1000*n/kar_f:>10.2f} {kar_f:>12,}")
+        if len(etkilenen) > 20:
+            print(f"    ... ve {len(etkilenen) - 20} dosya daha")
+    print("\n  NOT: esik 1/1000 -- altindakiler mesru kullanim (tek bir bolme")
+    print("  isareti, tek bir tirnak) olabilir, aile uyesi degil.")
     return 0
 
 
@@ -510,10 +520,15 @@ _ISLEV = ["ve", "bir", "bu", "ile", "olan", "olarak", "daha", "gibi",
           "ancak", "veya", "kadar", "sonra", "icin", "ise"]
 _ISLEV_RE = re.compile(r"\b(?:" + "|".join(_ISLEV) + r")\b", re.IGNORECASE)
 
-# Bolum A S2/S3'te GOZLENEN aile-A imzasi (tahmin degil, envanterden).
-_IMZA = _c(0x00D5, 0x00FA, 0x00F7, 0x00F8, 0x00F9, 0x0D88,
-           0x00BD, 0x00BE, 0x00BF, 0x00C0, 0x00C1,
-           0x203A, 0x2039, 0x00A4)
+# Bolum A S2/S3'te GOZLENEN imzalar (tahmin degil, envanterden). IKI AYRI aile
+# var ve karistirmak kapsam sayisini bozar:
+#   A: kaydirma ailesi   -- O-tilde/u-acute/bolme isareti... (60._Yilinda, TBB kitaplari)
+#   B: eski-font ailesi  -- >/</para isareti (konut_2, Basel_II, Ayse_kaya)
+# B'nin bir KAYDIRMA olup olmadigi OLCULMEDI; Bolum C yalniz A'da kosuldu.
+_IMZA_A = _c(0x00D5, 0x00FA, 0x00F7, 0x00F8, 0x00F9, 0x0D88,
+             0x00BD, 0x00BE, 0x00BF, 0x00C0, 0x00C1)
+_IMZA_B = _c(0x203A, 0x2039, 0x00A4)
+_IMZA = _IMZA_A + _IMZA_B
 
 # ASCII araliginda kaydirmanin gecerli oldugu pencere: 0x21..0x60 kaynak
 # karakterleri 0x3E..0x7D'ye tasinir (A-Z <- 0x24..0x3D, a-z <- 0x44..0x5D).
@@ -777,10 +792,11 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
     print("  kod-noktasi tablosu imkansizdir. Ama olmayabilir: cozucu 1:1 konum")
     print("  korur, yani her cozulmus karakterin ham karsiligi bilinir ve")
     print("  cozulmus 'o' IKI ayri kaynaktan gelebilir --")
-    print(f"    (a) pencere ICI ham 0x{0x6F-en_iyi:02X}  -> KODLANMIS akis (kaydirildi)")
-    print("    (b) pencere DISI ham 0x6F  -> DUZ akis (hic dokunulmadi)")
-    print("  Ikisi ayri akissa cakisma YOKTUR: tablo ham kod noktasi uzerinde")
-    print("  kurulur, duz metin etkilenmez ve onarim KAYIPSIZ olur.\n")
+    print(f"    (a) pencere ICI ham 0x{0x6F-en_iyi:02X}  -> kaydirildi, GERCEK 'o'")
+    print("    (b) pencere DISI ham 0x6F  -> hic dokunulmadi, bir GLIF")
+    print("  Kaynaklar ayriysa cakisma YOKTUR: tablo ham kod noktasi uzerinde")
+    print("  kurulur ve onarim KAYIPSIZ olur. Ayirt edici sutun 'ham hali'dir --")
+    print("  sayilar degil, o sutun karar verir.\n")
 
     alt_p, ust_p, bk_p = pencere
     korunan_p = {0x09, 0x0A, 0x0D} | ({0x20} if bk_p else set())
@@ -792,9 +808,12 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
     akis_k = "".join(cozulmus[i] if kodlu[i] else " " for i in range(len(ham)))
     akis_d = "".join(" " if kodlu[i] else ham[i] for i in range(len(ham)))
     n_k = sum(kodlu)
-    print(f"  {'akis':<22} {'karakter':>10} {'pay':>7} {'islev/1k':>9}   (bosluklar haric pay)")
-    for ad_a, metin_a, n_a in (("KODLANMIS", akis_k, n_k),
-                               ("DUZ (dokunulmamis)", akis_d, len(ham) - n_k)):
+    # DIKKAT: "pencere disi" bir METIN AKISI DEGILDIR -- dagilmis gliflerdir.
+    # Ilk yazimda ona "duz akis" dedim; islev/1k'si ~0 cikinca yanlisligi
+    # gorundu. Duz METIN koslari ayri bir sorundur, C6 onu olcer.
+    print(f"  {'karakter kaynagi':<22} {'karakter':>10} {'pay':>7} {'islev/1k':>9}")
+    for ad_a, metin_a, n_a in (("PENCERE ICI (kaydir)", akis_k, n_k),
+                               ("PENCERE DISI (glif)", akis_d, len(ham) - n_k)):
         # islev/1k'yi kendi akisinin uzunluguna gore olc, tum dosyaya gore degil.
         pay_o = 1000 * len(_ISLEV_RE.findall(metin_a)) / max(1, n_a)
         print(f"  {ad_a:<22} {n_a:>10,} {100*n_a/max(1,len(ham)):>6.1f}% {pay_o:>9.2f}")
@@ -821,21 +840,68 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
     b = sum(paylar["bozuk"]) / len(paylar["bozuk"]) if paylar["bozuk"] else None
     if d is None or b is None:
         print("    Iki gruptan biri bu dosyada gecmiyor -> hukum verilemez.")
-    elif b > 0.9 and d < 0.1:
-        print("    IKI AKIS. Dogru cozulen kelimeler DUZ metinden geliyor, yerine-")
-        print("    gecmeler KODLANMIS akistan. Cakisma YOK -> tablo ham kod noktasi")
-        print("    uzerinde kurulabilir ve onarim KAYIPSIZ olur. Sonraki adim: her")
-        print("    pencere-ici ham kod noktasinin hangi Turkce harfe karsilik")
-        print("    geldigini VERIDEN cikarmak (tahminle degil).")
-    elif b > 0.9 and d > 0.9:
-        print("    GERCEK CAKISMA. Iki kullanim da AYNI kodlanmis akisdan geliyor:")
-        print("    tek bir ham kod noktasi hem 'o' hem 'c' demek. Kod-noktasi")
-        print("    tablosu bunu COZEMEZ -- ayrim yalniz font/run bilgisinde var ve")
-        print("    docling metin ciktisi onu tasimiyor. Mekanik onarim burada biter;")
-        print("    geriye force_full_page_ocr veya sozluk-tabanli duzeltme kalir.")
+    elif d > 0.9 and 0.3 <= b < 0.95:
+        # Ilk yazimda esik "bozuk ~0% olmali" idi (kelimenin TUMU duz metinden
+        # gelir varsayimi). Veri onu curuttu: token KARISIK -- ASCII harfleri
+        # kaydirilmis, yalniz yerine-gecen harf pencere disi. Esik duzeltildi.
+        print("    CAKISMA YOK. Token'lar KARISIK: ASCII harfleri pencere icinden")
+        print("    (kaydirilmis), yerine-gecen harf ise pencere DISINDAN geliyor.")
+        print("    Yani gercek 'o' ham 0x52'den, 'c' ise ham 0x6F'ten -- AYRI kod")
+        print("    noktalari. Kod-noktasi tablosu KURULABILIR ve kayipsizdir:")
+        print("    yazdirilabilir ASCII'nin tamami pencereye dustugu icin, pencere")
+        print("    disindaki her ham karakter tanim geregi ASCII DEGILDIR.")
+        print("    Sonraki adim: tabloyu dosya BASINA veriden turetmek.")
+    elif b > 0.95 and d > 0.95:
+        print("    GERCEK CAKISMA. Iki kullanim da ayni pencere-ici kod")
+        print("    noktasindan geliyor: tek ham deger hem 'o' hem 'c' demek.")
+        print("    Kod-noktasi tablosu bunu COZEMEZ -- ayrim yalniz font/run")
+        print("    bilgisinde var ve docling metin ciktisi onu tasimiyor.")
+    elif b < 0.1:
+        print("    IKI AYRI AKIS. Yerine-gecmeler bastan sona dokunulmamis")
+        print("    metinden geliyor; kaydirma onlari hic gormuyor.")
     else:
-        print(f"    KARARSIZ (dogru={100*d:.0f}% kodlanmis, bozuk={100*b:.0f}%).")
+        print(f"    KARARSIZ (dogru={100*d:.0f}%, bozuk={100*b:.0f}% pencere ici).")
         print("    Yukaridaki 'ham hali' sutunu elle okunmali.")
+
+    # ---------------------------------------------------------------- C6
+    print("\n" + "-" * 100)
+    print("C6 DUZ METIN KOSLARI -- kaydirma NEYI BOZUYOR?")
+    print("-" * 100)
+    print("  C3 baglamlarinda 'NVVS' gorundu: bu, ham metinde DUZ yazilmis")
+    print("  '1996'nin kaydirmayla bozulmus halidir (N<-1, V<-9, S<-6). Ayni")
+    print("  belgede '1958' DOGRU cozuluyor, yani o kodlanmis. Belge iki turu")
+    print("  KARISTIRIYOR ve ikisi de pencere icinde -- cozucu ayirt edemez.")
+    print("  Onarim kodu yazilacaksa bu koslarin payi bilinmelidir.\n")
+    print("  Olcut: satir bazinda HARF ORANI. Kodlanmis satirda ham metin")
+    print("  noktalama corbasidir, kaydirinca harflenir. Duz satirda tersi olur.\n")
+
+    def _harf_orani(s: str) -> float:
+        g = [ch for ch in s if not ch.isspace()]
+        if not g:
+            return 0.0
+        return sum(1 for ch in g if ch.isalpha()) / len(g)
+
+    duz_satir, kod_satir, kars_satir = [], [], []
+    for s in ham.splitlines():
+        if len(s.strip()) < 8:            # kisa satir ayirt edemez, sayilmaz
+            continue
+        r, k = _harf_orani(s), _harf_orani(_kaydir(s, en_iyi, alt_p, ust_p, bosluk_koru=bk_p))
+        (duz_satir if r > k + 0.05 else
+         kod_satir if k > r + 0.05 else kars_satir).append(s)
+    top_s = len(duz_satir) + len(kod_satir) + len(kars_satir)
+    print(f"  {'satir turu':<22} {'satir':>7} {'pay':>7} {'karakter':>10}")
+    for ad_s, grup in (("KODLANMIS", kod_satir), ("DUZ (kaydirma BOZAR)", duz_satir),
+                       ("kararsiz", kars_satir)):
+        print(f"  {ad_s:<22} {len(grup):>7} {100*len(grup)/max(1,top_s):>6.1f}% "
+              f"{sum(len(s) for s in grup):>10,}")
+    if duz_satir:
+        print("\n  --- DUZ satir ornekleri (kaydirma bunlari bozar) ---")
+        for s in duz_satir[:8]:
+            print(f"      {s.strip()[:88]}")
+        print("\n  -> Onarim satir/kos BAZINDA karar vermeli: harf orani hangi")
+        print("     yonde artiyorsa o secilir. Global kaydirma bu satirlari bozar.")
+    else:
+        print("\n  -> Duz kos YOK: global kaydirma guvenli.")
 
     print("\n" + "=" * 100)
     print("  KARAR NOTU")
@@ -856,6 +922,165 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
     return 0
 
 
+# =============================================================== BOLUM D =====
+def bolum_d(db, dosya_adi: str, sayfa: int) -> int:
+    """Docling DISINDAKI cikaricilar + PDF'in kendi ToUnicode beyani.
+
+    C1'in kor noktasi: yalnizca docling'in KENDI alt-parserlerini kiyasladi
+    (pypdfium2 / dlparse). Hicbiri harici bir cikarici degildi. PDF'te gecerli
+    bir ToUnicode CMap varsa glif kodu -> Unicode esleme DOSYANIN ICINDE yazilidir
+    ve onu okuyan bir kutuphane hicbir tablo olmadan dogru metni verir; o zaman
+    kaydirma+tablo isi tumuyle GEREKSIZDIR. Yoksa bilgi dosyada YOKTUR ve hicbir
+    cikarici cozemez -- bu durumda tablo tek yol oldugu KANITLANMIS olur.
+    Iki halde de karar bu bolumden cikar, tahminden degil.
+    """
+    print("=" * 100)
+    print(f"BOLUM D  HARICI CIKARICILAR + ToUnicode BEYANI -- {dosya_adi}")
+    print("=" * 100)
+    with db.connection() as conn:
+        satir = conn.execute(
+            "SELECT file_id, source_path, file_type FROM core_files "
+            "WHERE file_name = %s ORDER BY file_id LIMIT 1;",
+            (dosya_adi,)).fetchone()
+    if satir is None:
+        print(f"  HATA: core_files'ta '{dosya_adi}' yok.")
+        return 1
+    fid, yol, tur = satir
+    if tur != "pdf":
+        print("  Bu teshis yalniz PDF icin anlamli.")
+        return 1
+    print(f"  file_id={fid}  yol={yol}")
+    print(f"  sayfa siniri: {sayfa or 'YOK (tam dosya)'}")
+
+    # ------------------------------------------------------------------ D1
+    print("\n" + "-" * 100)
+    print("D1 FONT ENVANTERI -- ToUnicode CMap VAR MI? (kararin dayanagi)")
+    print("-" * 100)
+    print("  ToUnicode VARSA  -> esleme dosyanin icinde; docling onu okumuyor")
+    print("                      demektir, cozum baska bir CIKARICI (kod yok).")
+    print("  ToUnicode YOKSA  -> bilgi dosyada hic yok; hicbir cikarici cozemez,")
+    print("                      kaydirma+tablo tek yol oldugu KANITLANIR.\n")
+    try:
+        import pymupdf
+    except ImportError:                                   # pragma: no cover
+        try:
+            import fitz as pymupdf                        # eski ad
+        except ImportError:
+            print("  pymupdf yok -> D1 atlandi.")
+            pymupdf = None
+    if pymupdf is not None:
+        doc = pymupdf.open(yol)
+        try:
+            n_sayfa = min(sayfa or doc.page_count, doc.page_count)
+            gorulen: dict[int, tuple] = {}
+            for i in range(n_sayfa):
+                for f in doc[i].get_fonts(full=True):
+                    gorulen.setdefault(int(f[0]), f)
+            print(f"  {'xref':>6} {'tip':<12} {'basefont':<30} {'encoding':<14} "
+                  f"{'ToUnicode':<10} {'gomulu':<7}")
+            var, yok = 0, 0
+            for xref, f in sorted(gorulen.items()):
+                tip_f, basefont, enc = str(f[2]), str(f[3]), str(f[5] or "-")
+                try:
+                    k_tip, k_val = doc.xref_get_key(xref, "ToUnicode")
+                except Exception:                         # noqa: BLE001
+                    k_tip, k_val = "?", ""
+                tounicode = "YOK" if k_tip in ("null", "?") else "VAR"
+                var, yok = var + (tounicode == "VAR"), yok + (tounicode == "YOK")
+                gomulu = "evet" if str(f[1] or "n/a") not in ("n/a", "", "None") else "HAYIR"
+                print(f"  {xref:>6} {tip_f[:12]:<12} {basefont[:30]:<30} "
+                      f"{enc[:14]:<14} {tounicode:<10} {gomulu:<7}")
+            print(f"\n  ToUnicode VAR: {var} font   YOK: {yok} font")
+            if yok and not var:
+                print("  -> Hicbir fontta ToUnicode YOK. Glif kodu -> Unicode eslemesi")
+                print("     dosyada BULUNMUYOR; harici cikarici da cozemez. Kaydirma+")
+                print("     tablo yolunun tek yol oldugu KANITLANDI.")
+            elif var:
+                print("  -> En az bir fontta ToUnicode VAR. Asagidaki D2 hangi")
+                print("     cikaricinin onu gercekten kullandigini gosterir.")
+        finally:
+            doc.close()
+
+    # ------------------------------------------------------------------ D2
+    print("\n" + "-" * 100)
+    print("D2 HARICI CIKARICI KARSILASTIRMASI")
+    print("-" * 100)
+    print("  islev/1k YUKSEK + tr/1k YUKSEK olan cikarici DOGRU cozmustur.")
+    print("  Referans: docling/pypdfium2 uretim satiri islev 0.14 / tr 0.00.\n")
+
+    def _pymupdf_metin() -> str:
+        import pymupdf as _pm
+        d = _pm.open(yol)
+        try:
+            n = min(sayfa or d.page_count, d.page_count)
+            return "\n".join(d[i].get_text("text") for i in range(n))
+        finally:
+            d.close()
+
+    def _pypdfium_metin() -> str:
+        import pypdfium2 as _pdfium
+        pdf = _pdfium.PdfDocument(yol)
+        try:
+            n = min(sayfa or len(pdf), len(pdf))
+            return "\n".join(pdf[i].get_textpage().get_text_range() for i in range(n))
+        finally:
+            pdf.close()
+
+    def _pdfminer_metin() -> str:
+        from pdfminer.high_level import extract_text
+        return extract_text(yol, maxpages=sayfa or 0)
+
+    def _pypdf_metin() -> str:
+        from pypdf import PdfReader
+        r = PdfReader(yol)
+        n = min(sayfa or len(r.pages), len(r.pages))
+        return "\n".join(r.pages[i].extract_text() or "" for i in range(n))
+
+    cikaricilar = [("pymupdf", _pymupdf_metin), ("pypdfium2 (dogrudan)", _pypdfium_metin),
+                   ("pdfminer.six", _pdfminer_metin), ("pypdf", _pypdf_metin)]
+    _basli("(harici)")
+    metinler: list[tuple[str, str]] = []
+    for ad_c, fn in cikaricilar:
+        try:
+            metin = fn()
+        except ImportError:
+            print(f"  {ad_c:<22} (kutuphane kurulu degil -> atlandi)")
+            continue
+        except Exception as exc:                          # noqa: BLE001 - teshis araci
+            print(f"  {ad_c:<22} HATA: {type(exc).__name__}: {str(exc)[:52]}")
+            continue
+        metinler.append((ad_c, metin))
+        _satir(ad_c, _olcut(metin))
+    if not metinler:
+        print("  Hicbir harici cikarici kosturulamadi.")
+        return 1
+
+    # ------------------------------------------------------------------ D3
+    print("\n" + "-" * 100)
+    print("D3 ILK SATIRLAR -- sayilar degil, GOZ karar verir")
+    print("-" * 100)
+    for ad_c, metin in metinler:
+        print(f"\n  --- {ad_c} ---")
+        for sat in [s for s in metin.splitlines() if s.strip()][:6]:
+            print(f"      {sat.strip()[:92]}")
+
+    print("\n" + "=" * 100)
+    print("  KARAR NOTU")
+    print("=" * 100)
+    en_iyi_c = max(metinler, key=lambda t: _olcut(t[1])["islev"])
+    o_c = _olcut(en_iyi_c[1])
+    print(f"  En yuksek islev/1k: {en_iyi_c[0]} ({o_c['islev']:.2f}, tr/1k {o_c['tr']:.2f})")
+    if o_c["islev"] > 5.0 and o_c["tr"] > 5.0:
+        print("  -> BU CIKARICI DOGRU COZUYOR. Onarim bir KOD isi degil: parse")
+        print("     backend'i degistirilir (ya da bu aile icin yedek cikarici")
+        print("     kullanilir) + bekleyen reprocess. Kaydirma/tablo GEREKSIZ.")
+    else:
+        print("  -> Hicbir harici cikarici da cozemedi. Bu, ToUnicode'un gercekten")
+        print("     olmadigini dogrular: esleme dosyada yok. Geriye kaydirma+tablo")
+        print("     kalir ve tablo dosya BASINA veriden turetilmelidir.")
+    return 0
+
+
 def main() -> int:
     _force_utf8()
     ap = argparse.ArgumentParser()
@@ -863,6 +1088,8 @@ def main() -> int:
                     help="Bolum B: dosyayi yeniden parse edip bosluk sinyalini olcer")
     ap.add_argument("--backend", metavar="DOSYA_ADI",
                     help="Bolum C: alt-parser karsilastirmasi + kaydirma aramasi")
+    ap.add_argument("--dis", metavar="DOSYA_ADI",
+                    help="Bolum D: harici cikaricilar + PDF'in ToUnicode beyani")
     # Varsayilan bilerek bolume gore FARKLI (asagida cozuluyor): C uc backend
     # kosar -> tam kitap dakikalar surer, 12 sayfa yeter. B tek kosumdur ve
     # sonucu DEPOLANMIS sayimla kiyaslanir -> varsayilani tam dosya olmali,
@@ -879,6 +1106,8 @@ def main() -> int:
 
     db = Database(DbSettings()).open()
     try:
+        if a.dis:
+            return bolum_d(db, a.dis, 12 if a.sayfa is None else a.sayfa)
         if a.backend:
             return bolum_c(db, a.backend, 12 if a.sayfa is None else a.sayfa, a.ocr)
         return bolum_b(db, a.parse, a.sayfa or 0) if a.parse else bolum_a(db)
