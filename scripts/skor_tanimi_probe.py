@@ -30,14 +30,23 @@ NE ÖLÇER (hiçbir şey değiştirmeden, iki tanımı yan yana):
 Üretim kodunu YENİDEN YAZMAZ: eski skoru üretmek için `compute_chunk_metrics`,
 alt skorları/ağırlıkları çıkarmak için `QCConsolidator` doğrudan çağrılır.
 
-SALT-OKUMA: DB'ye yazmaz, dosya yazmaz, config değiştirmez.
+VARSAYILAN SALT-OKUMA. `--yaz` ile mevcut korpusun skorları yeni tanıma göre
+YENİDEN HESAPLANIR (reprocess YOK — gereken her girdi core_chunks'ta):
+  1. metrics_ingestion(step='chunk').detail → truncated_ratio/at_max_ratio/
+     chunk_score düzeltilir (satır SİLİNMEZ, yalnız bu üç anahtar güncellenir),
+  2. core_files.quality_score üretim yolundan (QCConsolidator) yeniden yazılır,
+  3. eski tanımın ürettiği sahte `chunk_truncation_high` bulguları kapatılır
+     (resolved=true) — yeni tanımda eşiği aşmayan dosyalarda.
+Üçü birlikte yapılır: skoru düzeltip bulguyu yerinde bırakmak tutarsız olur.
 
 KOŞUM (H200, venv + .env.h200 yüklü):
-    python scripts/skor_tanimi_probe.py
+    python scripts/skor_tanimi_probe.py            # yalnız ölç (varsayılan)
+    python scripts/skor_tanimi_probe.py --yaz      # ölç + yeniden hesapla
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 from dataclasses import dataclass
 
@@ -75,6 +84,21 @@ JOIN core_files f ON f.file_id = m.file_id AND f.status = 'COMPLETED'
 ORDER BY m.file_id, m.metric_id;
 """
 
+# Yalnız tanım değişikliğinden ETKİLENEN üç anahtar yamalanır. token_avg/p95,
+# below_min_ratio, section_alignment_ratio, metadata_fill DOKUNULMADAN kalır —
+# onlar gerçek token listesinden hesaplandı, buradaki kova sayımından değil.
+_SQL_YAMA = """
+UPDATE metrics_ingestion
+SET detail = detail || %(yama)s::jsonb
+WHERE metric_id = (SELECT max(metric_id) FROM metrics_ingestion
+                   WHERE file_id = %(fid)s AND step = 'chunk');
+"""
+
+_SQL_BULGU_KAPAT = """
+UPDATE qc_findings SET resolved = true
+WHERE file_id = %(fid)s AND finding = 'chunk_truncation_high' AND resolved = false;
+"""
+
 
 @dataclass
 class _Sahte:
@@ -105,6 +129,13 @@ def _dagilim(vals: list[float]) -> str:
 
 def main() -> int:
     _force_utf8()
+    ap = argparse.ArgumentParser(description="chunk_score tanımı ölçümü")
+    ap.add_argument("--yaz", action="store_true",
+                    help="mevcut korpusun skorlarını yeni tanıma göre YENİDEN HESAPLA "
+                         "(metrics detail + quality_score + sahte bulgular)")
+    args = ap.parse_args()
+
+    import json
 
     from ragintel.config.settings import DbSettings
     from ragintel.database import Database
@@ -249,6 +280,39 @@ def main() -> int:
         print(f"  {_dagilim([100 * o for o in oranlar])}")
         print(f"  hizalama = 0 olan dosya: {sum(1 for o in oranlar if o == 0)}")
         print(f"  hizalama = 1 olan dosya: {sum(1 for o in oranlar if o >= 0.999)}")
+
+        # ---------------------------------------------------------------- §7
+        print("\n" + "=" * 78)
+        print("§7 YENİDEN HESAP" + ("" if args.yaz else "  (KOŞULMADI — --yaz ile açılır)"))
+        print("=" * 78)
+        if not args.yaz:
+            degisen = sum(1 for r in satirlar
+                          if r[3] is not None and r[4] is not None and abs(r[4] - r[3]) > 0.005)
+            print(f"  --yaz verilseydi skoru değişecek dosya: {degisen}/{len(satirlar)}")
+            print("  yazılacak yerler: metrics_ingestion.detail (3 anahtar), "
+                  "core_files.quality_score, qc_findings.resolved")
+            return 0
+
+        yazilan = bulgu_kapanan = 0
+        for fid, _ad, _sk, _e, _y, _e_ch, y_ch, (n, _mn, tm, us) in satirlar:
+            yama = json.dumps({"truncated_ratio": round(us / n, 4),
+                               "at_max_ratio": round(tm / n, 4),
+                               "chunk_score": y_ch})
+            with db.connection() as conn:
+                conn.execute(_SQL_YAMA, {"fid": fid, "yama": yama})
+                if us / n <= esik:
+                    kapat = conn.execute(_SQL_BULGU_KAPAT, {"fid": fid})
+                    bulgu_kapanan += max(kapat.rowcount, 0)
+            # Skoru ÜRETİM yolundan yeniden yaz: yamalı detail'i okur, ağırlıkları
+            # uygular, core_files.quality_score'a yazar. Formülü burada kopyalamıyoruz.
+            qc.compute_and_write_score(fid)
+            yazilan += 1
+            if yazilan % 200 == 0:
+                print(f"  … {yazilan}/{len(satirlar)}", flush=True)
+
+        print(f"  metrics detail + quality_score yenilenen : {yazilan} dosya")
+        print(f"  kapatılan sahte chunk_truncation_high    : {bulgu_kapanan} bulgu")
+        print("  → doğrulama: python -m ragintel.report ingestion")
     finally:
         db.close()
     return 0
