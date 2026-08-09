@@ -160,6 +160,22 @@ def _gorunur(s: str) -> str:
     return s.replace(" ", "\u00b7").replace("\n", "\\n").replace("\t", "\\t")
 
 
+def _parse_ayarlari(db):
+    """URETIMDEKI parse ayarlarini AYNI kaynaklardan okur (bkz. adapter.py).
+
+    Iki ayri kaynak var ve karistirmak sessiz hataya yol acar:
+      - figure_*/tableformer_mode/parse_num_threads -> config zinciri, 'ingestion' grubu
+      - backend / pdf_backend                       -> ParsingSettings (ENV + kod)
+    `EffectiveConfig` nokta erisimi DESTEKLEMEZ; grup adiyla cagrilir.
+    """
+    from ragintel.config.loader import load_config
+    from ragintel.config.settings import ParsingSettings
+    from ragintel.database.config_store import make_db_reader
+
+    ing = load_config(db_reader=make_db_reader(db)).group("ingestion")
+    return ing, ParsingSettings()
+
+
 # =============================================================== BOLUM A =====
 def bolum_a(db) -> int:
     print("=" * 100)
@@ -292,21 +308,17 @@ def bolum_b(db, dosya_adi: str) -> int:
         print("  Bu teshis yalniz PDF icin anlamli.")
         return 1
 
-    from ragintel.config.loader import load_config
-    from ragintel.config.settings import ParsingSettings
-    from ragintel.database.config_store import make_db_reader
     from ragintel.ingestion.cleaning.cleaner import clean_document
     from ragintel.ingestion.parsing.docling_backend import DoclingBackend
 
-    cfg = load_config(db_reader=make_db_reader(db))
-    ing = cfg.ingestion
+    ing, ps = _parse_ayarlari(db)
     print(f"\n  ... URETIM ayarlariyla yeniden parse ediliyor "
-          f"(tableformer={ing.tableformer_mode}) -- birkac dakika surebilir",
-          flush=True)
+          f"(pdf_backend={ps.pdf_backend}, tableformer={ing.tableformer_mode}) "
+          f"-- birkac dakika surebilir", flush=True)
     backend = DoclingBackend(
         figure_images=bool(ing.figure_images),
         figure_image_scale=float(ing.figure_image_scale),
-        pdf_backend=ParsingSettings().pdf_backend,
+        pdf_backend=ps.pdf_backend,
         tableformer_mode=str(ing.tableformer_mode),
         parse_num_threads=int(ing.parse_num_threads),
     )
@@ -430,12 +442,10 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
     print(f"  file_id={fid}  yol={yol}")
     print(f"  sayfa siniri: {sayfa or 'YOK (tam dosya)'}   OCR: {'ACIK' if ocr else 'kapali'}")
 
-    from ragintel.config.loader import load_config
-    from ragintel.database.config_store import make_db_reader
     from ragintel.ingestion.cleaning.cleaner import clean_document
     from ragintel.ingestion.parsing import docling_backend as dbk
 
-    ing = load_config(db_reader=make_db_reader(db)).ingestion
+    ing, ps = _parse_ayarlari(db)
 
     def _parse(be_adi: str):
         be = dbk.DoclingBackend(
@@ -461,7 +471,10 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
     print("  islev/1k YUKSEK + imza/1k ~0 olan kaynak DOGRU cozmustur.")
     print("  Uretim satiri referanstir; digerleri ondan iyi degilse config cozum degildir.")
 
-    uretim_adi = str(getattr(ing, "pdf_backend", "") or "pypdfium2")
+    # URETIM alt-parseri config grubunda DEGIL, ParsingSettings'te yasar
+    # (adapter.py:103). Grup'tan okumaya calismak yanlis satiri "URETIM" diye
+    # etiketler ve karsilastirmanin referansini bozardi.
+    uretim_adi = str(ps.pdf_backend or "pypdfium2")
     adaylar = [uretim_adi] + [b for b in ("dlparse", "dlparse_v2", "pypdfium2")
                               if b != uretim_adi]
     sonuc: dict[str, object] = {}
