@@ -35,7 +35,10 @@ BOLUM A (varsayilan, yalniz SELECT):
 BOLUM B (--parse <dosya_adi>): ayrik-harf kaynak teshisi.
   Dosyayi URETIM ayarlariyla yeniden parse eder, HAM parse ciktisinda ayrik-harf
   cevresindeki bosluk sayilarini sayar, sonra ayni metni clean_document'ten
-  gecirip tekrar sayar. Hicbir sey yazmaz.
+  gecirip tekrar sayar. Hicbir sey yazmaz. Kiyas noktasi ayni dosyanin
+  DEPOLANMIS chunk'larindaki sayimdir -- o olmadan sonuc yorumlanamaz.
+  `--sayfa N` ile baska dosyalar bir dakikada yoklanabilir; sayfa siniri
+  varken kiyas MUTLAK sayi degil 1000 karakter basina yogunluk uzerinden yapilir.
 
 BOLUM C (--backend <dosya_adi>): YERINE-GECMIS HARF ailesinin teshisi.
   Bolum A'nin S2 baglamlari bu ailenin bir KAYDIRMA oldugunu gosterdi:
@@ -156,8 +159,27 @@ def _ad(ch: str) -> str:
 
 
 def _gorunur(s: str) -> str:
-    """Bosluklari GORUNUR kilar -- bu probun butun meselesi bosluk sayisi."""
-    return s.replace(" ", "\u00b7").replace("\n", "\\n").replace("\t", "\\t")
+    """Bosluk VE kontrol karakterlerini GORUNUR kilar.
+
+    Kontrol karakterlerini basmak sart: aile-A'da yerine-gecmis harflerin bir
+    kismi C1 araliginda (U+0080/0081/0087...) ve terminalde hicbir iz birakmiyor.
+    Ilk C3 kosumunda "Trkiye" diye gorunen dizide 'u-umlaut'un nerede oldugu
+    okunamadi -- baglam ornekleri bu yuzden ise yaramadi.
+    """
+    out = []
+    for ch in s:
+        k = ord(ch)
+        if ch == " ":
+            out.append(_c(0x00B7))
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\t":
+            out.append("\\t")
+        elif k < 0x20 or 0x7F <= k <= 0x9F:
+            out.append(f"<{k:02X}>")
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def _parse_ayarlari(db):
@@ -290,7 +312,7 @@ def bolum_a(db) -> int:
 _HAM = re.compile("([" + _KUCUK + _BUYUK + "])( +)([" + _TR + "])( +)(?=\\S)")
 
 
-def bolum_b(db, dosya_adi: str) -> int:
+def bolum_b(db, dosya_adi: str, sayfa: int = 0) -> int:
     print("=" * 100)
     print(f"BOLUM B  KAYNAK TESHISI -- {dosya_adi}")
     print("=" * 100)
@@ -326,20 +348,26 @@ def bolum_b(db, dosya_adi: str) -> int:
           f"({1000*db_n/(db_kar or 1):.2f}/1000, {db_kar:,} karakter)")
 
     from ragintel.ingestion.cleaning.cleaner import clean_document
-    from ragintel.ingestion.parsing.docling_backend import DoclingBackend
+    from ragintel.ingestion.parsing import docling_backend as dbk
 
     ing, ps = _parse_ayarlari(db)
     print(f"\n  ... URETIM ayarlariyla yeniden parse ediliyor "
-          f"(pdf_backend={ps.pdf_backend}, tableformer={ing.tableformer_mode}) "
-          f"-- birkac dakika surebilir", flush=True)
-    backend = DoclingBackend(
-        figure_images=bool(ing.figure_images),
+          f"(pdf_backend={ps.pdf_backend}, tableformer={ing.tableformer_mode}, "
+          f"sayfa={sayfa or 'tam'}) -- birkac dakika surebilir", flush=True)
+    backend = dbk.DoclingBackend(
+        figure_images=False,          # metin teshisi; gorsel uretmek gereksiz maliyet
         figure_image_scale=float(ing.figure_image_scale),
         pdf_backend=ps.pdf_backend,
         tableformer_mode=str(ing.tableformer_mode),
         parse_num_threads=int(ing.parse_num_threads),
     )
-    parsed = backend.parse(yol, "pdf")
+    conv = backend._converter(False)
+    try:
+        res = conv.convert(yol, page_range=(1, sayfa)) if sayfa else conv.convert(yol)
+    except TypeError:
+        print("    (page_range desteklenmiyor -> tam dosya)", flush=True)
+        res = conv.convert(yol)
+    parsed = dbk._map_document(res.document, ocr=False)
     ham = parsed.body_text
     temiz = clean_document(parsed).cleaned_text
     print(f"  parse: {len(ham):,} karakter / {len(parsed.pages)} sayfa   "
@@ -375,13 +403,22 @@ def bolum_b(db, dosya_adi: str) -> int:
     print("  KARAR NOTU")
     print("=" * 100)
     ham_n = sum(1 for _ in _HAM.finditer(ham))
-    print(f"  DEPOLANMIS: {db_n:,}     YENIDEN PARSE: {ham_n:,}")
-    if db_n > max(20, ham_n * 5):
+    # Sayfa siniri varsa MUTLAK sayilar kiyaslanamaz (parse dosyanin bir dilimi,
+    # DB tamami). Olcut 1000 karakter basina YOGUNLUK olur; esikler de oyle.
+    db_o, ham_o = 1000 * db_n / (db_kar or 1), 1000 * ham_n / (len(ham) or 1)
+    print(f"  DEPOLANMIS: {db_n:,} ({db_o:.2f}/1000)     "
+          f"YENIDEN PARSE: {ham_n:,} ({ham_o:.2f}/1000)"
+          + (f"   [yalniz ilk {sayfa} sayfa -> yogunluk kiyaslanir]" if sayfa else ""))
+    if sayfa:
+        bayat, ureyor = (db_o > max(1.0, ham_o * 5)), (ham_o > 1.0)
+    else:
+        bayat, ureyor = (db_n > max(20, ham_n * 5)), (ham_n > 20)
+    if bayat:
         print("  -> Depolanan korpus bugunku parse'la AYNI DEGIL. Ayrik-harf bir")
         print("     PIPELINE kusuru degil, ESKI CIKTININ kalintisi; adim 5 icin")
         print("     zaten bekleyen reprocess onu kendiliginden temizler. Onarim")
         print("     kodu YAZILMAMALI -- yazilsa olmayan bir kusuru kovalardi.")
-    elif ham_n > 20:
+    elif ureyor:
         print("  -> Kusur bugunku parse'ta da UREYOR. Sag-bosluk kovasinda 1'in")
         print("     yaninda 2 varsa kelime siniri bilgisi PDF'ten geliyor ve onu")
         print("     cleaner._INLINE_WS yok ediyor -> onarim parse ciktisinda,")
@@ -390,7 +427,7 @@ def bolum_b(db, dosya_adi: str) -> int:
     else:
         print("  -> Iki taraf da temiz: bu DOSYA ayrik-harf tasimiyor, secim")
         print("     yanlisti. Asagidaki listeden bir dosyayla tekrarlanmali.")
-    if db_n <= max(20, ham_n * 5):
+    if not bayat:
         # Dogru hedefi ELDE aramak yerine burada verelim -- ayni kosumda.
         print("\n  --- ayrik-harf YOGUNLUGU en yuksek 12 dosya (yeniden hedef icin) ---")
         with db.connection() as conn:
@@ -644,13 +681,32 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
         print("    (artik yok -- kaydirma tek basina yetiyor)")
     for ch, n in sorted(artik.items(), key=lambda x: -x[1])[:20]:
         print(f"    {_ad(ch):<46} {n:>7,}")
+        # Seyrek karakterde tek baglam yetmez; 4 tane basilir.
+        kac = 2 if n > 50 else 4
         bulundu = 0
         for m in re.finditer(re.escape(ch), cozulmus):
-            bas, son = max(0, m.start() - 26), min(len(cozulmus), m.end() + 26)
+            bas, son = max(0, m.start() - 30), min(len(cozulmus), m.end() + 30)
             print(f"        {_gorunur(cozulmus[bas:son])}")
             bulundu += 1
-            if bulundu >= 2:
+            if bulundu >= kac:
                 break
+
+    # ---------------------------------------------------------------- C4
+    print("\n" + "-" * 100)
+    print("C4 EN SIK TOKEN'LAR -- MESRU ASCII'ye dusen yerine-gecmeler")
+    print("-" * 100)
+    print("  C3 yalniz ASCII+Turkce DISINDA kalanlari gorur. Ama bazi yerine-")
+    print("  gecmeler gecerli bir ASCII harfine dusuyor ve C3'te GORUNMEZ:")
+    print("  ilk kosumda 'geoen' (=gecen), 'hmit hnsal' (=Umit Unsal),")
+    print("  'gzaktan' (=Ozaktan) boyleydi. Token listesi bunlari aciga cikarir --")
+    print("  Turkce olmayan bir token, ASCII'ye dusmus bir yerine-gecmedir.\n")
+    from collections import Counter
+    tok = Counter(t for t in re.findall(r"[^\W\d_]{3,}", cozulmus) if t)
+    satir_tok = []
+    for kelime, n in tok.most_common(48):
+        satir_tok.append(f"{kelime[:22]}:{n}")
+    for i in range(0, len(satir_tok), 4):
+        print("    " + "  ".join(f"{s:<26}" for s in satir_tok[i:i + 4]))
 
     print("\n" + "=" * 100)
     print("  KARAR NOTU")
@@ -660,6 +716,11 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
     print("  Yoksa ve C2 kaydirmayi buluyorsa       -> cozum parse SONRASI, clean ONCESI")
     print("     bir cozucu (kaydirma + kucuk harf tablosu), aile imzasiyla tetiklenen.")
     print("  Yoksa ve C2 de bulmuyorsa              -> geriye OCR (do_ocr=True) kalir.")
+    if not ocr:
+        print("\n  NOT: bu kosum OCR KAPALI. Ayni komutu --ocr ile tekrarlamak")
+        print("  ucuncu yolu olcer. OCR calisiyorsa font tablosu yazmaya GEREK")
+        print("  KALMAZ ve cozum aileden BAGIMSIZ olur (konut_2 gibi baska imzali")
+        print("  dosyalari da kapsar) -- once o denenmeli, kod en son care.")
     return 0
 
 
@@ -670,9 +731,13 @@ def main() -> int:
                     help="Bolum B: dosyayi yeniden parse edip bosluk sinyalini olcer")
     ap.add_argument("--backend", metavar="DOSYA_ADI",
                     help="Bolum C: alt-parser karsilastirmasi + kaydirma aramasi")
-    ap.add_argument("--sayfa", type=int, default=12, metavar="N",
-                    help="Bolum C: yalniz ilk N sayfa (0 = tam dosya). "
-                         "Buyuk kitaplarda 3 backend x tam dosya cok uzun surer.")
+    # Varsayilan bilerek bolume gore FARKLI (asagida cozuluyor): C uc backend
+    # kosar -> tam kitap dakikalar surer, 12 sayfa yeter. B tek kosumdur ve
+    # sonucu DEPOLANMIS sayimla kiyaslanir -> varsayilani tam dosya olmali,
+    # yoksa onceki kosumlarla kiyaslanamaz hale gelir.
+    ap.add_argument("--sayfa", type=int, default=None, metavar="N",
+                    help="Yalniz ilk N sayfa (0 = tam dosya). "
+                         "Varsayilan: Bolum C=12, Bolum B=tam dosya.")
     ap.add_argument("--ocr", action="store_true",
                     help="Bolum C: OCR acik parse et (yavas; son care yolunu olcer)")
     a = ap.parse_args()
@@ -683,8 +748,8 @@ def main() -> int:
     db = Database(DbSettings()).open()
     try:
         if a.backend:
-            return bolum_c(db, a.backend, a.sayfa, a.ocr)
-        return bolum_b(db, a.parse) if a.parse else bolum_a(db)
+            return bolum_c(db, a.backend, 12 if a.sayfa is None else a.sayfa, a.ocr)
+        return bolum_b(db, a.parse, a.sayfa or 0) if a.parse else bolum_a(db)
     finally:
         db.close()
 
