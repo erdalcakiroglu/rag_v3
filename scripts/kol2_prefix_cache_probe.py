@@ -108,16 +108,19 @@ print(f"{'MUTATED çağrı-2 (sayaç değişti)':<28} {str(m2['pec']):>18} {m2['
 print("\n############ kol-2 KAPI ############")
 pec_s2, pec_m2 = s2["pec"] or 0, m2["pec"] or 0
 ped_s2, ped_m2 = s2["ped_ms"] or 0, m2["ped_ms"] or 0
-# STABLE 2. çağrı prefix'i cache'lediyse prompt_eval_count küçük olmalı (yalnız EK); MUTATED büyük.
-cache_works = pec_m2 > 0 and pec_s2 < 0.5 * pec_m2
+# ÖNEMLİ: Ollama cache-HIT'te bile prompt_eval_COUNT'u tüm prefix olarak raporlar; cache'in
+# işareti DURATION'dır (cache'lenen token yeniden hesaplanmaz → süre düşer). Bu yüzden kapı
+# prompt_eval_DURATION'a bağlıdır, count'a DEĞİL. (İlk sürüm count'a bakıyordu — yanlış verdikt.)
+cache_works = ped_m2 > 0 and ped_s2 < 0.5 * ped_m2
 if cache_works:
     saved = ped_m2 - ped_s2
-    print(f"✔ PREFIX CACHE ÇALIŞIYOR — STABLE 2. çağrı yalnız {pec_s2} token değerledi "
-          f"(MUTATED {pec_m2}). prompt-eval tasarrufu ≈ {saved}ms/tur.")
+    print(f"✔ PREFIX CACHE ÇALIŞIYOR — STABLE 2. çağrı prompt-eval {ped_s2}ms (yalnız ek token), "
+          f"MUTATED {ped_m2}ms (~tam yeniden değerleme). tasarruf ≈ {saved}ms/tur.")
+    print(f"  (count ikisinde de ~{pec_s2}/{pec_m2}; Ollama cache-hit'te count'u düşürmez — süreye bak.)")
     print("  → kol-2 ödülü GERÇEK. rework GREENLIGHT: (a) sayacı tail'e taşı, (b) append-only bağlam"
           " + _apply_budget tahliye politikası. SONRA zorunlu k=3 karne (kalite regresyonu YOK kanıtı).")
 else:
-    print(f"⚠ CACHE YOK/ZAYIF — STABLE 2. çağrı {pec_s2} token, MUTATED {pec_m2}: prefix kararlılığı "
-          "prompt-eval'i düşürmedi. Ollama bu çağrılar arası cache kullanmıyor.")
+    print(f"⚠ CACHE YOK/ZAYIF — STABLE 2. çağrı {ped_s2}ms, MUTATED {ped_m2}ms: prefix kararlılığı "
+          "prompt-eval süresini düşürmedi. Ollama bu çağrılar arası cache kullanmıyor.")
     print("  → kol-2 latency KAZANDIRMAZ (yalnız byte-kararlılık). rework'ü RAFA KALDIR; KOD YAZMADAN döneriz.")
-print(f"PEC_S2={pec_s2} PEC_M2={pec_m2} PED_S2={ped_s2} PED_M2={ped_m2}")  # bash için
+print(f"PED_S2={ped_s2} PED_M2={ped_m2} PEC_S2={pec_s2} PEC_M2={pec_m2}")  # bash için

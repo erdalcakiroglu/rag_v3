@@ -7,14 +7,17 @@ kadar ilerler; Ollama tek-akış serileştiriyorsa orada yine sıraya girerler �
 optimizasyon olur. Bu prob, kilide DOKUNMADAN önce bağlanma noktasını attribute eder.
 
 SORU: 2 eşzamanlı üretim Ollama'da PARALELLEŞİYOR mu, SERİLEŞİYOR mu?
-  paralel_faktör = Σ(bireysel süre) / duvar-saati.  ~2.0 = tam paralel · ~1.0 = tam seri.
+  BİRİNCİL SİNYAL: ham süre-ORANI = max(dur)/min(dur).
+    ~2.0 → SERİ (biri diğerini bekledi: bekle-sonra-çalış) · ~1.0 → PARALEL.
+  DİKKAT (v2 düzeltme): barrier ikisini t=0'da salar; seri durumda çağrı-2 bekleyip koşar →
+    dur2≈2·dur1 → pf=Σ/wall=3L/2L=1.5. Yani pf'nin SERİ tabanı 1.5'tir (1.0 DEĞİL). pf'yi
+    tek başına eşiğe bağlama; süre-oranını oku (2026-07 koşumu: oran~1.9, pf 1.53 → SERİ).
 
 KARAR KAPISI (Test A — Ollama-direct, KİLİT YOK, saf model sunucusu):
-  paralel_faktör ≥ ~1.6 → Ollama 2 isteği paralel işliyor → APP `_lock` gerçek darboğaz →
-        lock-removal ANLAMLI (sonraki iş: checkpointer connection-pool + eşzamanlılık-güvenliği).
-  paralel_faktör ≤ ~1.2 → Ollama SERİLEŞTİRİYOR (tek GPU akışı / OLLAMA_NUM_PARALLEL=1) →
-        lock'u kaldırmak İstekleri lock yerine Ollama'da kuyruğa alır, KAZANÇ YOK → lock-removal
-        ERKEN. Gerçek tavan model sunucusu: önce ucuz lever OLLAMA_NUM_PARALLEL, sonra vLLM/replica.
+  oran ~1.0 (pf ~2.0) → Ollama paralel → APP `_lock` gerçek darboğaz → lock-removal ANLAMLI.
+  oran ~2.0 (pf ~1.5) → Ollama SERİLEŞTİRİYOR (OLLAMA_NUM_PARALLEL=1). app `_lock` ile İKİ SERİ
+        KAPI seri bağlı → birini tek kaldırmak SIFIR kazanç → lock-removal-tek-başına ERKEN.
+        İlk hamle: NUM_PARALLEL=2 + tekrar ölç; açılırsa çift-değişiklik, açılmazsa vLLM/replica.
 
 Test B (opsiyonel, APP_TOKEN verilirse): 2 eşzamanlı /api/ask — app'in KİLİTLİ gerçek davranışı.
 Test A ↔ B kıyası: A paralel + B seri ise darboğaz kesin app tarafı (lock/checkpointer).
@@ -123,18 +126,27 @@ else:
     print("\n[Test B] atlandı (APP_TOKEN verilmedi) — Test A tek başına attribute için yeterli.")
 
 print("\n############ KAPASİTE KARAR KAPISI ############")
+# DÜZELTME (v2): barrier ikisini t=0'da salar; SERİ durumda çağrı-2 bekleyip koşar → dur2≈2·dur1
+# ve pf = 3L/2L = 1.5. Yani SERİ taban pf≈1.5 (1.0 DEĞİL). Birincil sinyal ham süre-ORANI:
+#   oran = max(dur)/min(dur):  ~2.0 = SERİ (bekle-sonra-çalış) · ~1.0 = PARALEL.
+# pf ikincil doğrulama: ~1.5 seri, ~2.0 paralel.
 pf = A["pf"]
-if pf >= 1.6:
-    print(f"✔ OLLAMA PARALELLEŞİYOR (pf={pf:.2f}) → model sunucusu tavan DEĞİL.")
-    print("  → Darboğaz APP `_lock` (tek-bağlantı saver). lock-removal ANLAMLI.")
-    print("  → Sonraki iş: checkpointer connection-pool + graph eşzamanlılık-güvenliği tasarımı (KOD DEĞİL, tasarım).")
-    if B and B["pf"] < 1.3:
-        print(f"  → Test B doğruladı: app seri (pf={B['pf']:.2f}) ↔ Ollama paralel → darboğaz kesin app tarafı.")
-elif pf <= 1.2:
-    print(f"⚠ OLLAMA SERİLEŞTİRİYOR (pf={pf:.2f}) → model sunucusu GERÇEK TAVAN.")
-    print("  → lock'u kaldırmak istekleri lock yerine Ollama'da kuyruğa alır — KAZANÇ YOK, lock-removal ERKEN + riskli.")
-    print("  → ÖNCE ucuz lever: OLLAMA_NUM_PARALLEL artır + tekrar ölç. Açmıyorsa milestone = vLLM/replica (prod kapasite).")
+d = sorted(A["durs"])
+ratio = (d[-1] / d[0]) if d and d[0] > 0 else 99.0
+serial = ratio >= 1.6            # uzun çağrı kısanın ~2 katı → biri diğerini bekledi
+parallel = ratio <= 1.35 and pf >= 1.8
+print(f"süre-oranı (uzun/kısa) = {ratio:.2f}  ·  pf = {pf:.2f}   [SERİ: oran~2.0/pf~1.5 · PARALEL: oran~1.0/pf~2.0]")
+if serial:
+    print("⚠ OLLAMA SERİLEŞTİRİYOR — biri diğerini bekliyor (bekle-sonra-çalış imzası).")
+    print("  → app `_lock` ile Ollama İKİ SERİ KAPI, seri bağlı: birini tek kaldırmak SIFIR kazanç → lock-removal-tek-başına ERKEN.")
+    print("  → Kök muhtemelen OLLAMA_NUM_PARALLEL=1 (ayarlanabilir kapı, mimari değil).")
+    print("  → İLK HAMLE: NUM_PARALLEL=2 + Test A tekrarı. oran 2.0→1.0 (pf 1.5→2.0) çıkarsa ÇİFT değişiklik")
+    print("    (config + lock-removal) anlamlı; hâlâ seri ise (MoE/VRAM) milestone = vLLM/replica.")
+    if B:
+        print(f"  → Test B (app): oran={sorted(B['durs'])[-1]/max(sorted(B['durs'])[0],1e-9):.2f} — app tarafı da seri (lock).")
+elif parallel:
+    print("✔ OLLAMA PARALELLEŞİYOR → model sunucusu tavan DEĞİL → darboğaz APP `_lock`.")
+    print("  → lock-removal ANLAMLI. Sonraki iş: checkpointer connection-pool + eşzamanlılık-güvenliği tasarımı (KOD DEĞİL).")
 else:
-    print(f"~ KISMİ (pf={pf:.2f}) — net değil. N_PREDICT'i artırıp (daha uzun decode) tekrar ölç; "
-          "OLLAMA_NUM_PARALLEL değerini de kontrol et.")
-print(f"PF_A={pf:.2f} L_ms={L*1000:.0f}" + (f" PF_B={B['pf']:.2f}" if B else ""))  # bash için
+    print("~ NET DEĞİL — oran ara bölgede. N_PREDICT'i artır (daha uzun decode → contention netleşir) + tekrar ölç.")
+print(f"RATIO_A={ratio:.2f} PF_A={pf:.2f} L_ms={L*1000:.0f}" + (f" PF_B={B['pf']:.2f}" if B else ""))  # bash için
