@@ -1983,12 +1983,35 @@ def bolum_f(db, dosya_adi: str, sayfa: int, bas_sayfa: int,
         print(f"    pencere sayisi {len(oranlar)}:  <%5 hatali = {temiz_p}   "
               f">=%50 hatali = {kotu_p}   ortanca = "
               f"{sorted(oranlar)[len(oranlar) // 2]:.1f}%")
-        if kotu_p:
-            en_kotu = max(range(len(oranlar)), key=lambda i: oranlar[i])
-            bas = en_kotu * pencere_n
-            print(f"\n    EN KOTU pencere #{en_kotu} ({oranlar[en_kotu]:.0f}% hatali) "
-                  f"referans metni:")
-            print("      " + _gorunur(" ".join(a_tok[bas:bas + 40]))[:280])
+
+        # F2d -- TOKEN CIFTI YETMEZ. 5411 kosumunda `ve -> li`, `Kanun -> i`
+        # gibi ciftler cikti; bunlar OCR'in o kelimeyi yanlis okumasi da
+        # olabilir, difflib'in bir HIZALAMA blogu icinde alakasiz token'lari
+        # yan yana getirmesi de. Ikisi ZIT karar gerektirir (biri OCR'i eler,
+        # digeri olcum aracini). Ayrimi yalniz METNIN KENDISI verir.
+        kodlar = sm.get_opcodes()
+
+        def _j_araligi(i1: int, i2: int) -> tuple[int, int]:
+            js, je = None, 0
+            for op, a1, a2, b1, b2 in kodlar:
+                if a2 <= i1 or a1 >= i2:
+                    continue
+                bas_j = b1 + (max(a1, i1) - a1 if op == "equal" else 0)
+                son_j = b2 - (a2 - min(a2, i2) if op == "equal" else 0)
+                js = bas_j if js is None else js
+                je = max(je, son_j)
+            return (js or 0, je)
+
+        print("\n  F2d EN KOTU PENCERELER -- iki metin yan yana (asil kanit)")
+        for sira, p_idx in enumerate(sorted(range(len(oranlar)),
+                                            key=lambda i: -oranlar[i])[:3], 1):
+            i1 = p_idx * pencere_n
+            i2 = min(len(a_tok), i1 + pencere_n)
+            j1, j2 = _j_araligi(i1, i2)
+            print(f"\n    #{sira} pencere {p_idx} -- {oranlar[p_idx]:.0f}% hatali "
+                  f"(ref token {i1}-{i2}, OCR token {j1}-{j2})")
+            print("      REF: " + _gorunur(" ".join(a_tok[i1:i1 + 45]))[:330])
+            print("      OCR: " + _gorunur(" ".join(b_tok[j1:j1 + 45]))[:330])
 
     # ------------------------------------------------------------------ F3
     print("\n" + "-" * 100)
