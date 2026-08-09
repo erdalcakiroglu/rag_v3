@@ -1903,6 +1903,10 @@ def bolum_f(db, dosya_adi: str, sayfa: int, bas_sayfa: int,
     caps = {"ref": 0, "hata": 0}
     dus = {"ref": 0, "hata": 0}
     hatali_idx: set[int] = set()          # F2c: hangi REFERANS token'i tutmadi
+    # F2e: nokta/diyakritik farki token'i OKUNAMAZ yapmaz (bagimsiz -> bagimsiz),
+    # gercek fark ve eksik token yapar. Kos analizi ikisini AYRI kosarsa
+    # "dagilmis i/I gurultusu" ile "toplu cope donmus bolge" karismaz.
+    ciddi_idx: set[int] = set()
     for etiket_op, i1, i2, j1, j2 in sm.get_opcodes():
         sol, sag = a_tok[i1:i2], b_tok[j1:j2]
         for a in sol:
@@ -1912,8 +1916,11 @@ def bolum_f(db, dosya_adi: str, sayfa: int, bas_sayfa: int,
             sayim["ayni"] += i2 - i1
             continue
         hatali_idx.update(range(i1, i2))
-        for a, b in zip(sol, sag):
+        ciddi_idx.update(range(i1 + len(sag), i2))       # eksik token'lar
+        for konum, (a, b) in enumerate(zip(sol, sag)):
             s = _fark_sinifi(a, b)
+            if s == "gercek":
+                ciddi_idx.add(i1 + konum)
             sayim[s] += 1
             tum_cift.append((a, b))
             kova = caps if (_harfli(a) and a == a.upper()) else dus
@@ -1965,6 +1972,22 @@ def bolum_f(db, dosya_adi: str, sayfa: int, bas_sayfa: int,
     # 5411 kosumunda ardisik token'lar toptan cope donmustu (Musavirler ->
     # 'Miuenlr', yonetilmesine -> 'yoiniin...'), bu da bolgeselligi ISARET
     # ediyordu ama olcmuyordu.
+    # F2d/F2e ortak: bir REFERANS araligina karsilik gelen OCR araligi. Token
+    # sayilari esit olmadigi icin i indisi j indisi DEGILDIR; opcode'lardan
+    # turetilmezse iki metin kaymis basilir ve karsilastirma anlamsizlasir.
+    kodlar = sm.get_opcodes()
+
+    def _j_araligi(i1: int, i2: int) -> tuple[int, int]:
+        js, je = None, 0
+        for op, a1, a2, b1, b2 in kodlar:
+            if a2 <= i1 or a1 >= i2:
+                continue
+            bas_j = b1 + (max(a1, i1) - a1 if op == "equal" else 0)
+            son_j = b2 - (a2 - min(a2, i2) if op == "equal" else 0)
+            js = bas_j if js is None else js
+            je = max(je, son_j)
+        return (js or 0, je)
+
     print("\n  F2c HATA PROFILI -- yayginlik mi, tek bir bolge mi?")
     pencere_n = max(100, len(a_tok) // 40)
     kovalar_p = [[0, 0] for _ in range((len(a_tok) // pencere_n) + 1)]
@@ -1989,19 +2012,6 @@ def bolum_f(db, dosya_adi: str, sayfa: int, bas_sayfa: int,
         # olabilir, difflib'in bir HIZALAMA blogu icinde alakasiz token'lari
         # yan yana getirmesi de. Ikisi ZIT karar gerektirir (biri OCR'i eler,
         # digeri olcum aracini). Ayrimi yalniz METNIN KENDISI verir.
-        kodlar = sm.get_opcodes()
-
-        def _j_araligi(i1: int, i2: int) -> tuple[int, int]:
-            js, je = None, 0
-            for op, a1, a2, b1, b2 in kodlar:
-                if a2 <= i1 or a1 >= i2:
-                    continue
-                bas_j = b1 + (max(a1, i1) - a1 if op == "equal" else 0)
-                son_j = b2 - (a2 - min(a2, i2) if op == "equal" else 0)
-                js = bas_j if js is None else js
-                je = max(je, son_j)
-            return (js or 0, je)
-
         print("\n  F2d EN KOTU PENCERELER -- iki metin yan yana (asil kanit)")
         for sira, p_idx in enumerate(sorted(range(len(oranlar)),
                                             key=lambda i: -oranlar[i])[:3], 1):
@@ -2012,6 +2022,70 @@ def bolum_f(db, dosya_adi: str, sayfa: int, bas_sayfa: int,
                   f"(ref token {i1}-{i2}, OCR token {j1}-{j2})")
             print("      REF: " + _gorunur(" ".join(a_tok[i1:i1 + 45]))[:330])
             print("      OCR: " + _gorunur(" ".join(b_tok[j1:j1 + 45]))[:330])
+
+    # ------------------------------------------------------------------ F2e
+    # F2c'NIN "YAYGIN" HUKMU PENCERE BOYUTUNUN ARTEFAKTIYDI. F2d metni
+    # gosterdi: 225 token'lik bir pencere "%27 hatali" puani alirken ilk 45
+    # token'i kelimesi kelimesine ayni cikti, hata kisa PATLAMALAR halinde
+    # toplaniyordu. Tek bir 15 token'lik patlama 225'lik pencerede %7 okunur;
+    # her pencerede bir patlama olunca profil DUZGUN gorunur. Dogru olcu
+    # pencere degil KOS UZUNLUGU -- ve ayrimi tanim yapar:
+    #   patlama  -> hatali koslar UZUN (5+) ve az; aralarinda uzun temiz koslar
+    #   yaygin   -> hatali koslar 1-2 token ve cok; temiz kos kalmaz
+    # Karar buna baglidir: patlama ise metnin ezici cogunlugu saglamdir ve
+    # patlamanin NE oldugu (dipnot / kenar basligi / sayfa mobilyasi) sorusu
+    # anlamli hale gelir; yayginsa OCR bu metin turunde elenir.
+    print("\n  F2e KOS UZUNLUGU -- patlama mi, yaygin mi? (F2c'yi bu duzeltir)")
+
+    def _koslar(idx: set[int]) -> list[tuple[bool, int, int]]:
+        dizi = [i in idx for i in range(len(a_tok))]
+        cikti: list[tuple[bool, int, int]] = []       # (hatali_mi, bas, uzunluk)
+        i = 0
+        while i < len(dizi):
+            j = i
+            while j < len(dizi) and dizi[j] == dizi[i]:
+                j += 1
+            cikti.append((dizi[i], i, j - i))
+            i = j
+        return cikti
+
+    koslar = _koslar(ciddi_idx)
+    for kume, baslik in ((hatali_idx, "TUM uyusmazliklar (nokta dahil)"),
+                         (ciddi_idx, "YALNIZ gercek fark + eksik (okunamaz)")):
+        print(f"\n    -- {baslik}")
+        kk = _koslar(kume)
+        for bayrak, ad in ((True, "HATALI"), (False, "temiz ")):
+            alt = [u for b, _s, u in kk if b is bayrak]
+            if not alt:
+                continue
+            tk = sum(alt)
+            print(f"      {ad} kos: {len(alt):,} adet / {tk:,} token")
+            for a_u, u_u in ((1, 1), (2, 4), (5, 9), (10, 24), (25, 10**9)):
+                se = [u for u in alt if a_u <= u <= u_u]
+                if not se:
+                    continue
+                etiket = f"{a_u}" if a_u == u_u else (
+                    f"{a_u}-{u_u}" if u_u < 10**9 else f"{a_u}+")
+                print(f"        uzunluk {etiket:<6} {len(se):>5} kos  "
+                      f"{sum(se):>6,} token  (%{100*sum(se)/tk:.1f})")
+        uzun_temiz = sum(u for b, _s, u in kk if not b and u >= 50)
+        print(f"      >=50 token'lik KESINTISIZ temiz koslarda: {uzun_temiz:,} "
+              f"token = tum metnin %{100*uzun_temiz/len(a_tok):.1f}'i")
+
+    # Patlamalarin NE oldugunu ancak metin soyler: dipnot ve kenar basligi
+    # kucuk punto demektir (cozunurluk hipotezi), govde metni degil.
+    print("\n    EN UZUN OKUNAMAZ KOSLAR -- icerik turu nedir?")
+    for sira, (_b, bas, u) in enumerate(sorted(
+            (k for k in koslar if k[0]), key=lambda k: -k[2])[:6], 1):
+        onc = " ".join(a_tok[max(0, bas - 6):bas])
+        ic = " ".join(a_tok[bas:bas + u])
+        son = " ".join(a_tok[bas + u:bas + u + 6])
+        oj1, oj2 = _j_araligi(bas, bas + u)
+        print(f"\n      #{sira} {u} token (ref {bas}):")
+        print(f"        REF ...{_gorunur(onc)[-50:]}  >>> {_gorunur(ic)[:200]} "
+              f"<<<  {_gorunur(son)[:50]}...")
+        print(f"        OCR karsiligi ({oj2 - oj1} token): "
+              f"{_gorunur(' '.join(b_tok[oj1:oj2]))[:200]}")
 
     # ------------------------------------------------------------------ F3
     print("\n" + "-" * 100)
