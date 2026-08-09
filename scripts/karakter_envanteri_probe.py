@@ -65,9 +65,26 @@ BOLUM C (--backend <dosya_adi>): YERINE-GECMIS HARF ailesinin teshisi.
         'o'dan (DUZ akis) gelir. Ikisi ayri akissa cakisma yoktur ve tablo ham
         kod noktasi uzerinde KAYIPSIZ kurulur. C5 bunu olcer.
 
+    C7  C2 kaydirma BULAMAZSA calisir (2026-08-09'da eklendi). Once burada
+        `return 0` vardi ve olcumu tam da gerekli oldugu yerde kesiyordu:
+        kaydirmasiz dosya, hakkinda EN AZ sey bildigimiz dosyadir -- tek bir
+        ham ornek satiri bile basilmadan cikiliyordu. C7 kaydirma VARSAYMAZ:
+        alfabe profili + temiz-token orani (islev/1k'nin goremedigi
+        "yalniz diyakritikler bozulmus" halini ayirt eder), bilinmeyen her
+        karakterin gercek kelimeleri, ve belgenin KENDI temiz metninden
+        ogrenilen harf-ikilisi modeliyle esleme onerisi. Model disaridan
+        Turkce tablosu getirmez; dayanagi (temiz token sayisi) basilir ve
+        200'un altindaysa oneri BASILMAZ.
+
   Olcut, diyakritik yogunlugu DEGIL -- o bozulmadan etkileniyor. Diyakritigi
   OLMAYAN Turkce islev sozcukleri (ve/bir/bu/ile/olan) kullanilir; bozuk metinde
   sifira yakin, dogru cozulmus metinde yuksek cikarlar.
+
+  `--tam-ocr`: C1'e force_full_page_ocr kollari ekler. Bu, bozulma mekanizmasi
+  NE OLURSA OLSUN gecerli tek genel yoldur -- metin katmanini yok sayip sayfayi
+  goruntu olarak okur. Kaydirmanin AILE GENELINE YAYILMADIGI olculdukten sonra
+  (Bankacilik_Kanunu_2 ve konut_2 C2'de eledi) once bu kol denenmelidir:
+  isliyorsa 39 dosyalik glif-tablosu isi tumuyle gereksizlesir.
 
 KOSUM (H200, venv + .env.h200 yuklu):
     python scripts/karakter_envanteri_probe.py
@@ -588,7 +605,261 @@ def _satir(ad: str, o: dict, ek: str = "") -> None:
           f"{o['bosluk']:>10.2f}   {ek}")
 
 
-def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
+def _tam_ocr_kollari(ing, ps):
+    """force_full_page_ocr kollari: URETIM converter'inin AYNISI + TEK fark.
+
+    NEDEN AYRI KURULUYOR (uretim yolunu cagirmak yerine): bu bilerek uretim
+    DISI bir ayar. DoclingBackend'e bayrak eklemek, olculmemis bir secenegi
+    uretim koduna sokmak olurdu. Olcum once, kod sonra.
+
+    NEDEN IKI KOL: `--ocr` (do_ocr=True) bu ailede HICBIR SEY degistirmedi
+    (2026-08-09, bit-bit ayni cikti) cunku docling yalniz GORUNTU bolgelerini
+    OCR'lar; bu PDF'lerin metin katmani VAR (bozuk ama var), o yuzden OCR hic
+    tetiklenmiyor. force_full_page_ocr metin katmanini YOK SAYAR ve sayfayi
+    goruntu olarak okur -- glif tablosu sorununu tanimi geregi atlar.
+    Ikinci kol DIL yuzunden sart: docling'in varsayilan motoru (RapidOCR)
+    Cince/Ingilizce modelle gelir ve Turkce diyakritigi tanimayabilir; EasyOCR
+    lang=['tr'] ile calisir. Hangisinin isledigini TAHMIN etmiyoruz, ikisini de
+    kosup olcuyoruz.
+    """
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import (
+        AcceleratorOptions, PdfPipelineOptions, TableFormerMode,
+    )
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+
+    from ragintel.ingestion.parsing.docling_backend import _resolve_pdf_backend
+
+    def _temel():
+        o = PdfPipelineOptions()
+        o.do_ocr = True
+        o.do_table_structure = True
+        o.table_structure_options.mode = (
+            TableFormerMode.FAST
+            if str(ing.tableformer_mode).strip().lower() == "fast"
+            else TableFormerMode.ACCURATE
+        )
+        o.accelerator_options = AcceleratorOptions(
+            num_threads=int(ing.parse_num_threads), device="auto")
+        return o
+
+    def _kur(o):
+        kw = {"pipeline_options": o}
+        cls = _resolve_pdf_backend(str(ps.pdf_backend or "pypdfium2"))
+        if cls is not None:
+            kw["backend"] = cls
+        return DocumentConverter(format_options={InputFormat.PDF: PdfFormatOption(**kw)})
+
+    kollar = []
+
+    # Kol 1 -- docling'in VARSAYILAN OCR motoru, tam sayfa zorlanmis.
+    o1 = _temel()
+    if not hasattr(o1.ocr_options, "force_full_page_ocr"):
+        print("  UYARI: bu docling surumunde force_full_page_ocr YOK -> kol atlandi")
+    else:
+        o1.ocr_options.force_full_page_ocr = True
+        motor = type(o1.ocr_options).__name__
+        dil = getattr(o1.ocr_options, "lang", None)
+        kollar.append((f"TAMOCR/{motor}(lang={dil})", lambda: _kur(o1)))
+
+    # Kol 2 -- EasyOCR lang=['tr']. Kurulu degilse SESSIZCE atlanmaz, yazilir.
+    try:
+        from docling.datamodel.pipeline_options import EasyOcrOptions
+        import easyocr  # noqa: F401  - varligini dogrulamak icin
+    except ImportError as exc:
+        print(f"  (EasyOCR kolu atlandi: {exc})")
+    else:
+        o2 = _temel()
+        o2.ocr_options = EasyOcrOptions(lang=["tr"], force_full_page_ocr=True)
+        kollar.append(("TAMOCR/EasyOCR(lang=tr)", lambda: _kur(o2)))
+
+    return kollar
+
+
+# --- C7 mekanizma profili ----------------------------------------------------
+_HARF = _ASCII_KUCUK + _ASCII_BUYUK + _TR
+
+
+def _tokenler(metin: str) -> list[str]:
+    return metin.split()
+
+
+def _temiz_oran(metin: str) -> tuple[float, int, int]:
+    """Harf tasiyan token'larin yuzde kaci BEKLENMEYEN karakter TASIMIYOR.
+
+    islev/1k'nin goremedigi seyi gorur: diyakritik-yerine-gecme bozulmasinda
+    islev sozcukleri (ve/bir/bu -- hicbirinde diyakritik yok) SAGLAM kalir ve
+    islev/1k yuksek cikar; oysa metnin kelimelerinin buyuk kismi kirlidir.
+    """
+    top = kirli = 0
+    for t in _tokenler(metin):
+        if not any(ch in _HARF for ch in t):
+            continue
+        top += 1
+        if any(ch not in _BEKLENEN for ch in t):
+            kirli += 1
+    return (100.0 * (top - kirli) / top if top else 0.0), top, kirli
+
+
+def _bigram_modeli(metin: str):
+    """Belgenin KENDI TEMIZ token'larindan harf-ikilisi modeli.
+
+    Disaridan Turkce frekans tablosu GETIRMIYORUZ. Getirseydik, cikan esleme
+    benim tablomu dogrulardi -- bu turda iki kez yanildigim hata tam olarak
+    oydu. Model belgenin bozulmamis kisminda kendi kendine kurulur; dolayisiyla
+    dayanagi da olculebilir (temiz token sayisi). Temiz token yoksa (kaydirma
+    ailesi gibi TUM metnin bozuk oldugu dosyalar) model DAYANAKSIZ ilan edilir.
+    """
+    sol: dict[tuple[str, str], int] = {}
+    sag: dict[tuple[str, str], int] = {}
+    sol_top: dict[str, int] = {}
+    tek: dict[str, int] = {}
+    n_temiz = 0
+    for t in _tokenler(metin):
+        if not any(ch in _HARF for ch in t):
+            continue
+        if any(ch not in _BEKLENEN for ch in t):
+            continue
+        n_temiz += 1
+        s = " " + t + " "
+        for i in range(1, len(s) - 1):
+            c = s[i]
+            if c not in _HARF:
+                continue
+            tek[c] = tek.get(c, 0) + 1
+            sol[(s[i - 1], c)] = sol.get((s[i - 1], c), 0) + 1
+            sol_top[s[i - 1]] = sol_top.get(s[i - 1], 0) + 1
+            sag[(c, s[i + 1])] = sag.get((c, s[i + 1]), 0) + 1
+    return sol, sag, sol_top, tek, n_temiz
+
+
+def _esleme_onerisi(metin: str, hedefler: list[str], model) -> dict[str, list]:
+    """Her bilinmeyen karakter icin en olasi harfi KOMSULARINDAN cikarir."""
+    import math
+
+    sol, sag, sol_top, tek, _ = model
+    v = len(_HARF) + 1
+    top_tek = sum(tek.values()) or 1
+
+    # Bilinmeyen karakterin gectigi (sol_komsu, sag_komsu) ciftleri toplanir.
+    komsu: dict[str, list[tuple[str, str]]] = {h: [] for h in hedefler}
+    for t in _tokenler(metin):
+        s = " " + t + " "
+        for i in range(1, len(s) - 1):
+            if s[i] in komsu:
+                komsu[s[i]].append((s[i - 1], s[i + 1]))
+
+    out = {}
+    for x in hedefler:
+        ciftler = komsu[x]
+        if not ciftler:
+            continue
+        puanlar = []
+        for c in _HARF:
+            p = math.log((tek.get(c, 0) + 1) / (top_tek + v))
+            for sl, sg in ciftler:
+                p += math.log((sol.get((sl, c), 0) + 1) / (sol_top.get(sl, 0) + v))
+                p += math.log((sag.get((c, sg), 0) + 1) / (tek.get(c, 0) + v))
+            puanlar.append((p / len(ciftler), c))
+        puanlar.sort(reverse=True)
+        out[x] = (len(ciftler), puanlar[:3])
+    return out
+
+
+def _c7_mekanizma(ham: str) -> None:
+    """C2 kaydirma bulamadiginda: bozulma NE peki? Kaydirma VARSAYMADAN olcer."""
+    print("\n" + "-" * 100)
+    print("C7 MEKANIZMA PROFILI -- kaydirma DEGILSE ne? (hicbir sey varsayilmaz)")
+    print("-" * 100)
+
+    n = len(ham) or 1
+    kova = {
+        "ASCII kucuk harf": sum(ham.count(c) for c in _ASCII_KUCUK),
+        "ASCII buyuk harf": sum(ham.count(c) for c in _ASCII_BUYUK),
+        "Turkce diyakritik": sum(ham.count(c) for c in _TR),
+        "rakam": sum(ch.isdigit() for ch in ham),
+        "bosluk": sum(ham.count(c) for c in " \t\n\r"),
+        "BEKLENMEYEN": sum(1 for ch in ham if ch not in _BEKLENEN),
+    }
+    kova["diger ASCII (noktalama)"] = n - sum(kova.values())
+    print("\n  C7.1 ALFABE PROFILI")
+    print(f"  {'kova':<26} {'sayi':>10} {'/1000':>9}")
+    for ad, v in kova.items():
+        print(f"  {ad:<26} {v:>10,} {1000*v/n:>9.2f}")
+
+    oran, top, kirli = _temiz_oran(ham)
+    print(f"\n  harf tasiyan token: {top:,}   BEKLENMEYEN tasiyan: {kirli:,}")
+    print(f"  TEMIZ TOKEN ORANI : {oran:.1f}%")
+    print("  -> Bu oran ile islev/1k BIRLIKTE okunur:")
+    print("     islev DUSUK + temiz DUSUK  = butun metin bozuk (kaydirma/glif ailesi)")
+    print("     islev YUKSEK + temiz DUSUK = yalniz DIYAKRITIKLER yerine gecmis")
+    print("     islev YUKSEK + temiz YUKSEK = metin saglam, imza mesru kullanim")
+
+    # -------------------------------------------------------------- C7.2
+    print("\n  C7.2 BILINMEYEN KARAKTERLERIN GERCEK KELIMELERI")
+    print("       (esleme buradan GOZLE okunur; asagidaki oneri bunu dogrulamali)")
+    sayim: dict[str, int] = {}
+    for ch in ham:
+        if ch not in _BEKLENEN:
+            sayim[ch] = sayim.get(ch, 0) + 1
+    if not sayim:
+        print("    (yok) -> bu dosyada beklenmeyen karakter HIC yok")
+        return
+    ornek: dict[str, list[str]] = {}
+    for t in _tokenler(ham):
+        for ch in set(t):
+            if ch in sayim and len(ornek.setdefault(ch, [])) < 5 and len(t) > 2:
+                if t not in ornek[ch]:
+                    ornek[ch].append(t)
+    ust = sorted(sayim.items(), key=lambda x: -x[1])[:16]
+    for ch, k in ust:
+        ks = "  ".join(_gorunur(t)[:28] for t in ornek.get(ch, [])[:5])
+        print(f"    {_ad(ch):<46} {k:>7,}   {ks}")
+
+    # -------------------------------------------------------------- C7.3
+    print("\n  C7.3 ESLEME ONERISI -- belgenin KENDI temiz metninden ogrenilir")
+    model = _bigram_modeli(ham)
+    n_temiz = model[4]
+    print(f"    modeli besleyen TEMIZ token: {n_temiz:,}")
+    if n_temiz < 200:
+        print("    -> DAYANAKSIZ (<200). Belgenin saglam kismi yok; esleme bu")
+        print("       dosyanin kendisinden ogrenilemez. Yol: OCR ya da baska bir")
+        print("       belgeden ogrenilmis tablo. Oneri BASILMIYOR (uydurma olurdu).")
+        return
+    oneri = _esleme_onerisi(ham, [ch for ch, _ in ust], model)
+    print(f"\n    {'bilinmeyen':<46} {'gecis':>7}  {'1.aday':>10} {'2.aday':>10} {'3.aday':>10}")
+    for ch, _k in ust:
+        if ch not in oneri:
+            continue
+        adet, ilk3 = oneri[ch]
+        hucre = "  ".join(f"{_gorunur(c)!s:>4}({p:+.2f})" for p, c in ilk3)
+        print(f"    {_ad(ch):<46} {adet:>7,}  {hucre}")
+    print("\n    NOT: puan bir OLASILIK LOGARITMASIDIR, dogruluk kaniti DEGIL.")
+    print("    1. adayi C7.2'deki gercek kelimelerle karsilastirin; tutmuyorsa")
+    print("    model yaniliyordur ve onarim tablosu bu yoldan KURULMAZ.")
+
+    # -------------------------------------------------------------- C7.4
+    esleme = {ch: oneri[ch][1][0][1] for ch, _k in ust if ch in oneri}
+    cev = ham.translate({ord(k): v for k, v in esleme.items()})
+    o_oran, _t, _k = _temiz_oran(cev)
+    print("\n  C7.4 ONERI UYGULANIRSA")
+    _basli("(C7.3 eslemesi)")
+    _satir("ONCE", _olcut(ham))
+    _satir("SONRA", _olcut(cev))
+    print(f"    temiz token orani: {oran:.1f}% -> {o_oran:.1f}%")
+    print("\n    ornek satirlar (ONCE / SONRA):")
+    basilan = 0
+    for s in ham.splitlines():
+        if len(s.strip()) < 30 or not any(ch not in _BEKLENEN for ch in s):
+            continue
+        print(f"      - {_gorunur(s)[:150]}")
+        print(f"        {_gorunur(s.translate({ord(k): v for k, v in esleme.items()}))[:150]}")
+        basilan += 1
+        if basilan >= 8:
+            break
+
+
+def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool, tam_ocr: bool = False) -> int:
     print("=" * 100)
     print(f"BOLUM C  YERINE-GECMIS HARF TESHISI -- {dosya_adi}")
     print("=" * 100)
@@ -653,6 +924,24 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
         sonuc[be_adi] = p                                 # ParsedDocument saklanir:
         _satir(be_adi, _olcut(p.body_text),               # C0 clean icin gerekli,
                "URETIM" if be_adi == uretim_adi else "")  # ikinci parse'a gerek kalmaz
+
+    # C1b -- METIN KATMANINI YOK SAYAN kol. Yukaridaki uc satir ayni bozuk
+    # katmani okur; farkli cikmalari icin bir sebep yok. Tek gercek ayrim
+    # sayfayi GORUNTU olarak okumaktir.
+    if tam_ocr:
+        for etiket, kur in _tam_ocr_kollari(ing, ps):
+            print(f"    ({etiket} kosuyor -- yavas)", flush=True)
+            try:
+                conv = kur()
+                res = (conv.convert(yol, page_range=(1, sayfa)) if sayfa
+                       else conv.convert(yol))
+                p = dbk._map_document(res.document, ocr=True)
+            except Exception as exc:                      # noqa: BLE001 - teshis araci
+                print(f"  {etiket[:22]:<22} HATA: {type(exc).__name__}: {str(exc)[:52]}")
+                continue
+            sonuc[etiket] = p
+            _satir(etiket[:22], _olcut(p.body_text), "metin katmani YOK SAYILDI")
+
     if not sonuc:
         print("  Hicbir backend parse edemedi -- teshis burada duruyor.")
         return 1
@@ -699,8 +988,11 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
     print()
     if en_iyi_puan < max(2.0, taban * 3):
         print("  HUKUM: tek-degerli bir ASCII kaydirmasi bu dosyayi ACIKLAMIYOR.")
-        print("         Bozulma daha karmasik (font-basina glif tablosu) -> mekanik")
-        print("         onarim yerine backend/OCR yolu tercih edilmeli.")
+        print("         Bu bir SONUC degil, yalniz bir elemedir -- C7'ye devam.")
+        # ONCEDEN BURADA `return 0` VARDI VE OLCUMU TAM DA GEREKLI OLDUGU YERDE
+        # KESIYORDU: kaydirma bulunmayan dosya, hakkinda EN AZ sey bildigimiz
+        # dosyadir; tek bir ham ornek satiri bile basilmadan cikiliyordu.
+        _c7_mekanizma(ham)
         return 0
 
     print(f"  HUKUM: +0x{en_iyi:02X} kaydirmasi metni ACIYOR "
@@ -1029,7 +1321,8 @@ def bolum_c(db, dosya_adi: str, sayfa: int, ocr: bool) -> int:
     print("  kosdu -- yani hata degil, MIMARI: docling yalniz METIN KATMANI OLMAYAN")
     print("  bolgeleri OCR'lar. Bu PDF'lerin metin katmani VAR, bozuk ama var, o")
     print("  yuzden OCR hic tetiklenmiyor. Geriye tek OCR kolu force_full_page_ocr")
-    print("  kalir; o ayri bir ayardir ve bu arac ONU KOSMAZ.")
+    print("  kalir -- o metin katmanini YOK SAYAR. ARTIK KOSULABILIYOR: `--tam-ocr`")
+    print("  (C1'e iki satir ekler: varsayilan motor ve EasyOCR lang=tr).")
     return 0
 
 
@@ -1314,6 +1607,9 @@ def main() -> int:
                          "Varsayilan: Bolum C=12, Bolum B=tam dosya.")
     ap.add_argument("--ocr", action="store_true",
                     help="Bolum C: OCR acik parse et (yavas; son care yolunu olcer)")
+    ap.add_argument("--tam-ocr", action="store_true", dest="tam_ocr",
+                    help="Bolum C: force_full_page_ocr kollari -- metin katmanini "
+                         "YOK SAYAR. Glif tablosunu tanimi geregi atlar (cok yavas)")
     a = ap.parse_args()
 
     from ragintel.config.settings import DbSettings
@@ -1326,7 +1622,8 @@ def main() -> int:
         if a.dis:
             return bolum_d(db, a.dis, 12 if a.sayfa is None else a.sayfa)
         if a.backend:
-            return bolum_c(db, a.backend, 12 if a.sayfa is None else a.sayfa, a.ocr)
+            return bolum_c(db, a.backend, 12 if a.sayfa is None else a.sayfa,
+                           a.ocr, a.tam_ocr)
         return bolum_b(db, a.parse, a.sayfa or 0) if a.parse else bolum_a(db)
     finally:
         db.close()
