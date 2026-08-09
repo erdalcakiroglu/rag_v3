@@ -16,6 +16,12 @@ kusur değildir).
   • §1 golden↔korpus çakışmasını ölçer: retrieval benchmark'ın quote eşlemesi
     `file_name` ile aday çeker; golden başka bir korpusa aitse metrikler
     kusurdan DEĞİL bayat ölçüm aracından 0 çıkar.
+  • §7 coverage'ı SAYFA cinsinden ölçer, oran cinsinden değil: 2 sayfalık bir
+    belgede coverage 0.5 = 1 sayfa (granül eseri), 223 sayfalıkta 0.95 = 11
+    sayfa (gerçek kayıp) — oranla sıralamak ikincisini gizler. Ayrıca
+    `page_ratio` yan yana basılır: metin çıkmayan sayfada TABLO/ŞEKİL varsa
+    içerik aslında çıkarılmıştır, oysa `parse_score` yalnız coverage kullanır
+    (parsing/quality.py) → o dosyaya haksız ceza yazılır.
 
 KOŞUM (H200 bare-metal, venv aktif + .env.h200 yüklü):
     python scripts/kalite_kirilim_probe.py
@@ -132,6 +138,73 @@ ORDER BY f.quality_score ASC, f.file_id LIMIT %(limit)s;
 """
 
 
+# --- §7 coverage anatomisi: "gerçek içerik kaybı" mı, ölçüm granülü mü? ------
+# coverage = METİN çıkan sayfa oranı; page_ratio = metin VEYA tablo VEYA şekil
+# üreten sayfa oranı. parse_score YALNIZ coverage kullanır → salt-tablo bir sayfa
+# "kayıp" sayılır ama tablosu çıkarılmıştır. İkisi yan yana basılmadan
+# "yarım belge" ile "kapak sayfası" ayrılamaz.
+_P_CTE = """
+WITH p AS (
+    SELECT DISTINCT ON (m.file_id)
+           m.file_id,
+           (m.detail->>'coverage')::numeric      AS coverage,
+           (m.detail->>'page_ratio')::numeric    AS page_ratio,
+           (m.detail->>'garbage_ratio')::numeric AS garbage,
+           (m.detail->>'page_count')::int        AS pages,
+           (m.detail->>'char_count')::int        AS chars,
+           coalesce((m.detail->>'ocr')::boolean, false) AS ocr
+    FROM metrics_ingestion m
+    WHERE m.step = 'parse'
+    ORDER BY m.file_id, m.metric_id DESC
+)
+"""
+
+_SQL_COVERAGE_HIST = _P_CTE + """
+SELECT CASE
+         WHEN p.coverage IS NULL          THEN '4) ÖLÇÜLMEMİŞ'
+         WHEN p.coverage >= 1.0           THEN '3) tam 1.0'
+         WHEN p.coverage >= %(soft)s      THEN '2) soft..1.0'
+         WHEN p.coverage >= %(hard)s      THEN '1) hard..soft (low_coverage bölgesi)'
+         ELSE                                  '0) hard ALTI'
+       END                                                   AS kova,
+       count(*)                                              AS dosya,
+       coalesce(sum(p.pages), 0)                             AS sayfa,
+       coalesce(sum(round((p.pages * (1 - p.coverage))::numeric)), 0) AS tahmini_eksik_sayfa,
+       count(*) FILTER (WHERE p.page_ratio >= 1.0)           AS ama_page_ratio_tam,
+       count(*) FILTER (WHERE p.ocr)                         AS ocr_kosmus
+FROM p GROUP BY 1 ORDER BY 1;
+"""
+
+# Sıralama coverage'a göre DEĞİL, TAHMİNİ EKSİK SAYFAYA göre: 2 sayfalık bir
+# belgede coverage 0.5 = 1 sayfa, 223 sayfalıkta 0.95 = 11 sayfa. İkincisi daha ağır.
+_SQL_COVERAGE_WORST = _P_CTE + """
+SELECT f.file_id, f.file_name, p.pages, p.coverage, p.page_ratio, p.garbage, p.ocr,
+       round((p.pages * (1 - p.coverage))::numeric)          AS tahmini_eksik,
+       EXISTS (SELECT 1 FROM qc_findings q
+                WHERE q.file_id = p.file_id AND q.finding = 'low_coverage'
+                  AND NOT q.resolved)                        AS bulgu_acik
+FROM p JOIN core_files f ON f.file_id = p.file_id
+WHERE p.coverage IS NOT NULL AND p.coverage < 1.0
+ORDER BY tahmini_eksik DESC, p.coverage ASC LIMIT %(limit)s;
+"""
+
+# Kapı muhasebesi: eşiğin altındaki her dosyanın bulgusu AÇILMIŞ mı? Sayılar
+# tutmuyorsa kusur belgede değil QC kapısındadır.
+_SQL_COVERAGE_GATE = _P_CTE + """
+SELECT count(*) FILTER (WHERE p.coverage < %(soft)s)              AS esik_alti,
+       count(*) FILTER (WHERE p.coverage < %(soft)s AND EXISTS (
+           SELECT 1 FROM qc_findings q WHERE q.file_id = p.file_id
+            AND q.finding = 'low_coverage' AND NOT q.resolved))    AS bulgusu_acik,
+       count(*) FILTER (WHERE p.coverage < 1.0)                    AS tam_olmayan,
+       coalesce(sum(round((p.pages * (1 - p.coverage))::numeric))
+                FILTER (WHERE p.coverage < 1.0), 0)                AS toplam_eksik_sayfa,
+       coalesce(sum(p.pages), 0)                                   AS toplam_sayfa,
+       count(*) FILTER (WHERE p.garbage > 0)                       AS garbage_sifirdan_buyuk,
+       max(p.garbage)                                              AS garbage_max
+FROM p;
+"""
+
+
 def _golden_names(path: str) -> list[str]:
     names: set[str] = set()
     try:
@@ -155,6 +228,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="Golden JSONL (çakışma kontrolü için; yoksa §1 atlanır)")
     ap.add_argument("--dup-limit", type=int, default=15)
     ap.add_argument("--worst-limit", type=int, default=10)
+    ap.add_argument("--cov-limit", type=int, default=20,
+                    help="§7'de listelenecek eksik-sayfası en çok dosya sayısı")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
@@ -172,6 +247,18 @@ def main(argv: list[str] | None = None) -> int:
         out["esikler"] = {"max_tokens": max_t, "min_tokens": min_t,
                           "table_subchunk_max_tokens": int(
                               getattr(ch, "table_subchunk_max_tokens", max_t))}
+
+        # §7 eşikleri de DB config'ten — dev varsayılanı (0.50/0.85) H200'de
+        # farklı olabilir; hangi eşikle ölçtüğümüzü raporun kendisi söylesin.
+        q = cfg.group("quality")
+        hard_cov = float(q.parse.hard_fail_coverage)
+        soft_cov = float(q.parse.soft_flag_coverage)
+        out["esikler"].update({
+            "hard_fail_coverage": hard_cov,
+            "soft_flag_coverage": soft_cov,
+            "ocr_enabled": bool(q.ocr_fallback.enabled),
+            "ocr_trigger_below": float(q.ocr_fallback.trigger_coverage_below),
+        })
 
         with db.connection() as conn:
             cur = conn.cursor()
@@ -215,6 +302,29 @@ def main(argv: list[str] | None = None) -> int:
                  "quality_score": float(r[2]), "parse": r[3], "chunk": r[4]}
                 for r in cur.execute(_SQL_WORST,
                                      {"limit": args.worst_limit}).fetchall()]
+
+            cov_p = {"hard": hard_cov, "soft": soft_cov}
+            out["coverage_hist"] = [
+                {"kova": r[0], "dosya": r[1], "sayfa": r[2],
+                 "tahmini_eksik_sayfa": int(r[3]), "ama_page_ratio_tam": r[4],
+                 "ocr_kosmus": r[5]}
+                for r in cur.execute(_SQL_COVERAGE_HIST, cov_p).fetchall()]
+
+            out["coverage_worst"] = [
+                {"file_id": r[0], "file_name": r[1], "pages": r[2],
+                 "coverage": float(r[3]), "page_ratio": float(r[4]),
+                 "garbage": float(r[5]) if r[5] is not None else None,
+                 "ocr": r[6], "tahmini_eksik": int(r[7]), "bulgu_acik": r[8]}
+                for r in cur.execute(_SQL_COVERAGE_WORST,
+                                     {"limit": args.cov_limit}).fetchall()]
+
+            gr = cur.execute(_SQL_COVERAGE_GATE, {"soft": soft_cov}).fetchone()
+            out["coverage_kapi"] = {
+                "esik_alti": gr[0], "bulgusu_acik": gr[1], "tam_olmayan": gr[2],
+                "toplam_eksik_sayfa": int(gr[3]), "toplam_sayfa": int(gr[4]),
+                "garbage_sifirdan_buyuk": gr[5],
+                "garbage_max": float(gr[6]) if gr[6] is not None else None,
+            }
     finally:
         db.close()
 
@@ -273,6 +383,38 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {r['quality_score']:>6.2f} [{r['file_id']}] {r['file_name']}")
         print(f"         parse: {_clip(r['parse'], 200)}")
         print(f"         chunk: {_clip(r['chunk'], 200)}")
+
+    k = out["coverage_kapi"]
+    print(f"\n§7 COVERAGE ANATOMİSİ — eşikler: hard={e['hard_fail_coverage']} "
+          f"soft={e['soft_flag_coverage']} · OCR={'AÇIK' if e['ocr_enabled'] else 'KAPALI'}"
+          f" (tetik <{e['ocr_trigger_below']})")
+    print(f"{'kova':<38}{'dosya':>7}{'sayfa':>8}{'eksik~':>8}{'pr=1.0':>8}{'ocr':>6}")
+    print("-" * 78)
+    for r in out["coverage_hist"]:
+        print(f"{r['kova']:<38}{r['dosya']:>7}{r['sayfa']:>8}"
+              f"{r['tahmini_eksik_sayfa']:>8}{r['ama_page_ratio_tam']:>8}{r['ocr_kosmus']:>6}")
+    pay = (k["toplam_eksik_sayfa"] / k["toplam_sayfa"] * 100) if k["toplam_sayfa"] else 0.0
+    print(f"  → tahmini metin-siz sayfa: {k['toplam_eksik_sayfa']}/{k['toplam_sayfa']} "
+          f"(%{pay:.2f}) · coverage<1.0 dosya: {k['tam_olmayan']}")
+    print(f"  → KAPI MUHASEBESİ: soft eşik altı {k['esik_alti']} dosya, "
+          f"low_coverage bulgusu açık {k['bulgusu_acik']}"
+          + ("  ✓ tutuyor" if k["esik_alti"] == k["bulgusu_acik"]
+             else "  ⚠ TUTMUYOR → kusur belgede değil QC KAPISINDA"))
+    print(f"  → garbage_ratio: >0 olan {k['garbage_sifirdan_buyuk']} dosya, "
+          f"max={k['garbage_max']}")
+
+    if out["coverage_worst"]:
+        print("\n  En çok metin-siz SAYFA'sı olan dosyalar (coverage'a göre DEĞİL):")
+        print(f"  {'sayfa':>6}{'eksik~':>8}{'cover':>8}{'p_ratio':>9}{'ocr':>5}"
+              f"{'bulgu':>7}  dosya")
+        print("-" * 78)
+        for r in out["coverage_worst"]:
+            # page_ratio > coverage ⇒ o sayfalarda TABLO/ŞEKİL var: metin yok ama
+            # içerik çıkarılmış → parse_score haksız ceza yazıyor.
+            flag = " ← tablo/şekil sayfası" if r["page_ratio"] > r["coverage"] else ""
+            print(f"  {r['pages']:>6}{r['tahmini_eksik']:>8}{r['coverage']:>8.3f}"
+                  f"{r['page_ratio']:>9.3f}{'E' if r['ocr'] else '-':>5}"
+                  f"{'A' if r['bulgu_acik'] else '-':>7}  {r['file_name']}{flag}")
     return 0
 
 
