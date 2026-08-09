@@ -86,6 +86,60 @@ def test_below_min_only_when_whole_file_short():
         assert all(c.token_count >= CFG["min_tokens"] for c in body)
 
 
+def _basligi_ayri_dusen_doc(govde_kelime: int):
+    """Tek sayfalık tebliğ biçimi: kurum başlığı KENDİ section'ıdır ve ardından
+    gövde bloğu gelmez — bu yüzden tek başına, minik bir ilk chunk üretir.
+
+    Canlı korpusun baskın biçimi (882/1117 dosya tek sayfa, ort 892 karakter).
+    """
+    return ParsedDocument(
+        pages=[Page(1, ["BDDK"]),
+               Page(1, ["Gövde", " ".join(f"w{i}" for i in range(govde_kelime))]),
+               Page(1, ["Ek", " ".join(f"x{i}" for i in range(100))])],
+        sections=[Section("BDDK", 1, 1), Section("Gövde", 1, 1), Section("Ek", 1, 1)],
+    )
+
+
+def test_leading_short_chunk_merges_forward():
+    """REGRESYON: _min_merge yalnız GERİYE birleştiriyordu, bu yüzden bir
+    dosyanın İLK chunk'ı min altındaysa birleşeceği yer olmadığından öyle
+    kalıyordu. Ölçüm (2026-08-09, scripts/metin_korunumu_probe.py §5):
+    min-altı 1060 chunk'ın 831'i (%78.4) chunk_index=0'daydı; 807 dosyanın
+    (korpusun %72'si) TEK kusuru buydu."""
+    chunks = chunk_document(_basligi_ayri_dusen_doc(40), counter=WC,
+                            strategy="section", **CFG)
+    body = [c for c in chunks if not c.is_table]
+    assert len(body) > 1, "ön-koşul: birleşme sonrası hâlâ birden çok chunk"
+    assert body[0].token_count >= CFG["min_tokens"]
+    assert body[0].chunk_text.startswith("BDDK"), "başlık metni korunmalı, atılmamalı"
+    assert "w0" in body[0].chunk_text, "başlık gövdeye katılmalı"
+    assert all(c.token_count <= CFG["max_tokens"] for c in chunks)
+
+
+def test_leading_merge_never_breaks_max_budget():
+    """İleri birleşmenin BİLİNEN sınırı: sonraki chunk zaten tavandaysa
+    (başlık + tam pencere > max_tokens) birleşme YAPILMAZ — max sert
+    invaryanttır, min-altı ise yumuşak bulgudur. Bu yüzden düzeltme canlı
+    korpusta min-altı chunk'ı olan 876 dosyanın 807'sini (%92.1) temizler,
+    tamamını değil; kalanlar ilk penceresi dolu olan uzun belgelerdir."""
+    chunks = chunk_document(_basligi_ayri_dusen_doc(200), counter=WC,
+                            strategy="section", **CFG)
+    assert all(c.token_count <= CFG["max_tokens"] for c in chunks)
+    assert chunks[0].chunk_text == "BDDK", "birleşemedi -> olduğu gibi kalmalı"
+
+
+def test_whole_file_shorter_than_min_stays_one_chunk():
+    """İleri birleşme baştaki minik chunk'ı YUTAR, silmez: tümü min altındaki
+    bir dosya tek chunk'a iner ve metnin tamamı içinde kalır."""
+    doc = ParsedDocument(pages=[Page(1, ["Bir"]), Page(1, ["iki"]), Page(1, ["üç"])],
+                         sections=[Section("Bir", 1, 1), Section("iki", 2, 1),
+                                   Section("üç", 3, 1)])
+    chunks = chunk_document(doc, counter=WC, strategy="section", **CFG)
+    assert len(chunks) == 1
+    for kelime in ("Bir", "iki", "üç"):
+        assert kelime in chunks[0].chunk_text
+
+
 def test_overlap_char_span_intersection():
     chunks = chunk_document(_long_section_doc(), counter=WC, strategy="section", **CFG)
     body = [c for c in chunks if not c.is_table and c.char_start is not None]

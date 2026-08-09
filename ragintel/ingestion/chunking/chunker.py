@@ -135,7 +135,20 @@ def _offset_lookup(units: list[_Unit], offset: int) -> _Unit:
 
 def _min_merge(chunks: list[Chunk], counter: TokenCounter,
                min_t: int, max_t: int) -> list[Chunk]:
-    """min altı (tablo olmayan) chunk'ı önceki chunk'a birleştirir (max aşmadan)."""
+    """min altı (tablo olmayan) chunk'ı komşusuna birleştirir (max aşmadan).
+
+    Kural GERİYE birleştirmektir. Tek istisna İLK chunk'tır: arkasında
+    birleşeceği bir şey yoktur, bu yüzden SONRAKİNİ kendine çeker (ileri).
+
+    Gerekçe ÖLÇÜLDÜ (2026-08-09, canlı korpus 1117 dosya / 50065 chunk;
+    scripts/metin_korunumu_probe.py §5): min-altı 1060 chunk'ın 831'i (%78.4)
+    chunk_index=0'daydı ve yalnız geriye birleştirdiğimiz için hiçbiri
+    birleşemiyordu. 807 dosyanın (korpusun %72'si) TEK kusuru buydu. Tipik
+    hâli: 'section' stratejisinde belge başlığı kendi başına bir chunk olur
+    (ör. tek sayfalık BDDK tebliği → 10 token'lık başlık + gövde), sonra
+    gövdeden koparılmış o başlık gömülüp arama sonuçlarına içeriksiz bir
+    eşleşme olarak girer.
+    """
     if len(chunks) <= 1:
         return chunks
     result: list[Chunk] = []
@@ -152,6 +165,24 @@ def _min_merge(chunks: list[Chunk], counter: TokenCounter,
                 prev.char_end = c.char_end
         else:
             result.append(c)
+
+    # İleri birleşme YALNIZ baştadır. Geriye birleşmede hayatta kalan hep ERKEN
+    # olan chunk'tır (metadata'sını korur, char_end'i uzar); burada da aynısı:
+    # result[0] yaşar, sonrakini yutar. Döngü, baştaki birkaç minik chunk'ın
+    # (başlık + alt başlık) tek gövdede toplanabilmesi için.
+    while (len(result) > 1 and not result[0].is_table and not result[1].is_table
+           and result[0].token_count < min_t
+           and result[0].token_count + result[1].token_count <= max_t):
+        ilk, sonraki = result[0], result[1]
+        merged = ilk.chunk_text + "\n" + sonraki.chunk_text
+        ilk.chunk_text = merged
+        ilk.chunk_text_norm = normalize_for_quote(merged)
+        ilk.token_count = counter.count(merged)
+        if sonraki.char_end is not None:
+            ilk.char_end = sonraki.char_end
+        if ilk.section_title is None:
+            ilk.section_title = sonraki.section_title
+        del result[1]
     return result
 
 
