@@ -1682,6 +1682,56 @@ def _ikame_sayimi(ciftler: list[tuple[str, str]]) -> list[tuple[str, str, int]]:
                   key=lambda t: -t[2])
 
 
+def _ocr_olcek_yamasi(olcek: float) -> list[str]:
+    """OCR'in sayfayi kac DPI'da RENDER ettigini degistirir (yalniz teshis).
+
+    NEDEN: docling'in OCR modelleri sayfayi `self.scale = 3` ile, yani 72*3 =
+    216 DPI'da goruntuye ceviriyor (`models/stages/ocr/*_ocr_model.py`). Kitap
+    puntosunda bu yetti (60._Yilinda, konut_2 temiz cikti) ama yogun 9 puntoluk
+    mevzuat metninde ilk F kosumlari ardisik kelimeleri toptan cope cevirdi.
+    Tarama isinde olcut 300 DPI'dir (scale ~4.17). Bu bir HIPOTEZ -- olcmeden
+    uretim koduna girmez, zaten burada da yalniz yamayla deneniyor.
+
+    Sinif adi/modul yolu docling surumleri arasinda degisiyor; bu yuzden isim
+    sabitlenmiyor, `docling.models` altinda adi 'OcrModel' ile biten ne varsa
+    __init__'i sarilip scale sonradan yaziliyor (kullanmayan sinifa zarari yok).
+    """
+    import importlib
+    import pkgutil
+
+    import docling.models as mm
+
+    yamalanan = []
+    for m in pkgutil.walk_packages(mm.__path__, mm.__name__ + "."):
+        if "ocr" not in m.name.rsplit(".", 1)[-1].lower():
+            continue
+        try:
+            mod = importlib.import_module(m.name)
+        except Exception:                                 # noqa: BLE001 - eksik motor
+            continue
+        for ad in dir(mod):
+            sinif = getattr(mod, ad)
+            if not (isinstance(sinif, type) and ad.endswith("OcrModel")):
+                continue
+            # `__dict__` SART, getattr DEGIL: alt siniflar bayragi tabandan
+            # MIRAS alir ve getattr ile hepsi "zaten yamali" gorunur. Ilk
+            # denemede tam bu oldu -- yalniz BaseOcrModel yamalandi, oysa
+            # RapidOcrModel super().__init__()'ten SONRA self.scale = 3 yazip
+            # yamayi eziyor. Yama somut sinifta olmak zorunda.
+            if "_olcek_yamali" in sinif.__dict__:
+                continue
+            eski = sinif.__init__
+
+            def _yeni(self, *a, __eski=eski, **kw):
+                __eski(self, *a, **kw)
+                self.scale = olcek
+
+            sinif.__init__ = _yeni
+            sinif._olcek_yamali = True
+            yamalanan.append(f"{ad}({m.name.rsplit('.', 1)[-1]})")
+    return yamalanan
+
+
 def _f_adaylar(db) -> int:
     """SAGLAM referans adaylari -- dosyayi ben secmem, veri secer.
 
@@ -1722,7 +1772,8 @@ def _f_adaylar(db) -> int:
     return 0
 
 
-def bolum_f(db, dosya_adi: str, sayfa: int, bas_sayfa: int) -> int:
+def bolum_f(db, dosya_adi: str, sayfa: int, bas_sayfa: int,
+            olcek: float | None = None) -> int:
     """Tam-sayfa OCR'in SAGLAM metne MALIYETI -- her dosyaya uygulanabilir mi?
 
     Bolum C tam-sayfa OCR'in BOZUK dosyalari kurtardigini olctu (imza 0.00,
@@ -1811,6 +1862,11 @@ def bolum_f(db, dosya_adi: str, sayfa: int, bas_sayfa: int) -> int:
     t_ref = time.perf_counter() - t0
     _satir("REFERANS/metin", _olcut(ref.body_text), f"{t_ref:.1f}s")
 
+    if olcek:
+        yamalanan = _ocr_olcek_yamasi(olcek)
+        print(f"    (OCR render olcegi {olcek} = {int(72 * olcek)} DPI'ya "
+              f"cekildi; varsayilan 3 = 216 DPI)")
+        print(f"     yamalanan sinif: {', '.join(yamalanan) or 'HICBIRI -- yama TUTMADI'}")
     kollar = _tam_ocr_kollari(ing, ps)
     if not kollar:
         print("  Tam-sayfa OCR kolu YOK -> olcum yapilamaz.")
@@ -1846,6 +1902,7 @@ def bolum_f(db, dosya_adi: str, sayfa: int, bas_sayfa: int) -> int:
     # ediyormus gibi okunur -- ilk F kosumunda tam bu oldu (hesap plani sayfasi).
     caps = {"ref": 0, "hata": 0}
     dus = {"ref": 0, "hata": 0}
+    hatali_idx: set[int] = set()          # F2c: hangi REFERANS token'i tutmadi
     for etiket_op, i1, i2, j1, j2 in sm.get_opcodes():
         sol, sag = a_tok[i1:i2], b_tok[j1:j2]
         for a in sol:
@@ -1854,6 +1911,7 @@ def bolum_f(db, dosya_adi: str, sayfa: int, bas_sayfa: int) -> int:
         if etiket_op == "equal":
             sayim["ayni"] += i2 - i1
             continue
+        hatali_idx.update(range(i1, i2))
         for a, b in zip(sol, sag):
             s = _fark_sinifi(a, b)
             sayim[s] += 1
@@ -1899,6 +1957,38 @@ def bolum_f(db, dosya_adi: str, sayfa: int, bas_sayfa: int) -> int:
         tr_disi = sum(n for _x, y, n in ikameler if y not in _BEKLENEN)
         print(f"\n    bunlarin {tr_disi:,} tanesinde OCR TURKCE'DE OLMAYAN bir harf")
         print("    basmis -> referans OLMADAN saptanabilir, 1:1 tabloyla onarilir.")
+
+    # ------------------------------------------------------------------ F2c
+    # HATA YAYGIN MI, BOLGESEL MI? Toplam oran ikisini ayirt EDEMEZ ve karar
+    # tam buna baglidir: yayginsa OCR genel cozum degildir; bolgeselse hatali
+    # sayfa saptanabilir ve kalan sayfalar metin katmanindan alinabilir.
+    # 5411 kosumunda ardisik token'lar toptan cope donmustu (Musavirler ->
+    # 'Miuenlr', yonetilmesine -> 'yoiniin...'), bu da bolgeselligi ISARET
+    # ediyordu ama olcmuyordu.
+    print("\n  F2c HATA PROFILI -- yayginlik mi, tek bir bolge mi?")
+    pencere_n = max(100, len(a_tok) // 40)
+    kovalar_p = [[0, 0] for _ in range((len(a_tok) // pencere_n) + 1)]
+    for i in sorted(hatali_idx):
+        kovalar_p[i // pencere_n][0] += 1
+    for i in range(len(a_tok)):
+        kovalar_p[i // pencere_n][1] += 1
+    oranlar = [(100.0 * h / t) for h, t in kovalar_p if t]
+    if oranlar:
+        cizgi = " .:-=+*#%@"
+        print(f"    pencere = {pencere_n} token, her karakter bir pencere "
+              f"({cizgi[0]}=0%  {cizgi[-1]}=90%+):")
+        print("    " + "".join(cizgi[min(9, int(o // 10))] for o in oranlar))
+        temiz_p = sum(1 for o in oranlar if o < 5)
+        kotu_p = sum(1 for o in oranlar if o >= 50)
+        print(f"    pencere sayisi {len(oranlar)}:  <%5 hatali = {temiz_p}   "
+              f">=%50 hatali = {kotu_p}   ortanca = "
+              f"{sorted(oranlar)[len(oranlar) // 2]:.1f}%")
+        if kotu_p:
+            en_kotu = max(range(len(oranlar)), key=lambda i: oranlar[i])
+            bas = en_kotu * pencere_n
+            print(f"\n    EN KOTU pencere #{en_kotu} ({oranlar[en_kotu]:.0f}% hatali) "
+                  f"referans metni:")
+            print("      " + _gorunur(" ".join(a_tok[bas:bas + 40]))[:280])
 
     # ------------------------------------------------------------------ F3
     print("\n" + "-" * 100)
@@ -1950,6 +2040,11 @@ def main() -> int:
                     help="Bolum F: SAGLAM bir dosyada metin katmani vs tam-sayfa "
                          "OCR token karsilastirmasi -- OCR'in maliyetini olcer. "
                          "SEC yazilirsa once aday saglam dosyalari listeler.")
+    ap.add_argument("--ocr-olcek", type=float, default=None, dest="ocr_olcek",
+                    metavar="N",
+                    help="Bolum F: OCR'in sayfa render olcegi (docling varsayilani "
+                         "3 = 216 DPI). 4.17 ~ 300 DPI. Yogun kucuk puntoda "
+                         "cozunurluk hipotezini SINAR")
     # Varsayilan bilerek bolume gore FARKLI (asagida cozuluyor): C uc backend
     # kosar -> tam kitap dakikalar surer, 12 sayfa yeter. B tek kosumdur ve
     # sonucu DEPOLANMIS sayimla kiyaslanir -> varsayilani tam dosya olmali,
@@ -1979,7 +2074,7 @@ def main() -> int:
             if a.ocr_kalite.strip().upper() == "SEC":
                 return _f_adaylar(db)
             return bolum_f(db, a.ocr_kalite, 12 if a.sayfa is None else a.sayfa,
-                           max(1, a.bas_sayfa))
+                           max(1, a.bas_sayfa), a.ocr_olcek)
         if a.dis:
             return bolum_d(db, a.dis, 12 if a.sayfa is None else a.sayfa)
         if a.backend:
