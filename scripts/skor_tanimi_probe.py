@@ -142,6 +142,8 @@ def main() -> int:
             kova = kovalar.get(fid)
             if not kova:
                 continue                                  # chunk'sız dosya — atla
+            # quality_score PG'de numeric → Decimal gelir; float ile karşılaştırılamaz.
+            saklanan = float(saklanan) if saklanan is not None else None
             n, min_alti, tam_max, max_ustu, _tablo = kova
 
             # ESKİ chunk_score: üretim fonksiyonunun KENDİSİ ile üret (yeniden
