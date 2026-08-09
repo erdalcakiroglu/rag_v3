@@ -29,6 +29,12 @@ KOŞUM (H200, venv + .env.h200 yüklü):
     python scripts/parse_takilma_probe.py --parse              # + tam parse (UZUN)
     python scripts/parse_takilma_probe.py --parse --page-range 1-20
     python scripts/parse_takilma_probe.py --parse --mode fast  # accurate ile karşılaştır
+
+MALİYETİ KİM ÜRETİYOR (aynı dilimde koşup süreleri karşılaştır — üç aday):
+    --mode fast     TableFormer accurate→fast
+    --no-tables     tablo yapı-tanıma tamamen kapalı (TableFormer'ın ÜST sınırı)
+    --no-figures    2x görsel render kapalı
+Bunlar YALNIZ bu koşumu etkiler; config'e ve korpusa dokunmaz.
 """
 
 from __future__ import annotations
@@ -100,18 +106,33 @@ def _pdf_anatomy(path: str) -> dict:
         doc.close()
 
 
-def _parse_timed(path: str, cfg_ing, mode: str | None, page_range) -> dict:
+def _parse_timed(path: str, cfg_ing, mode: str | None, page_range,
+                 *, figures: bool | None = None, tables: bool = True) -> dict:
     """Docling'i önplanda, zaman aşımı OLMADAN koşar ve süreyi ölçer."""
     from ragintel.ingestion.parsing.docling_backend import DoclingBackend
     from ragintel.config.settings import ParsingSettings
 
     backend = DoclingBackend(
-        figure_images=bool(cfg_ing.figure_images),
+        figure_images=bool(cfg_ing.figure_images) if figures is None else figures,
         figure_image_scale=float(cfg_ing.figure_image_scale),
         pdf_backend=ParsingSettings().pdf_backend,
         tableformer_mode=mode or str(cfg_ing.tableformer_mode),
         parse_num_threads=int(cfg_ing.parse_num_threads),
     )
+    if not tables:
+        # Tablo yapı-tanımayı tamamen kapat: TableFormer'ın payını ölçmenin
+        # en keskin yolu (üretimde ASLA böyle koşulmaz — yalnız teşhis).
+        # Converter cache'li (_converters[ocr]) → burada yapılan değişiklik
+        # aşağıdaki parse/convert çağrısına taşınır.
+        conv = backend._converter(False)            # noqa: SLF001
+        kapatildi = False
+        for fo in getattr(conv, "format_to_options", {}).values():
+            po = getattr(fo, "pipeline_options", None)
+            if po is not None and hasattr(po, "do_table_structure"):
+                po.do_table_structure = False
+                kapatildi = True
+        if not kapatildi:                            # sessizce "kapattım" deme
+            return {"hata": "do_table_structure bulunamadı → --no-tables uygulanamadı"}
     t0 = time.monotonic()
     if page_range is None:
         parsed = backend.parse(path, "pdf")
@@ -142,6 +163,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mode", choices=["accurate", "fast"],
                     help="TableFormer modunu geçici olarak ez (config DEĞİŞMEZ)")
     ap.add_argument("--page-range", help="ör. 1-20 — süre/sayfa eğrisi için dilim")
+    ap.add_argument("--no-figures", action="store_true",
+                    help="görsel çıkarmayı kapat (2x render payını ölçmek için)")
+    ap.add_argument("--no-tables", action="store_true",
+                    help="tablo yapı-tanımayı kapat (TableFormer payını ölçmek için)")
     ap.add_argument("--only", help="yalnız adında bu geçen dosya(lar)")
     args = ap.parse_args(argv)
 
@@ -202,12 +227,14 @@ def main(argv: list[str] | None = None) -> int:
             print("\n" + "=" * 78)
             print(f"§4 ÖNPLANDA PARSE — zaman aşımı YOK"
                   f"{f' · mod={args.mode}' if args.mode else ''}"
-                  f"{f' · dilim={args.page_range}' if args.page_range else ''}")
+                  f"{f' · dilim={args.page_range}' if args.page_range else ''}"
+                  f"{' · görsel KAPALI' if args.no_figures else ''}"
+                  f"{' · tablo KAPALI' if args.no_tables else ''}")
             print("=" * 78)
             for fid, name, spath in hedefler:
                 print(f"  [{fid}] {name} … koşuyor", flush=True)
                 try:
-                    print(f"        {_parse_timed(spath, ing, args.mode, page_range)}")
+                    print(f"        {_parse_timed(spath, ing, args.mode, page_range, figures=False if args.no_figures else None, tables=not args.no_tables)}")
                 except Exception as exc:
                     print(f"        ÇÖKTÜ: {type(exc).__name__}: {exc}")
     finally:
