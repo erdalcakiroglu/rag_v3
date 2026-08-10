@@ -223,7 +223,7 @@ RESMI_BASLIKLAR: list[dict] = [
 # geçen "TASLAĞI"yı GÖRMEZ. Bölüm B'nin sayacındaki düşük tslk degerleri de bundandı.
 _SQL_BASLIK = """
 WITH n AS (
-    SELECT file_id, chunk_text_norm, page_number,
+    SELECT file_id, chunk_text, chunk_text_norm, page_number,
            row_number() OVER (PARTITION BY file_id ORDER BY chunk_index) AS sira
     FROM core_chunks
 ), t AS (
@@ -236,7 +236,13 @@ SELECT f.file_name,
        count(*)           FILTER (WHERE n.sira <= %(kapak_chunk)s) AS kapak_vurus,
        count(*)           FILTER (WHERE n.sira >  %(kapak_chunk)s) AS govde_vurus,
        bool_or(n.chunk_text_norm LIKE '%%taslak%%'
-            OR n.chunk_text_norm LIKE '%%taslağ%%')                AS taslak
+            OR n.chunk_text_norm LIKE '%%taslağ%%')                AS taslak,
+       -- Sayaç kimliği belirlemez, METİN belirler (Bölüm B'nin dersi). Eşleşen
+       -- ilk kapak chunk'ının başı basılır: yönetmeliğin KENDİSİ başlıkla açılır,
+       -- ona atıf yapan Kurul kararı "… Yönetmeliğin N inci maddesi uyarınca"
+       -- diye cümle ortasında anar. Ayrımı okuyan bu.
+       (array_agg(n.chunk_text ORDER BY n.sira)
+            FILTER (WHERE n.sira <= %(kapak_chunk)s))[1]           AS kapak_metin
 FROM n
 JOIN core_files f USING (file_id)
 JOIN t          USING (file_id)
@@ -267,8 +273,14 @@ def _tara(conn, *, min_chunk: int, kimlik_limit: int, ornek: int,
             "kapak_chunk": kapak_chunk}).fetchall()
         basliklar.append({**b, "isabetler": [
             {"file_name": fn, "status": st, "dosya_chunk": dc, "kapak_sayfa": sp,
-             "kapak_vurus": kv, "govde_vurus": gv, "taslak": ts}
-            for fn, st, dc, sp, kv, gv, ts in satirlar]})
+             "kapak_vurus": kv, "govde_vurus": gv, "taslak": ts, "kapak_metin": km,
+             # AYRIM YOK: dosya kapak penceresinden küçükse "kapak" = tüm dosya,
+             # yani her atıf kimlik kanıtı gibi görünür. 2026-08-10 ilk koşumunda
+             # Sermaye Yeterliliği'nin "36 yürürlükte adayı"nın çoğu buydu:
+             # yönetmeliğe ATIF yapan tek sayfalık Kurul kararları. Bu dosyalar
+             # elenmez, AYRI kovaya konur — atılırsa gerçek kısa mevzuat da gider.
+             "ayrim_yok": dc <= kapak_chunk}
+            for fn, st, dc, sp, kv, gv, ts, km in satirlar]})
 
     tek = conn.execute(_SQL_TEK_DAGILIM).fetchone()
     ornekler = [
@@ -342,7 +354,8 @@ def _print_human(env, veri: dict, *, min_chunk: int, kapak_uzunluk: int) -> None
     print()
 
 
-def _print_baslik(basliklar: list[dict], *, kapak_chunk: int) -> None:
+def _print_baslik(basliklar: list[dict], *, kapak_chunk: int,
+                  belirsiz_limit: int) -> None:
     print("-" * 100)
     print("BOLUM D  YURURLUKTEKI RESMI BASLIK ARAMASI -- TABAN YOK, her dosya taranir")
     print("-" * 100)
@@ -354,18 +367,24 @@ def _print_baslik(basliklar: list[dict], *, kapak_chunk: int) -> None:
     print("         metin golden'da dogru cevap OLAMAZ.")
     print()
     for b in basliklar:
-        kapakli = [i for i in b["isabetler"] if i["kapak_vurus"] > 0]
-        atif = [i for i in b["isabetler"] if i["kapak_vurus"] == 0]
+        kapakli = [i for i in b["isabetler"]
+                   if i["kapak_vurus"] > 0 and not i["ayrim_yok"]]
+        belirsiz = [i for i in b["isabetler"] if i["ayrim_yok"]]
+        atif = [i for i in b["isabetler"]
+                if i["kapak_vurus"] == 0 and not i["ayrim_yok"]]
         saglam = [i for i in kapakli if not i["taslak"] and i["status"] == "COMPLETED"]
         if not b["isabetler"]:
             hukum = ("SIFIR VURUS -- desen yanlis da olabilir; sifir tek basina "
                      "'yok' demek DEGILDIR")
-        elif not kapakli:
+        elif not kapakli and not belirsiz:
             hukum = f"KAYNAK METIN YOK -- yalniz {len(atif)} dosyada ATIF olarak geciyor"
+        elif not kapakli:
+            hukum = (f"AYIRT EDILEMEDI -- {len(belirsiz)} kisa dosya disinda kapak "
+                     "isabeti yok; asagidaki metinleri OKUYUN")
         elif not saglam:
             hukum = f"KULLANILAMAZ -- {len(kapakli)} kapak isabetinin hepsi taslak/COMPLETED-disi"
         else:
-            hukum = f"KAYNAK VAR -- {len(saglam)} yururlukte aday"
+            hukum = f"KAYNAK ADAYI -- {len(saglam)} dosya; kimligi METINDEN dogrulayin"
         print(f"  ### {b['ad']}")
         print(f"      desen : {b['desen']}")
         print(f"      HUKUM : {hukum}")
@@ -376,6 +395,21 @@ def _print_baslik(basliklar: list[dict], *, kapak_chunk: int) -> None:
             print(f"        [KAPAK] {_clip(i['file_name'], 50):<50} "
                   f"chunk={i['dosya_chunk']:>5,} s.{str(i['kapak_sayfa'] or '-'):>4} "
                   f"kapak={i['kapak_vurus']:>3} govde={i['govde_vurus']:>4}{isaret}")
+            print(f"           > {_clip(i['kapak_metin'], 220)}")
+        if belirsiz:
+            print(f"        --- {len(belirsiz)} dosya KAPAK PENCERESINDEN KUCUK "
+                  f"(<= {kapak_chunk} chunk): kapak/govde ayrimi bu dosyalarda")
+            print("            calismaz, cunku tum dosya kapak penceresine dusuyor.")
+            print("            Cogu, yonetmelige ATIF yapan tek sayfalik Kurul karari;")
+            print("            ama kisa mevzuat da burada olabilir -- METINDEN okuyun.")
+            for i in belirsiz[:belirsiz_limit]:
+                print(f"        [?    ] {_clip(i['file_name'], 50):<50} "
+                      f"chunk={i['dosya_chunk']:>3}"
+                      + ("  <TASLAK>" if i["taslak"] else ""))
+                print(f"           > {_clip(i['kapak_metin'], 200)}")
+            if len(belirsiz) > belirsiz_limit:
+                print(f"        ... + {len(belirsiz) - belirsiz_limit} kisa dosya daha "
+                      "(--belirsiz-limit ile artirilir)")
         for i in atif[:5]:
             print(f"        [atif ] {_clip(i['file_name'], 50):<50} "
                   f"chunk={i['dosya_chunk']:>5,} govde={i['govde_vurus']:>4}")
@@ -399,6 +433,9 @@ def main() -> int:
                          "sonraki chunk'ta kaliyor")
     ap.add_argument("--kapak-uzunluk", type=int, default=300,
                     help="Kapak metninden basilacak karakter")
+    ap.add_argument("--belirsiz-limit", type=int, default=6,
+                    help="Bolum D: kapak penceresinden kucuk dosyalardan kac tanesi "
+                         "metniyle basilsin")
     ap.add_argument("--ornek", type=int, default=5, help="Bolum C'de her uctan ornek")
     ap.add_argument("--json", action="store_true", help="Ham JSON bas")
     args = ap.parse_args()
@@ -426,7 +463,8 @@ def main() -> int:
     else:
         _print_human(env, veri, min_chunk=args.min_chunk,
                      kapak_uzunluk=args.kapak_uzunluk)
-        _print_baslik(veri["basliklar"], kapak_chunk=args.kapak_chunk)
+        _print_baslik(veri["basliklar"], kapak_chunk=args.kapak_chunk,
+                      belirsiz_limit=args.belirsiz_limit)
     return 0
 
 
