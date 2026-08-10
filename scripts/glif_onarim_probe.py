@@ -264,13 +264,48 @@ def bolum_h2(db, bin_deger: float, tavan: int) -> int:
 # tablonun temizlikten muaf tutulmasidir (Bolum E), tablonun daha bozuk
 # olmasi DEGIL. Yani "54 dosya" bir ALT SINIRDIR ve gercek yayginlik ancak
 # PARSE ANINDA, temizlikten once olculebilir. Bu bolum tam olarak onu yapar.
-_SQL_ORNEK = """
+#
+# KATMAN SECIMI (2026-08-10 dersi): ilk kosumda `rastgele` 20 dosyanin 20'si
+# de 1-2 sayfalik mevzuat_*.pdf cikti -- toplam ~24 sayfa, korpusun binde
+# biri. Sonuc "0/20" idi ve HICBIR SEY olcmedi: hasar (Bolum J tire sutunu)
+# kitaplarda yogunlasiyor, korpus ise 1119 dosyanin ~1050'si kucuk mevzuat.
+# Duzgun rastgele ornek bile yanlis katmani cekiyor. Bu yuzden ornek KATMANLI
+# secilir; varsayilan artik `tireli`.
+_SQL_ORNEK = {
+    # Depolanmis chunk'inda 0x02 olan dosyalar. Asil soru bunlarda:
+    # "tabloda tire hasari VAR; ayni dosyanin DUZYAZISINDA da var mi?"
+    "tireli": """
+SELECT f.file_id, f.file_name, f.source_path
+FROM core_files f
+JOIN (SELECT file_id, count(*) AS n FROM core_chunks
+      WHERE strpos(chunk_text, chr(2)) > 0 GROUP BY file_id) t USING (file_id)
+WHERE f.file_type = 'pdf' AND f.status = 'COMPLETED'
+ORDER BY t.n DESC
+LIMIT %(n)s;
+""",
+    # En cok sayfali dosyalar = kitap katmani. Ayrica kitapta s/sayfa parse
+    # maliyetini olcer (Bolum J butcesinin bilinmeyeni).
+    "buyuk": """
+SELECT f.file_id, f.file_name, f.source_path
+FROM core_files f
+JOIN (SELECT DISTINCT ON (file_id) file_id,
+             (detail->>'page_count')::int AS s
+      FROM metrics_ingestion WHERE step = 'parse'
+      ORDER BY file_id, metric_id DESC) p USING (file_id)
+WHERE f.file_type = 'pdf' AND f.status = 'COMPLETED'
+ORDER BY p.s DESC NULLS LAST
+LIMIT %(n)s;
+""",
+    # Kontrol grubu: hicbir seye gore secilmemis. Tek basina KANIT DEGIL --
+    # korpus dagilimi yuzunden neredeyse hep mevzuat ceker.
+    "rastgele": """
 SELECT f.file_id, f.file_name, f.source_path
 FROM core_files f
 WHERE f.file_type = 'pdf' AND f.status = 'COMPLETED'
 ORDER BY md5(f.file_name)
 LIMIT %(n)s;
-"""
+""",
+}
 
 _KELIME_DISI = " \t\n\r|.,;:!?()[]{}\"'«»…/\\"
 
@@ -297,22 +332,34 @@ def _kelimeler(metin: str, sinir: int = 12) -> list[str]:
     return out
 
 
-def bolum_i(db, n: int) -> int:
+_KATMAN_ACIK = {
+    "tireli": "depolanmis chunk'inda 0x02 olan dosyalar (en cok olandan aza)",
+    "buyuk": "en cok sayfali dosyalar = kitap katmani (+ s/sayfa olcumu)",
+    "rastgele": "md5(file_name) sirali kontrol grubu -- TEK BASINA KANIT DEGIL",
+}
+
+
+def bolum_i(db, n: int, katman: str) -> int:
     from ragintel.ingestion.cleaning.cleaner import onar_tire_glifi
     from ragintel.ingestion.parsing import docling_backend as dbk
 
     print("=" * 100)
-    print(f"BOLUM I  DUZYAZIDAKI TIRE HASARI -- {n} dosyalik PARSE-ZAMANI ornek")
+    print(f"BOLUM I  DUZYAZIDAKI TIRE HASARI -- {n} dosya, katman={katman}")
     print("=" * 100)
     print("  NEDEN ornek: DB'de duzyazi 0x02'si YOK, cunku _strip_junk silmis.")
     print("  Kanit yalniz temizlikten ONCE, parse ciktisinda gorulebilir.")
-    print("  Ornek md5(file_name) sirasiyla secilir -- deterministik, ingest")
-    print("  sirasindan bagimsiz, ayni komut ayni dosyalari verir.\n")
+    print(f"  katman: {_KATMAN_ACIK[katman]}")
+    if katman == "rastgele":
+        print("  UYARI: korpusun ~%94'u 1-2 sayfalik mevzuat_*.pdf. Rastgele")
+        print("  ornek neredeyse hep o katmani ceker ve kitaplardaki hasari")
+        print("  GOREMEZ. 'rastgele' sonucu tek basina 'hasar yok' demek DEGIL.\n")
+    else:
+        print("  Secim deterministik: ayni komut ayni dosyalari verir.\n")
 
     with db.connection() as conn:
-        dosyalar = conn.execute(_SQL_ORNEK, {"n": n}).fetchall()
+        dosyalar = conn.execute(_SQL_ORNEK[katman], {"n": n}).fetchall()
     if not dosyalar:
-        print("  Ornek bos -- COMPLETED pdf yok.")
+        print("  Ornek bos -- olcut hicbir dosyayi secmedi.")
         return 1
 
     ing, _kal, ps = _parse_ayarlari(db)
@@ -325,10 +372,13 @@ def bolum_i(db, n: int) -> int:
     )
     conv = be._converter(False)
 
-    print(f"  {'dosya':<44} {'sayfa':>5} {'dy_0x02':>8} {'tb_0x02':>8} "
-          f"{'birles':>7} {'tire':>6} {'sn':>6}")
+    print(f"  {'dosya':<40} {'sayfa':>5} {'dy_0x02':>8} {'tb_0x02':>8} "
+          f"{'birles':>7} {'tire':>6} {'sn':>7} {'sn/syf':>7}")
     top_dy = top_tb = top_b = top_t = 0
     dy_dosya = tb_dosya = 0
+    top_sayfa = 0
+    top_sn = 0.0
+    ilk = True
     ornek_kelime: list[str] = []
     for fid, ad, yol in dosyalar:
         t0 = time.perf_counter()
@@ -352,21 +402,35 @@ def bolum_i(db, n: int) -> int:
         tb_dosya += 1 if tb else 0
         if dy and len(ornek_kelime) < 40:
             ornek_kelime.extend(_kelimeler(duzyazi, 6))
-        print(f"  {ad[:44]:<44} {len(pd.pages):>5,} {dy:>8,} {tb:>8,} "
-              f"{b + b2:>7,} {t + t2:>6,} {gecen:>6.1f}")
+        sayfa = len(pd.pages)
+        if not ilk:                      # ilk dosya model yuklemesini yutar
+            top_sayfa += sayfa
+            top_sn += gecen
+        ilk = False
+        print(f"  {ad[:40]:<40} {sayfa:>5,} {dy:>8,} {tb:>8,} "
+              f"{b + b2:>7,} {t + t2:>6,} {gecen:>7.1f} "
+              f"{gecen / max(sayfa, 1):>7.2f}")
 
     k = len(dosyalar)
-    print(f"\n  ornek                 : {k} dosya")
+    print(f"\n  ornek                 : {k} dosya (katman={katman})")
     print(f"  DUZYAZIDA 0x02 olan   : {dy_dosya}/{k} dosya, {top_dy:,} gecis")
     print(f"  TABLODA   0x02 olan   : {tb_dosya}/{k} dosya, {top_tb:,} gecis")
     print(f"  onarim                : {top_b:,} birlestirme + {top_t:,} tire")
     if top_dy:
         print(f"  duzyazi/tablo orani   : {top_dy / max(top_tb, 1):.2f}x")
+    if top_sayfa:
+        sps = top_sn / top_sayfa
+        print(f"  PARSE MALIYETI        : {top_sayfa:,} sayfa / {top_sn:.1f} sn "
+              f"= {sps:.2f} sn/sayfa  (ilk dosya haric -- model yuklemesi)")
+        print(f"    -> Bolum J'nin 15,856 sayfalik tam kapsami ~{15856 * sps / 60:.0f} dk")
     print("\n  KARSILASTIRMA: DB'de (c0_tanim_probe Bolum A) 0x02 -> 529 chunk /"
           " 56 dosya,")
-    print("  hepsi tablo kokenli. Ustteki dy_0x02 sutunu sifirdan buyukse o 56")
-    print("  rakami duzyazi hasarini KAPSAMIYOR demektir ve kapsam yeniden")
-    print("  hesaplanmalidir. Sifirsa hasar gercekten tabloya ozgudur.")
+    print("  hepsi tablo kokenli -- ama bu tablonun daha bozuk oldugunu DEGIL,")
+    print("  duzyazinin _strip_junk'ta silindigini gosterir. Ustteki dy_0x02")
+    print("  sutunu sifirdan buyukse hasar duzyaziya da yayilmis demektir ve")
+    print("  56 rakami bir ALT SINIRDIR. katman=tireli'de sifir cikarsa -- yani")
+    print("  tabloda 0x02 TASIYAN dosyalarin duzyazisinda bile yoksa -- hasar")
+    print("  gercekten tabloya ozgudur ve 56 kapsamin TAMAMIDIR.")
     if ornek_kelime:
         print("\n  duzyazidan uretilecek kelimeler (ilk 40):")
         for kel in ornek_kelime[:40]:
@@ -431,15 +495,18 @@ ORDER BY (d.imza_chunk > 0 OR d.kay_chunk > 0) DESC,
 _KAYDIRMA_KAR = "".join(chr(k) for k in list(range(0x03, 0x09)) + list(range(0x0E, 0x20)))
 
 
-def bolum_j(db, bin_deger: float, sn_sayfa: float) -> int:
+def bolum_j(db, bin_deger: float, sn_sayfa: float, kazanc: float = 0.98) -> int:
     print("=" * 100)
     print("BOLUM J  KESIN REPROCESS KAPSAMI -- hangi dosya, hangi tedavi?")
     print("=" * 100)
     print(f"  imza esigi: {bin_deger:.1f}/1000   kaydirma kumesi: 0x03-0x08,0x0E-0x1F")
-    print("  Iki tedavi AYRI maliyettedir:")
-    print("    OCR   -> imza VEYA kaydirma izi var; tam-sayfa OCR gerekir (pahali)")
-    print("    CLEAN -> yalniz 0x02 tire var; reprocess yeter, OCR kolu")
-    print("             tetiklenmez (b7602f8) -- ucuz\n")
+    print("  Iki tedavi:")
+    print("    OCR   -> imza VEYA kaydirma izi var; isaretli sayfalar OCR'a gider")
+    print("    CLEAN -> yalniz 0x02 tire var; OCR kolu tetiklenmez (b7602f8)")
+    print("  MALIYET MODELI: reprocess her iki kolda da dosyanin TAMAMINI parse")
+    print("  eder -- bu kacinilmazdir ve baskin kalemdir. OCR yalnizca tetigin")
+    print("  isaretledigi sayfalara EK olarak biner. Yani 'CLEAN ucuz' demek")
+    print("  'OCR yok' demektir, 'bedava' demek degil.\n")
 
     with db.connection() as conn:
         satirlar = conn.execute(_SQL_KAPSAM, {
@@ -449,31 +516,67 @@ def bolum_j(db, bin_deger: float, sn_sayfa: float) -> int:
         print("  Kapsam BOS -- hicbir dosyada imza/kaydirma/tire izi yok.")
         return 0
 
-    ocr_ids, clean_ids, ocr_sayfa = [], [], 0
+    ocr, temiz = [], []
+    for (fid, ad, _ch, imza, imza_tb, kay, kay_tb, tire, _bk, sayfa) in satirlar:
+        kayit = (int(fid), ad, int(imza), int(imza_tb), int(kay), int(kay_tb),
+                 int(tire), int(sayfa))
+        (ocr if imza > 0 or kay > 0 else temiz).append(kayit)
+
+    # OCR kolunu KAZANCA gore bol: bozuk chunk'larin `kazanc` payini tasiyan
+    # dosyalar "YOGUN", geri kalan "KUYRUK". Kuyruk dosya basina 1-2 bozuk
+    # chunk tasir ama yuzlerce sayfa parse ettirir -- bedeli kazancindan
+    # buyuktur. Esik keyfi degil, kirilim noktasindan secildi (2026-08-10
+    # kapsami): %95 -> 13 dosya/3310 sayfa, %98 -> 18/4522, %99 -> 26/6012.
+    ocr.sort(key=lambda r: r[2] + r[4], reverse=True)
+    top_bozuk = sum(r[2] + r[4] for r in ocr)
+    kesme = kazanc * top_bozuk
+    birikim = 0
+    yogun_n = 0
+    for r in ocr:
+        if birikim >= kesme:
+            break
+        birikim += r[2] + r[4]
+        yogun_n += 1
+    yogun, kuyruk = ocr[:yogun_n], ocr[yogun_n:]
+
     print(f"  {'fid':>5} {'dosya':<46} {'imza':>5}/{'tb':<4} {'kay':>4}/{'tb':<4} "
           f"{'tire':>5} {'sayfa':>6}  TEDAVI")
-    for (fid, ad, _ch, imza, imza_tb, kay, kay_tb, tire, _bk, sayfa) in satirlar:
-        ocr = imza > 0 or kay > 0
-        (ocr_ids if ocr else clean_ids).append(int(fid))
-        if ocr:
-            ocr_sayfa += int(sayfa)
-        print(f"  {int(fid):>5} {ad[:46]:<46} {int(imza):>5}/{int(imza_tb):<4} "
-              f"{int(kay):>4}/{int(kay_tb):<4} {int(tire):>5} {int(sayfa):>6,}  "
-              f"{'OCR' if ocr else 'CLEAN'}")
+    for etiket, grup in (("OCR-YOGUN", yogun), ("OCR-KUYRUK", kuyruk),
+                         ("CLEAN", temiz)):
+        for (fid, ad, imza, imza_tb, kay, kay_tb, tire, sayfa) in grup:
+            print(f"  {fid:>5} {ad[:46]:<46} {imza:>5}/{imza_tb:<4} "
+                  f"{kay:>4}/{kay_tb:<4} {tire:>5} {sayfa:>6,}  {etiket}")
 
-    dk = ocr_sayfa * sn_sayfa / 60.0
-    print(f"\n  OCR gereken  : {len(ocr_ids)} dosya, {ocr_sayfa:,} sayfa "
-          f"= {dk:.0f} dk ({dk / 60:.1f} sa)  [{sn_sayfa:.2f} sn/sayfa]")
-    print(f"  CLEAN yeterli: {len(clean_ids)} dosya (OCR YOK)")
-    print("\n  'tb' sutunu = o bozukluğun TABLO kokenli olan payi. Buyuk olmasi")
+    def _ozet(ad: str, grup: list, pay: str) -> tuple[int, float]:
+        syf = sum(r[7] for r in grup)
+        dk = syf * sn_sayfa / 60.0
+        bz = sum(r[2] + r[4] for r in grup)
+        print(f"  {ad:<12}: {len(grup):>3} dosya  {syf:>6,} sayfa  ~{dk:>4.0f} dk"
+              f"   bozuk chunk {bz:>5,}  ({pay})")
+        return syf, dk
+
+    print()
+    _, dk_y = _ozet("OCR-YOGUN", yogun,
+                    f"kazancin %{100 * birikim / max(top_bozuk, 1):.1f}'i")
+    _, dk_k = _ozet("OCR-KUYRUK", kuyruk,
+                    f"kazancin %{100 * (top_bozuk - birikim) / max(top_bozuk, 1):.1f}'i")
+    _, dk_c = _ozet("CLEAN", temiz, "imza/kaydirma YOK, yalniz 0x02")
+    print(f"  {'TOPLAM':<12}: {len(satirlar):>3} dosya  "
+          f"{sum(r[7] for r in ocr) + sum(r[7] for r in temiz):>6,} sayfa  "
+          f"~{dk_y + dk_k + dk_c:>4.0f} dk")
+    print(f"\n  [{sn_sayfa:.2f} sn/sayfa varsayimi -- KITAP katmaninda OLCULMEDI.")
+    print("   G'de 1.45, kucuk mevzuat'ta 0.10 sn/sayfa cikti (14 kat fark).")
+    print("   Gercek deger icin: --tire-tarama 6 --katman buyuk]")
+    print("\n  'tb' sutunu = o bozuklugun TABLO kokenli olan payi. Buyuk olmasi")
     print("  dc99c78'in (tablo-farkinda tetik) neyi kurtardigini gosterir.")
     print("\n  --- calistirilacak komutlar (SALT ONERI; bu prob YAZMAZ) ---")
-    print(f"  # ucuz kol ({len(clean_ids)} dosya)")
-    print(f"  for i in {' '.join(map(str, clean_ids))}; do "
-          f"ragintel ingest reprocess $i; done")
-    print(f"\n  # pahali kol ({len(ocr_ids)} dosya, ~{dk:.0f} dk)")
-    print(f"  for i in {' '.join(map(str, ocr_ids))}; do "
-          f"ragintel ingest reprocess $i; done")
+    for ad, grup, dk in (("1) OCR-YOGUN -- once bu", yogun, dk_y),
+                         ("2) CLEAN", temiz, dk_c),
+                         ("3) OCR-KUYRUK -- bedeli kazancindan buyuk, ISTEGE BAGLI",
+                          kuyruk, dk_k)):
+        print(f"  # {ad} ({len(grup)} dosya, ~{dk:.0f} dk)")
+        print(f"  for i in {' '.join(str(r[0]) for r in grup)}; do "
+              f"ragintel ingest reprocess $i; done\n")
     return 0
 
 
@@ -785,10 +888,18 @@ def main() -> int:
     ap.add_argument("--tire-tarama", type=int, default=None, dest="tire_tarama",
                     metavar="N", help="Bolum I: N dosyayi PARSE edip temizlikten "
                                       "ONCE duzyazi/tablo 0x02 sayar (DB'den "
-                                      "olculemeyen tek sey). ~1 sn/sayfa")
+                                      "olculemeyen tek sey)")
+    ap.add_argument("--katman", choices=("tireli", "buyuk", "rastgele"),
+                    default="tireli",
+                    help="Bolum I ornek katmani (varsayilan: tireli). Rastgele "
+                         "ornek korpusun %%94'u kucuk mevzuat oldugu icin kitap "
+                         "katmanindaki hasari GOREMEZ")
     ap.add_argument("--kapsam", action="store_true",
                     help="Bolum J: kesin reprocess kapsami (imza VE C0 birlikte, "
                          "tablo/duzyazi ayrimli) -- file_id listesi uretir")
+    ap.add_argument("--kazanc-payi", type=float, default=0.98, dest="kazanc",
+                    metavar="P", help="Bolum J: OCR kolunu YOGUN/KUYRUK ayiran "
+                                      "kumulatif kazanc payi (varsayilan 0.98)")
     a = ap.parse_args()
 
     from ragintel.config.settings import DbSettings
@@ -801,9 +912,9 @@ def main() -> int:
             return bolum_g(db, a.dosya, max(0, a.sayfa), max(1, a.bas_sayfa),
                            a.imza_bin, a.yalniz_tetik)
         if a.tire_tarama is not None:
-            return bolum_i(db, max(1, a.tire_tarama))
+            return bolum_i(db, max(1, a.tire_tarama), a.katman)
         if a.kapsam:
-            return bolum_j(db, esik, a.sn_sayfa)
+            return bolum_j(db, esik, a.sn_sayfa, min(max(a.kazanc, 0.0), 1.0))
         if a.sinir is not None:
             return bolum_h2(db, esik, max(1, a.sinir))
         return bolum_h(db, esik, a.sn_sayfa)
