@@ -16,6 +16,12 @@ DEGILDIR -- korpus bu prob ile degismez.
   G bolumu (--dosya): tek dosyada uctan uca onarim + sayfa sayfa karar tablosu
   H bolumu (varsayilan): korpus geneli tetik envanteri + OCR butcesi (SQL, parse yok)
   H2 bolumu (--sinir N): kuyruktaki (az bozuk chunk'li) dosyalarin chunk METNI
+  I bolumu (--tire-tarama N): DUZYAZIDAKI 0x02 -- parse-zamani ornek. DB'den
+      olculemeyen tek olcum; _strip_junk kaniti temizlikte imha ediyordu.
+  J bolumu (--kapsam): KESIN reprocess kapsami. imza VE C0 birlikte, tablo/
+      duzyazi ayrimli, cikti = `ragintel ingest reprocess` icin file_id listesi.
+      Bolum D (c0_tanim_probe) bunun yerini TUTMAZ: D yalniz C0 sayar, oysa
+      imzayla bozulmus bir tablo hic C0 uretmeden bozuk olabilir.
 
 DIKKAT -- H, TETIGIN KENDISINI OLCMEZ. H depolanmis chunk'lar uzerinden ve
 YALNIZ imza olcutuyle calisan bir TAHMINDIR; uretim tetigi ise SAYFA uzerinde
@@ -248,6 +254,226 @@ def bolum_h2(db, bin_deger: float, tavan: int) -> int:
     print(f"  {len(satirlar)} sinir chunk basildi. Okuma kurali: metin Turkce ve")
     print("  okunabiliyorsa imza MESRUDUR (tablo cizgisi, kaynakca, tirnak);")
     print("  okunamiyorsa gercek bozulmadir ve dosya onarim koluna girmelidir.")
+    return 0
+
+
+# =============================================================== BOLUM I =====
+# DUZYAZIDAKI TIRE HASARI -- DB'den OLCULEMEZ, cunku kanit temizlikte imha
+# edilir: `cleaning._strip_junk` 0x02'yi siler ve geriye "Su bat" kalir.
+# core_chunks'ta gorunen 0x02'lerin hepsi TABLO kokenli olmasinin sebebi
+# tablonun temizlikten muaf tutulmasidir (Bolum E), tablonun daha bozuk
+# olmasi DEGIL. Yani "54 dosya" bir ALT SINIRDIR ve gercek yayginlik ancak
+# PARSE ANINDA, temizlikten once olculebilir. Bu bolum tam olarak onu yapar.
+_SQL_ORNEK = """
+SELECT f.file_id, f.file_name, f.source_path
+FROM core_files f
+WHERE f.file_type = 'pdf' AND f.status = 'COMPLETED'
+ORDER BY md5(f.file_name)
+LIMIT %(n)s;
+"""
+
+_KELIME_DISI = " \t\n\r|.,;:!?()[]{}\"'«»…/\\"
+
+
+def _kelimeler(metin: str, sinir: int = 12) -> list[str]:
+    """0x02 gecislerinin URETECEGI kelimeler -- iddia degil, gercek cikti."""
+    from ragintel.ingestion.cleaning.cleaner import onar_tire_glifi
+
+    out = []
+    for i, ch in enumerate(metin):
+        if ch != "\x02":
+            continue
+        sol = i
+        while sol > 0 and metin[sol - 1] not in _KELIME_DISI:
+            sol -= 1
+        sag = i + 1
+        while sag < len(metin) and metin[sag] in " \t":
+            sag += 1
+        while sag < len(metin) and metin[sag] not in _KELIME_DISI:
+            sag += 1
+        out.append(onar_tire_glifi(metin[sol:sag])[0])
+        if len(out) >= sinir:
+            break
+    return out
+
+
+def bolum_i(db, n: int) -> int:
+    from ragintel.ingestion.cleaning.cleaner import onar_tire_glifi
+    from ragintel.ingestion.parsing import docling_backend as dbk
+
+    print("=" * 100)
+    print(f"BOLUM I  DUZYAZIDAKI TIRE HASARI -- {n} dosyalik PARSE-ZAMANI ornek")
+    print("=" * 100)
+    print("  NEDEN ornek: DB'de duzyazi 0x02'si YOK, cunku _strip_junk silmis.")
+    print("  Kanit yalniz temizlikten ONCE, parse ciktisinda gorulebilir.")
+    print("  Ornek md5(file_name) sirasiyla secilir -- deterministik, ingest")
+    print("  sirasindan bagimsiz, ayni komut ayni dosyalari verir.\n")
+
+    with db.connection() as conn:
+        dosyalar = conn.execute(_SQL_ORNEK, {"n": n}).fetchall()
+    if not dosyalar:
+        print("  Ornek bos -- COMPLETED pdf yok.")
+        return 1
+
+    ing, _kal, ps = _parse_ayarlari(db)
+    be = dbk.DoclingBackend(
+        figure_images=False,
+        figure_image_scale=float(ing.figure_image_scale),
+        pdf_backend=str(ps.pdf_backend or "pypdfium2"),
+        tableformer_mode=str(ing.tableformer_mode),
+        parse_num_threads=int(ing.parse_num_threads),
+    )
+    conv = be._converter(False)
+
+    print(f"  {'dosya':<44} {'sayfa':>5} {'dy_0x02':>8} {'tb_0x02':>8} "
+          f"{'birles':>7} {'tire':>6} {'sn':>6}")
+    top_dy = top_tb = top_b = top_t = 0
+    dy_dosya = tb_dosya = 0
+    ornek_kelime: list[str] = []
+    for fid, ad, yol in dosyalar:
+        t0 = time.perf_counter()
+        try:
+            pd = dbk._map_document(conv.convert(yol).document, ocr=False)
+        except Exception as e:                                  # noqa: BLE001
+            print(f"  {ad[:44]:<44} PARSE HATASI: {type(e).__name__}")
+            continue
+        gecen = time.perf_counter() - t0
+        duzyazi = pd.body_text
+        tablo = _tum_tablo_metni(pd)
+        dy = duzyazi.count("\x02")
+        tb = tablo.count("\x02")
+        _m, b, t = onar_tire_glifi(duzyazi)
+        _m2, b2, t2 = onar_tire_glifi(tablo)
+        top_dy += dy
+        top_tb += tb
+        top_b += b + b2
+        top_t += t + t2
+        dy_dosya += 1 if dy else 0
+        tb_dosya += 1 if tb else 0
+        if dy and len(ornek_kelime) < 40:
+            ornek_kelime.extend(_kelimeler(duzyazi, 6))
+        print(f"  {ad[:44]:<44} {len(pd.pages):>5,} {dy:>8,} {tb:>8,} "
+              f"{b + b2:>7,} {t + t2:>6,} {gecen:>6.1f}")
+
+    k = len(dosyalar)
+    print(f"\n  ornek                 : {k} dosya")
+    print(f"  DUZYAZIDA 0x02 olan   : {dy_dosya}/{k} dosya, {top_dy:,} gecis")
+    print(f"  TABLODA   0x02 olan   : {tb_dosya}/{k} dosya, {top_tb:,} gecis")
+    print(f"  onarim                : {top_b:,} birlestirme + {top_t:,} tire")
+    if top_dy:
+        print(f"  duzyazi/tablo orani   : {top_dy / max(top_tb, 1):.2f}x")
+    print("\n  KARSILASTIRMA: DB'de (c0_tanim_probe Bolum A) 0x02 -> 529 chunk /"
+          " 56 dosya,")
+    print("  hepsi tablo kokenli. Ustteki dy_0x02 sutunu sifirdan buyukse o 56")
+    print("  rakami duzyazi hasarini KAPSAMIYOR demektir ve kapsam yeniden")
+    print("  hesaplanmalidir. Sifirsa hasar gercekten tabloya ozgudur.")
+    if ornek_kelime:
+        print("\n  duzyazidan uretilecek kelimeler (ilk 40):")
+        for kel in ornek_kelime[:40]:
+            print(f"    {kel!r}")
+    return 0
+
+
+# =============================================================== BOLUM J =====
+# KESIN REPROCESS KAPSAMI. Bolum D (c0_tanim_probe) kapsami veremez, iki
+# sebeple: (1) yalniz C0 sayar, oysa aile-A'nin imza kolu (Õ ¿ ÷ ...) C0
+# uretmez -- imzayla bozulmus bir tablo D'de HIC gorunmez; (2) depolanmis
+# chunk'lar onarim SONRASI durumdur. Burada iki olcut birlikte ve tablo/
+# duzyazi ayrimiyla okunur, cikti dogrudan `ragintel ingest reprocess` icin
+# file_id listesidir.
+_SQL_KAPSAM = """
+WITH c AS (
+    SELECT c.file_id,
+           (c.table_id IS NOT NULL) AS tablo,
+           length(c.chunk_text) AS kar,
+           length(c.chunk_text) - length(translate(c.chunk_text, %(imza)s, ''))
+               AS im,
+           length(c.chunk_text) - length(translate(c.chunk_text, %(kay)s, ''))
+               AS kay,
+           length(c.chunk_text) - length(translate(c.chunk_text, %(tire)s, ''))
+               AS tire
+    FROM core_chunks c
+),
+d AS (
+    SELECT file_id,
+           count(*) AS chunk,
+           count(*) FILTER (WHERE kar >= 200 AND 1000.0 * im / kar >= %(bin)s)
+               AS imza_chunk,
+           count(*) FILTER (WHERE kar >= 200 AND 1000.0 * im / kar >= %(bin)s
+                              AND tablo) AS imza_tablo,
+           count(*) FILTER (WHERE kay > 0)              AS kay_chunk,
+           count(*) FILTER (WHERE kay > 0 AND tablo)    AS kay_tablo,
+           count(*) FILTER (WHERE tire > 0)             AS tire_chunk,
+           sum(kar) FILTER (WHERE kar >= 200 AND 1000.0 * im / kar >= %(bin)s)
+               AS bozuk_kar
+    FROM c GROUP BY file_id
+),
+p AS (
+    SELECT DISTINCT ON (m.file_id) m.file_id,
+           (m.detail->>'page_count')::int AS sayfa
+    FROM metrics_ingestion m
+    WHERE m.step = 'parse'
+    ORDER BY m.file_id, m.metric_id DESC
+)
+SELECT d.file_id, f.file_name, d.chunk, d.imza_chunk, d.imza_tablo,
+       d.kay_chunk, d.kay_tablo, d.tire_chunk,
+       coalesce(d.bozuk_kar, 0), coalesce(p.sayfa, 0)
+FROM d
+JOIN core_files f USING (file_id)
+LEFT JOIN p USING (file_id)
+WHERE d.imza_chunk > 0 OR d.kay_chunk > 0 OR d.tire_chunk > 0
+ORDER BY (d.imza_chunk > 0 OR d.kay_chunk > 0) DESC,
+         coalesce(d.bozuk_kar, 0) DESC;
+"""
+
+# Aile-A kaydirmasinin C0'a dusen parcasi. 0x02 (tire) ve 0x01 BILEREK disarida:
+# 0x02 cleaning'de onariliyor, 0x01 olculmedi. 0x0B/0x0C mesru duzen karakteri.
+_KAYDIRMA_KAR = "".join(chr(k) for k in list(range(0x03, 0x09)) + list(range(0x0E, 0x20)))
+
+
+def bolum_j(db, bin_deger: float, sn_sayfa: float) -> int:
+    print("=" * 100)
+    print("BOLUM J  KESIN REPROCESS KAPSAMI -- hangi dosya, hangi tedavi?")
+    print("=" * 100)
+    print(f"  imza esigi: {bin_deger:.1f}/1000   kaydirma kumesi: 0x03-0x08,0x0E-0x1F")
+    print("  Iki tedavi AYRI maliyettedir:")
+    print("    OCR   -> imza VEYA kaydirma izi var; tam-sayfa OCR gerekir (pahali)")
+    print("    CLEAN -> yalniz 0x02 tire var; reprocess yeter, OCR kolu")
+    print("             tetiklenmez (b7602f8) -- ucuz\n")
+
+    with db.connection() as conn:
+        satirlar = conn.execute(_SQL_KAPSAM, {
+            "imza": IMZA, "kay": _KAYDIRMA_KAR, "tire": "\x02", "bin": bin_deger,
+        }).fetchall()
+    if not satirlar:
+        print("  Kapsam BOS -- hicbir dosyada imza/kaydirma/tire izi yok.")
+        return 0
+
+    ocr_ids, clean_ids, ocr_sayfa = [], [], 0
+    print(f"  {'fid':>5} {'dosya':<46} {'imza':>5}/{'tb':<4} {'kay':>4}/{'tb':<4} "
+          f"{'tire':>5} {'sayfa':>6}  TEDAVI")
+    for (fid, ad, _ch, imza, imza_tb, kay, kay_tb, tire, _bk, sayfa) in satirlar:
+        ocr = imza > 0 or kay > 0
+        (ocr_ids if ocr else clean_ids).append(int(fid))
+        if ocr:
+            ocr_sayfa += int(sayfa)
+        print(f"  {int(fid):>5} {ad[:46]:<46} {int(imza):>5}/{int(imza_tb):<4} "
+              f"{int(kay):>4}/{int(kay_tb):<4} {int(tire):>5} {int(sayfa):>6,}  "
+              f"{'OCR' if ocr else 'CLEAN'}")
+
+    dk = ocr_sayfa * sn_sayfa / 60.0
+    print(f"\n  OCR gereken  : {len(ocr_ids)} dosya, {ocr_sayfa:,} sayfa "
+          f"= {dk:.0f} dk ({dk / 60:.1f} sa)  [{sn_sayfa:.2f} sn/sayfa]")
+    print(f"  CLEAN yeterli: {len(clean_ids)} dosya (OCR YOK)")
+    print("\n  'tb' sutunu = o bozukluğun TABLO kokenli olan payi. Buyuk olmasi")
+    print("  dc99c78'in (tablo-farkinda tetik) neyi kurtardigini gosterir.")
+    print("\n  --- calistirilacak komutlar (SALT ONERI; bu prob YAZMAZ) ---")
+    print(f"  # ucuz kol ({len(clean_ids)} dosya)")
+    print(f"  for i in {' '.join(map(str, clean_ids))}; do "
+          f"ragintel ingest reprocess $i; done")
+    print(f"\n  # pahali kol ({len(ocr_ids)} dosya, ~{dk:.0f} dk)")
+    print(f"  for i in {' '.join(map(str, ocr_ids))}; do "
+          f"ragintel ingest reprocess $i; done")
     return 0
 
 
@@ -556,6 +782,13 @@ def main() -> int:
     ap.add_argument("--sinir", type=int, default=None, metavar="N",
                     help="Bolum H2: bozuk chunk sayisi <= N olan dosyalarin "
                          "chunk METNINI basar (kuyruk gercek mi mesru mu)")
+    ap.add_argument("--tire-tarama", type=int, default=None, dest="tire_tarama",
+                    metavar="N", help="Bolum I: N dosyayi PARSE edip temizlikten "
+                                      "ONCE duzyazi/tablo 0x02 sayar (DB'den "
+                                      "olculemeyen tek sey). ~1 sn/sayfa")
+    ap.add_argument("--kapsam", action="store_true",
+                    help="Bolum J: kesin reprocess kapsami (imza VE C0 birlikte, "
+                         "tablo/duzyazi ayrimli) -- file_id listesi uretir")
     a = ap.parse_args()
 
     from ragintel.config.settings import DbSettings
@@ -567,6 +800,10 @@ def main() -> int:
         if a.dosya:
             return bolum_g(db, a.dosya, max(0, a.sayfa), max(1, a.bas_sayfa),
                            a.imza_bin, a.yalniz_tetik)
+        if a.tire_tarama is not None:
+            return bolum_i(db, max(1, a.tire_tarama))
+        if a.kapsam:
+            return bolum_j(db, esik, a.sn_sayfa)
         if a.sinir is not None:
             return bolum_h2(db, esik, max(1, a.sinir))
         return bolum_h(db, esik, a.sn_sayfa)
