@@ -26,9 +26,15 @@ DIŞARIDA BIRAKILANLAR (sessizce değil, sayıyla raporlanır):
     bugün oradan kesilen alıntı yarın tutmaz. Bayat alıntı üretmemek için
     şimdilik havuz dışı.
   • Görüşe açılmış TASLAK metinler ("Görüşlerinizi ... iletebilirsiniz"
-    boilerplate'i; ölçüldü: 11 dosya). Yürürlükte olmayan metin golden'da
+    boilerplate'i; ölçüldü: 15 dosya). Yürürlükte olmayan metin golden'da
     doğru cevap OLAMAZ.
+  • Adı sayılarak elenenler (ELENEN_DOSYA): mülga 4389. Gerekçesi basılır.
 Havuzun kaç dosya olduğu ve her elemenin kaç dosya götürdüğü başlıkta basılır.
+
+KEŞİF MODU (--dosya): bir konu deseni yetkili kaynağı getirmediğinde, o kaynağın
+"korpusta yok" mu yoksa "desene takılmadı" mı olduğu ancak dosyanın metnine
+bakılarak ayrılır. --dosya mevzuat_1291 gibi bir çağrı dosyanın chunk'larını ve
+havuz durumunu (C0/TASLAK/ADLA-ELENEN) basar.
 
 ÖLÇÜM-ZEMİNİ / GÜVENLİK: yalnız SELECT. DB/prod/config'e YAZMAZ, golden
 tablolarına (eval_golden_*) DOKUNMAZ.
@@ -72,7 +78,7 @@ KONULAR: list[dict] = [
     {"id": "5411-izin", "ad": "Kuruluş ve faaliyet izni",
      "desen": "faaliyet izni", "beklenen": "5411"},
     {"id": "5411-kurulus-sart", "ad": "Kuruluş şartları",
-     "desen": "kurucularının bu kanunun", "beklenen": "5411"},
+     "desen": "kurucu ortaklarının", "beklenen": "5411"},
     {"id": "5411-sir", "ad": "Sırların saklanması (m.73)",
      "desen": "sırların saklanması", "beklenen": "5411"},
     {"id": "5411-musteri-sirri", "ad": "Müşteri sırrı tanımı",
@@ -84,9 +90,9 @@ KONULAR: list[dict] = [
     {"id": "5411-karsilik", "ad": "Karşılıklar ve teminatlar (m.53)",
      "desen": "karşılıklar ve teminatlar", "beklenen": "5411"},
     {"id": "5411-faaliyet-konu", "ad": "Faaliyet konuları (m.4)",
-     "desen": "mevduat kabulü", "beklenen": "5411"},
+     "desen": "faaliyet konuları", "beklenen": "5411"},
     {"id": "5411-ic-sistem", "ad": "İç sistemler (m.29)",
-     "desen": "iç kontrol sistemi", "beklenen": "5411"},
+     "desen": "iç sistemlere ilişkin", "beklenen": "5411"},
     {"id": "5411-bagimsiz-denetim", "ad": "Bağımsız denetim (m.33)",
      "desen": "bağımsız denetim kuruluşları", "beklenen": "5411"},
     {"id": "5411-tmsf", "ad": "Mevduat sigortası / TMSF (m.63)",
@@ -136,100 +142,172 @@ KONULAR: list[dict] = [
 ]
 
 
+# Adı sayılarak dışlananlar. Sessiz eleme YOK -- gerekçe basılır.
+ELENEN_DOSYA: dict[str, str] = {
+    # 4389 sayılı Bankalar Kanunu: 5411 ile MÜLGA. Metni korpusta duruyor ve
+    # "Tanımlar MADDE 2" gibi bölümleri 5411'inkine birebir benziyor; golden'da
+    # yürürlükteki hüküm diye eşleşirse ölçüm aracı YANLIŞ cevabı doğru sayar.
+    "mevzuat_1230": "MÜLGA 4389 sayılı Bankalar Kanunu (5411 ile yürürlükten kalktı)",
+}
+
+
 # --- SALT-OKUMA sorgular -----------------------------------------------------
 
 _C0 = r"chunk_text ~ E'[\\x01-\\x08\\x0B\\x0C\\x0E-\\x1F]'"
 
-# Havuz: COMPLETED, C0 artığı olmayan, taslak boilerplate'i taşımayan dosyalar.
-_SQL_HAVUZ = f"""
+# Havuz: COMPLETED, C0 artığı olmayan, taslak boilerplate'i taşımayan,
+# adı sayılarak elenmemiş dosyalar.
+_UYGUN = f"""
 WITH d AS (
     SELECT file_id,
            bool_or({_C0})                                     AS c0,
            bool_or(chunk_text_norm LIKE '%%görüşlerinizi%%')   AS taslak
     FROM core_chunks GROUP BY file_id
-)
+), s AS (
+    SELECT d.file_id, d.c0, d.taslak, f.status, f.file_name,
+           (f.file_name ILIKE ANY(%(elenen)s))                AS adla_elenen
+    FROM d JOIN core_files f USING (file_id)
+), uygun AS (
+    SELECT file_id FROM s
+    WHERE NOT c0 AND NOT taslak AND NOT adla_elenen AND status = 'COMPLETED'
+)"""
+
+_SQL_HAVUZ = _UYGUN + """
 SELECT count(*)                                                AS toplam,
-       count(*) FILTER (WHERE d.c0)                            AS elenen_c0,
-       count(*) FILTER (WHERE d.taslak AND NOT d.c0)           AS elenen_taslak,
-       count(*) FILTER (WHERE f.status <> 'COMPLETED')         AS elenen_durum,
-       count(*) FILTER (WHERE NOT d.c0 AND NOT d.taslak
-                          AND f.status = 'COMPLETED')          AS havuz
-FROM d JOIN core_files f USING (file_id);
+       count(*) FILTER (WHERE c0)                              AS elenen_c0,
+       count(*) FILTER (WHERE taslak AND NOT c0)               AS elenen_taslak,
+       count(*) FILTER (WHERE adla_elenen)                     AS elenen_ad,
+       count(*) FILTER (WHERE status <> 'COMPLETED')           AS elenen_durum,
+       (SELECT count(*) FROM uygun)                            AS havuz
+FROM s;
 """
 
-_SQL_KONU = f"""
-WITH d AS (
-    SELECT file_id,
-           bool_or({_C0})                                     AS c0,
-           bool_or(chunk_text_norm LIKE '%%görüşlerinizi%%')   AS taslak
-    FROM core_chunks GROUP BY file_id
-), uygun AS (
-    SELECT d.file_id FROM d JOIN core_files f USING (file_id)
-    WHERE NOT d.c0 AND NOT d.taslak AND f.status = 'COMPLETED'
-), m AS (
+# SIRALAMA -- ilk sürümün kusuru buydu ve düzeltildi: yalnız `dosya_vurus DESC`
+# (dosya içi toplam vuruş) sıralaması, ifadeyi EN ÇOK ANAN dosyayı öne çıkarıyor,
+# hükmü KOYAN dosyayı değil. Ölçüldü: "özkaynak" deseninde tepe isabet hesap
+# planı dosyası (290 vuruş), 5411 m.44 ise listede yok. Birincil anahtar artık
+# BÖLÜM BAŞLIĞI eşleşmesi: bir maddenin başlığı desenle örtüşüyorsa o chunk
+# maddenin metnidir, ondan söz eden paragraf değil.
+# SINIRI: ILIKE Türkçe 'İ' harfinde güvenilir küçültme yapmaz (locale'e bağlı),
+# yani İ ile başlayan başlıklarda bu ipucu SESSİZCE çalışmayabilir. Yalnız bir
+# SIRALAMA ipucudur, süzgeç değil -- eşleşmemesi "başlık yok" demek DEĞİLDİR.
+_SQL_KONU = _UYGUN + """, m AS (
     SELECT c.file_id, c.chunk_index, c.page_number, c.token_count,
            c.section_title, c.chunk_text,
+           (c.section_title ILIKE %(baslik)s)                                  AS baslik_isabeti,
            count(*)     OVER (PARTITION BY c.file_id)                          AS dosya_vurus,
-           row_number() OVER (PARTITION BY c.file_id ORDER BY c.chunk_index)   AS sira
+           row_number() OVER (PARTITION BY c.file_id
+                              ORDER BY (c.section_title ILIKE %(baslik)s) DESC,
+                                       c.chunk_index)                          AS sira
     FROM core_chunks c JOIN uygun USING (file_id)
     WHERE c.chunk_text_norm LIKE %(kalip)s
 )
 SELECT f.file_name, m.chunk_index, m.page_number, m.token_count,
-       m.section_title, m.dosya_vurus, m.chunk_text
+       m.section_title, m.dosya_vurus, m.baslik_isabeti, m.chunk_text
 FROM m JOIN core_files f USING (file_id)
 WHERE m.sira <= %(dosya_basi)s
-ORDER BY m.dosya_vurus DESC, f.file_name, m.chunk_index
+ORDER BY m.baslik_isabeti DESC, m.dosya_vurus DESC, f.file_name, m.chunk_index
 LIMIT %(limit)s;
 """
 
-# Konu başına kaç DOSYA vuruyor? Kırpılan kısmın büyüklüğü sessiz kalmasın.
-_SQL_KONU_SAYIM = f"""
-WITH d AS (
-    SELECT file_id,
-           bool_or({_C0})                                     AS c0,
-           bool_or(chunk_text_norm LIKE '%%görüşlerinizi%%')   AS taslak
-    FROM core_chunks GROUP BY file_id
-), uygun AS (
-    SELECT d.file_id FROM d JOIN core_files f USING (file_id)
-    WHERE NOT d.c0 AND NOT d.taslak AND f.status = 'COMPLETED'
-)
-SELECT count(DISTINCT c.file_id) AS dosya, count(*) AS chunk
-FROM core_chunks c JOIN uygun USING (file_id)
-WHERE c.chunk_text_norm LIKE %(kalip)s;
+# Konu başına DOSYA DAĞILIMI. İlk sürümde yalnız "N dosya kirpildi" yazıyordu --
+# hangi dosyanın kırpıldığı görünmüyordu, dolayısıyla yetkili kaynağın havuzda
+# olup da basılmamış olması ile hiç olmaması ayırt EDİLEMİYORDU.
+_SQL_KONU_DAGILIM = _UYGUN + """
+SELECT f.file_name, count(*) AS vurus,
+       bool_or(c.section_title ILIKE %(baslik)s) AS baslikta
+FROM core_chunks c JOIN uygun USING (file_id) JOIN core_files f USING (file_id)
+WHERE c.chunk_text_norm LIKE %(kalip)s
+GROUP BY f.file_name
+ORDER BY bool_or(c.section_title ILIKE %(baslik)s) DESC, count(*) DESC, f.file_name;
+"""
+
+# Keşif modu: adı verilen dosyanın metnini bas. "Yetkili kaynak desene takılmadı"
+# ile "korpusta yok" ancak böyle ayrılır.
+_SQL_DOSYA = _UYGUN + """
+SELECT f.file_name, f.status, s.c0, s.taslak, s.adla_elenen,
+       c.chunk_index, c.page_number, c.token_count, c.section_title, c.chunk_text
+FROM core_chunks c JOIN core_files f USING (file_id) JOIN s USING (file_id)
+WHERE f.file_name ILIKE %(ad)s AND c.chunk_index >= %(bas)s
+ORDER BY f.file_name, c.chunk_index
+LIMIT %(limit)s;
 """
 
 
-def _tara(conn, konular: list[dict], *, dosya_basi: int, limit: int) -> list[dict]:
+def _elenen_kalip() -> list[str]:
+    return [f"%{ad}%" for ad in ELENEN_DOSYA]
+
+
+def _tara(conn, konular: list[dict], *, dosya_basi: int, limit: int,
+          dagilim: int) -> list[dict]:
     from ragintel.text import normalize_for_quote
 
+    elenen = _elenen_kalip()
     out = []
     for k in konular:
         norm = normalize_for_quote(k["desen"])
-        kalip = "%" + norm + "%"
-        sayim = conn.execute(_SQL_KONU_SAYIM, {"kalip": kalip}).fetchone()
+        p = {"kalip": "%" + norm + "%", "baslik": "%" + k["desen"] + "%",
+             "elenen": elenen}
+        dag = conn.execute(_SQL_KONU_DAGILIM, p).fetchall()
         satirlar = conn.execute(
-            _SQL_KONU, {"kalip": kalip, "dosya_basi": dosya_basi, "limit": limit}
-        ).fetchall()
+            _SQL_KONU, {**p, "dosya_basi": dosya_basi, "limit": limit}).fetchall()
         out.append({**k, "normalize": norm,
-                    "dosya": sayim[0], "chunk": sayim[1],
+                    "dosya": len(dag), "chunk": sum(v for _, v, _ in dag),
+                    "dagilim": [{"file_name": fn, "vurus": v, "baslikta": b}
+                                for fn, v, b in dag[:dagilim]],
+                    "dagilim_kirpik": max(0, len(dag) - dagilim),
                     "isabetler": [
                         {"file_name": fn, "chunk_index": ci, "page_number": pn,
                          "token_count": tc, "section_title": st,
-                         "dosya_vurus": dv, "chunk_text": txt}
-                        for fn, ci, pn, tc, st, dv, txt in satirlar]})
+                         "dosya_vurus": dv, "baslik_isabeti": bi,
+                         "chunk_text": txt}
+                        for fn, ci, pn, tc, st, dv, bi, txt in satirlar]})
     return out
 
 
+def _dosya_kesfi(conn, adlar: list[str], *, bas: int, limit: int,
+                 metin: int) -> None:
+    elenen = _elenen_kalip()
+    for ad in adlar:
+        print()
+        print("=" * 100)
+        print(f"### DOSYA KESFI: {ad}   (chunk_index >= {bas}, ilk {limit})")
+        print("=" * 100)
+        satirlar = conn.execute(
+            _SQL_DOSYA, {"ad": f"%{ad}%", "bas": bas, "limit": limit,
+                         "elenen": elenen}).fetchall()
+        if not satirlar:
+            print("    ISABET YOK -- bu adla eslesen dosya korpusta yok.")
+            continue
+        gorulen = None
+        for (fn, durum, c0, taslak, adla, ci, pn, tc, st, txt) in satirlar:
+            if fn != gorulen:
+                gorulen = fn
+                bayrak = [x for x, v in
+                          (("C0-BOZUK", c0), ("TASLAK", taslak),
+                           ("ADLA-ELENEN", adla), (f"durum={durum}",
+                                                   durum != "COMPLETED")) if v]
+                print(f"\n  -- {fn}   [{', '.join(bayrak) or 'HAVUZDA'}]")
+            print(f"      chunk={ci:<5} s.{pn or 0:<4} {tc:>4} tok  "
+                  f"| {_clip(st, 70)}")
+            print(f"        {_clip(txt, metin)}")
+
+
 def _print_human(havuz, konular: list[dict], *, metin: int, limit: int) -> None:
-    toplam, e_c0, e_taslak, e_durum, h = havuz
+    toplam, e_c0, e_taslak, e_ad, e_durum, h = havuz
     print("=" * 100)
     print("GOLDEN v1 KAYNAK PROBU  (alinti BILGIDEN yazilmaz, METINDEN kesilir)")
     print("=" * 100)
     print(f"  havuz: {h} dosya / {toplam}")
     print(f"    elenen -- C0 artigi (reprocess bekliyor) : {e_c0}")
     print(f"    elenen -- gorse acilmis TASLAK           : {e_taslak}")
+    print(f"    elenen -- adla (mulga vb.)               : {e_ad}")
+    for ad, gerekce in ELENEN_DOSYA.items():
+        print(f"         · {ad}: {gerekce}")
     print(f"    elenen -- COMPLETED degil                : {e_durum}")
     print("  arama uretimle AYNI yoldan: normalize_for_quote -> chunk_text_norm LIKE")
+    print("  siralama: BOLUM BASLIGI eslesmesi > dosya vurusu  (maddeyi KOYAN metin")
+    print("            onde; ondan SOZ EDEN paragraf arkada)")
 
     for k in konular:
         print()
@@ -241,13 +319,18 @@ def _print_human(havuz, konular: list[dict], *, metin: int, limit: int) -> None:
             print("             Desen yanlis olabilir; once desen degistirilip tekrar")
             print("             olculmeli, 'korpusta yok' hukmu ondan sonra verilmeli.")
             continue
-        kirpik = k["dosya"] - len({i["file_name"] for i in k["isabetler"]})
-        print(f"    havuzda: {k['dosya']} dosya / {k['chunk']} chunk"
-              + (f"   (basilan {limit} satir, {kirpik} dosya kirpildi)" if kirpik > 0 else ""))
+        print(f"    havuzda: {k['dosya']} dosya / {k['chunk']} chunk")
+        # Dagilim, "yetkili kaynak havuzda var ama basilmadi" halini gorunur kilar.
+        pay = ", ".join(f"{_clip(d['file_name'], 34)}"
+                        f"{'*' if d['baslikta'] else ''}={d['vurus']}"
+                        for d in k["dagilim"])
+        print(f"    dosyalar (*=bolum basliginda): {pay}"
+              + (f" ... +{k['dagilim_kirpik']}" if k["dagilim_kirpik"] else ""))
         for i in k["isabetler"]:
             print(f"      · {_clip(i['file_name'], 52):<52} chunk={i['chunk_index']:<5} "
                   f"s.{i['page_number'] or 0:<4} {i['token_count']:>4} tok  "
-                  f"dosya_vurus={i['dosya_vurus']}")
+                  f"dosya_vurus={i['dosya_vurus']}"
+                  f"{'  [BASLIK]' if i['baslik_isabeti'] else ''}")
             if i["section_title"]:
                 print(f"        bolum: {_clip(i['section_title'], 80)}")
             print(f"        {_clip(i['chunk_text'], metin)}")
@@ -265,6 +348,15 @@ def main() -> int:
                     help="Konu basina toplam kac satir basilsin")
     ap.add_argument("--metin", type=int, default=500,
                     help="Her chunk'tan basilacak karakter (alinti bundan kesilir)")
+    ap.add_argument("--dagilim", type=int, default=6,
+                    help="Konu basina kac dosya adi tek satirda listelensin")
+    ap.add_argument("--dosya", action="append", default=None,
+                    help="KESFI MODU: adi verilen dosyanin metnini bas (konu taramasi "
+                         "yapilmaz). Yetkili kaynak desene takilmadiysa buradan bakilir")
+    ap.add_argument("--dosya-bas", type=int, default=0,
+                    help="Kesfi modu: bu chunk_index'ten itibaren bas")
+    ap.add_argument("--dosya-limit", type=int, default=8,
+                    help="Kesfi modu: kac chunk basilsin")
     ap.add_argument("--liste", action="store_true", help="Konu id'lerini bas ve cik")
     ap.add_argument("--json", action="store_true", help="Ham JSON bas")
     args = ap.parse_args()
@@ -290,8 +382,14 @@ def main() -> int:
     db = Database(DbSettings()).open()
     try:
         with db.connection() as conn:
-            havuz = conn.execute(_SQL_HAVUZ).fetchone()
-            veri = _tara(conn, konular, dosya_basi=args.dosya_basi, limit=args.limit)
+            if args.dosya:
+                _dosya_kesfi(conn, args.dosya, bas=args.dosya_bas,
+                             limit=args.dosya_limit, metin=args.metin)
+                return 0
+            havuz = conn.execute(
+                _SQL_HAVUZ, {"elenen": _elenen_kalip()}).fetchone()
+            veri = _tara(conn, konular, dosya_basi=args.dosya_basi,
+                         limit=args.limit, dagilim=args.dagilim)
     finally:
         close = getattr(db, "close", None)
         if callable(close):
