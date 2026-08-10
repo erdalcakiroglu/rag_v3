@@ -69,14 +69,34 @@ def _kontrol_temizle(s: str) -> str:
         for c in s)
 
 
+def _glif_coz(s: str) -> str:
+    """Bozuk alt-küme fontunun kaydırmasını GERİ ALIR (ölçüldü 2026-08-10).
+
+    file_id=24 chunk#297'de her kontrol karakteri, ASCII karşılığının 29 eksiğiydi:
+    \\x18\\x17\\x1a\\x15 → "5472", \\x14\\x17\\x11\\x13\\x16\\x11\\x15\\x13\\x13\\x19 → "14.03.2006".
+    Çözülen tablo 5411'in değişiklik kayıtlarıyla BİREBİR uyuşuyor (5472/26108,
+    5667/26537, 5754/26870, 6111/27857, KHK 662/28103) — yani kaydırma tahmin
+    değil, beş bağımsız satırla doğrulanmış bir eşleme. Bu dönüşüm 500'ü
+    gideriyorsa çözüm metni SİLMEK değil ONARMAK'tır.
+    """
+    return "".join(chr(ord(c) + 29) if ord(c) < 0x20 and c not in "\n\t" else c for c in s)
+
+
 DONUSUMLER: list[tuple[str, object]] = [
     ("pipe→bosluk (mevcut fallback)", lambda s: s.replace("|", " ")),
     ("NFKC", lambda s: unicodedata.normalize("NFKC", s)),
     ("kontrol/PUA karakterleri→bosluk", _kontrol_temizle),
+    ("glif kaydirmasi +29 COZ (onarim)", _glif_coz),
     ("bosluk sadelestirme", lambda s: " ".join(s.split())),
     ("ilk 2000 karakter", lambda s: s[:2000]),
     ("ilk 500 karakter", lambda s: s[:500]),
 ]
+
+# Kanarya: içeriği kesinlikle zararsız, kısa Türkçe metin. Zehirli bir istekten
+# SONRA bu da 500 verirse hata artık içerikten değil BACKEND DURUMUNDAN geliyordur
+# (model runner düşmüş olabilir) — o hâlde ardışık dönüşüm sonuçları OKUNAMAZ.
+# Bu ayrımı yapmadan "dönüşüm işe yaramadı" demek ölçüm hatası olur.
+KANARYA = "Bankacılık Kanunu kapsamında bankaların faaliyet izni Kurul kararıyla verilir."
 
 
 def _karakter_dokumu(metin: str, n: int = 12) -> list[tuple[str, str, int]]:
@@ -214,13 +234,21 @@ def _tara(orch, file_id: int, *, max_istek: int, chunk_limit: int | None) -> dic
         for ad, fn in DONUSUMLER:
             yeni = fn(c.chunk_text)  # type: ignore[operator]
             if yeni == c.chunk_text:
-                kayit["donusumler"].append({"ad": ad, "sonuc": "metni DEGISTIRMEDI"})
+                kayit["donusumler"].append({"ad": ad, "sonuc": "metni DEGISTIRMEDI",
+                                            "kanarya": "-"})
                 continue
+            # ÖNCE kanarya: backend zehirli istekten sonra ayakta mı? Değilse bu
+            # dönüşümün sonucu içerik hakkında HİÇBİR ŞEY söylemez.
+            k = z.patliyor_mu(KANARYA)
             p = z.patliyor_mu(yeni)
             kayit["donusumler"].append({
                 "ad": ad,
-                "sonuc": "butce bitti" if p is None else ("hala 500" if p else "GECTI")})
+                "sonuc": "butce bitti" if p is None else ("hala 500" if p else "GECTI"),
+                "kanarya": "-" if k is None else ("DUSTU" if k else "saglam")})
         kayit["minimal"] = z.en_kucuk_zehir(c.chunk_text)
+        son_kanarya = z.patliyor_mu(KANARYA)
+        kayit["kanarya_son"] = ("-" if son_kanarya is None
+                                else ("DUSTU" if son_kanarya else "saglam"))
         zehirli.append(kayit)
 
     return {"toplam_chunk": len(cho.chunks), "denenen": len(chunks),
@@ -257,8 +285,11 @@ def _bas(veri: dict, file_id: int) -> None:
         print(f"  BAS: {k['bas']!r}")
         print(f"  SON: {k['son']!r}")
         print("  Donusumler (hangisi 500'u gideriyor?):")
+        print("    kanarya = donusumden HEMEN ONCE gonderilen zararsiz metin. 'DUSTU'")
+        print("    ise backend o an ayakta degildi ve o satirin sonucu OKUNAMAZ.")
         for d in k["donusumler"]:
-            print(f"    {d['ad']:<38} -> {d['sonuc']}")
+            print(f"    {d['ad']:<38} -> {d['sonuc']:<18} (kanarya: {d['kanarya']})")
+        print(f"    bolmeden sonra kanarya: {k.get('kanarya_son', '-')}")
         m = k["minimal"]
         print(f"  EN KUCUK PATLAYAN PARCA ({m['durum']}, {m['adim']} bolme, "
               f"{len(m['parca'])} karakter):")
