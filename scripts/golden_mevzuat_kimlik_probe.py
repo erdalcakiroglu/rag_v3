@@ -18,15 +18,27 @@ BU PROBUN ÖLÇTÜĞÜ ŞEY BAŞLIKTAN BAĞIMSIZ:
       maddelerden OLUŞUR; kitap onlara atıf yapar. Oran normatif metni ayırır
       ve mevzuatın adını hiç bilmeden çalışır.
   (b) resmi gazete imzası -- yayım künyesi normatif metinde bulunur.
-  (c) chunk 0'ın HAM METNİ -- kapak sayfası. `mevzuat_1207.pdf`'in hangi
-      yönetmelik olduğu çıkarımla değil OKUNARAK öğrenilir. Asıl ürün budur:
-      dosya adı anlamsız olan korpusta ad->mevzuat kataloğu.
+  (c) İLK CHUNK'LARIN HAM METNİ -- kapak. `mevzuat_1207.pdf`'in hangi yönetmelik
+      olduğu çıkarımla değil OKUNARAK öğrenilir. Asıl ürün budur: dosya adı
+      anlamsız olan korpusta ad->mevzuat kataloğu. Tek chunk YETMİYOR (ölçüldü
+      2026-08-10): BDDK dosyalarında chunk 0 "Görüşlerinizi duzenleme@bddk.org.tr
+      adresine ... iletebilirsiniz" boilerplate'i ve asıl başlık bir sonraki
+      chunk'ta kalıyor -- 11 dosya bu yüzden kimliksiz göründü. Varsayılan 3 chunk.
+  (d) tslk / mulga -- görüşe açılmış TASLAK ve mülga metin golden'da doğru cevap
+      OLAMAZ. `mevzuat_1312.pdf` açıkça "TEBLİĞ TASLAĞI"; aynı boilerplate'i
+      taşıyan diğer dosyalar da şüpheli, bu yüzden ayrıca sayılır.
 
-ÜÇÜNCÜ SORU (ayrı bulgu): korpusun %80.9'u <=2 chunk'lık dosya (776 dosya TEK
-chunk). Bu ya gerçekten tek sayfalık BDDK tebliğleri ya da parse'ın neredeyse
-hiçbir şey çıkaramadığı dosyalar -- ikisi ÇOK farklı şeyler. Bölüm C ikisini
-token dağılımı + iki uçtan örnekle ayırır. Yorum okuyucuya bırakılmaz diye
-hem en küçük hem en büyük örnekler basılır.
+`madde_orani`nın BİLİNEN YANLIŞ-NEGATİFİ (ölçüldü, gizlenmedi): BDDK REHBERleri
+"MADDE 1" değil "1 -" numaralaması kullanır. `mevzuat_0943.pdf` (TFRS 9 Rehberi)
+ve `mevzuat_1040.pdf` (Sorunlu Alacak Rehberi) -- ikisi de gerçek normatif
+kaynak -- madde_orani=0.000 aldı. Oran POZİTİF sinyal olarak sağlamdır; sıfır
+olması "kaynak değil" demek DEĞİLDİR. Kapakla birlikte okunur.
+
+ÜÇÜNCÜ SORU -- KAPANDI (ölçüldü 2026-08-10): korpusun %80.9'u <=2 chunk'lık
+dosya (776 dosya TEK chunk). Kırık parse değil: token dağılımı min=107, q1=179,
+medyan=204, q3=240, max=508 ve <50 token bandında SIFIR dosya. İki uçtan örnek
+de aynı türü gösterdi -- tek sayfalık BDDK Kurul kararları. Bölüm C ölçümü
+korumak için duruyor (regresyon), yeni bir kalem açmaz.
 
 ÖLÇÜM-ZEMİNİ / GÜVENLİK:
   • Yalnız SELECT. DB/prod/config'e YAZMAZ, golden'a DOKUNMAZ.
@@ -86,16 +98,25 @@ WITH t AS (
            count(*) FILTER (WHERE chunk_text_norm LIKE '%%resmi gazete%%'
                                OR chunk_text_norm LIKE '%%resmî gazete%%') AS rg_chunk,
            count(*) FILTER (WHERE chunk_text_norm LIKE '%%yönetmelik%%'
-                               OR chunk_text_norm LIKE '%%tebliğ%%')       AS tur_chunk
+                               OR chunk_text_norm LIKE '%%tebliğ%%')       AS tur_chunk,
+           count(*) FILTER (WHERE chunk_text_norm LIKE '%%taslak%%'
+                               OR chunk_text_norm LIKE '%%görüşlerinizi%%') AS taslak_chunk,
+           count(*) FILTER (WHERE chunk_text_norm LIKE '%%mülga%%'
+                               OR chunk_text_norm LIKE '%%yürürlükten kaldır%%') AS mulga_chunk
     FROM core_chunks
     GROUP BY file_id
 ), kapak AS (
-    SELECT DISTINCT ON (file_id) file_id, chunk_text, page_number
-    FROM core_chunks
-    ORDER BY file_id, chunk_index
+    SELECT file_id,
+           string_agg(chunk_text, ' ' ORDER BY chunk_index) AS chunk_text,
+           min(page_number)                                 AS page_number
+    FROM (SELECT file_id, chunk_index, chunk_text, page_number,
+                 row_number() OVER (PARTITION BY file_id ORDER BY chunk_index) AS sira
+          FROM core_chunks) s
+    WHERE sira <= %(kapak_chunk)s
+    GROUP BY file_id
 )
 SELECT f.file_name, t.dosya_chunk, t.madde_chunk, t.rg_chunk, t.tur_chunk,
-       k.page_number, k.chunk_text
+       t.taslak_chunk, t.mulga_chunk, k.page_number, k.chunk_text
 FROM t
 JOIN core_files f USING (file_id)
 LEFT JOIN kapak  k USING (file_id)
@@ -143,13 +164,14 @@ ORDER BY 1 DESC, 3;
 """
 
 
-def _tara(conn, *, min_chunk: int, kimlik_limit: int, ornek: int) -> dict:
+def _tara(conn, *, min_chunk: int, kimlik_limit: int, ornek: int,
+          kapak_chunk: int) -> dict:
     kimlikler = [
         {"file_name": fn, "dosya_chunk": dc, "madde_chunk": mc, "rg_chunk": rg,
-         "tur_chunk": tc, "kapak_sayfa": sp, "kapak": kt,
-         "madde_orani": mc / max(dc, 1)}
-        for fn, dc, mc, rg, tc, sp, kt in conn.execute(
-            _SQL_KIMLIK, {"min_chunk": min_chunk}).fetchall()
+         "tur_chunk": tc, "taslak_chunk": ts, "mulga_chunk": mu,
+         "kapak_sayfa": sp, "kapak": kt, "madde_orani": mc / max(dc, 1)}
+        for fn, dc, mc, rg, tc, ts, mu, sp, kt in conn.execute(
+            _SQL_KIMLIK, {"min_chunk": min_chunk, "kapak_chunk": kapak_chunk}).fetchall()
     ]
     (taban_alti,) = conn.execute(_SQL_TABAN_ALTI, {"min_chunk": min_chunk}).fetchone()
     tek = conn.execute(_SQL_TEK_DAGILIM).fetchone()
@@ -181,7 +203,10 @@ def _print_human(env, veri: dict, *, min_chunk: int, kapak_uzunluk: int) -> None
     print("  Yonetmelik maddelerden OLUSUR (oran yuksek); kitap atif yapar (oran dusuk).")
     print("  Olcu mevzuatin ADINI bilmez -- baslik desenlerinin kusuru burada yok.")
     print("  rg = 'resmi gazete' gecen chunk (yayim kunyesi). Destekleyici isaret.")
-    print("  KAPAK = chunk 0'in ham metni: dosyanin HANGI mevzuat oldugu buradan OKUNUR.")
+    print("  tslk = 'taslak'/'goruslerinizi' gecen chunk. BDDK gorusue acilan metinleri")
+    print("         boyle isaretler -- YURURLUKTE OLMAYAN metin golden'da dogru cevap OLAMAZ.")
+    print("  mulga = 'mulga'/'yururlukten kaldir' gecen chunk. Ayni gerekce.")
+    print("  KAPAK = ilk chunk'larin ham metni: dosyanin HANGI mevzuat oldugu buradan OKUNUR.")
     print()
     print(f"  Havuz: madde_orani'na gore siralanmis {veri['kimlik_havuz']:,} dosya "
           f"(dosya_chunk >= {min_chunk}).")
@@ -194,7 +219,8 @@ def _print_human(env, veri: dict, *, min_chunk: int, kapak_uzunluk: int) -> None
     for k in veri["kimlikler"]:
         print(f"  {_clip(k['file_name'], 60):<60} chunk={k['dosya_chunk']:>5,}  "
               f"madde_or={k['madde_orani']:.3f} ({k['madde_chunk']:,})  "
-              f"rg={k['rg_chunk']:>3}  tur={k['tur_chunk']:>4}")
+              f"rg={k['rg_chunk']:>3}  tur={k['tur_chunk']:>4}  "
+              f"tslk={k['taslak_chunk']:>3}  mulga={k['mulga_chunk']:>3}")
         print(f"      KAPAK s.{k['kapak_sayfa'] or '-'}: {_clip(k['kapak'], kapak_uzunluk)}")
     print()
 
@@ -204,8 +230,11 @@ def _print_human(env, veri: dict, *, min_chunk: int, kapak_uzunluk: int) -> None
     d, en_az, q1, medyan, q3, en_cok, elli, ikiyuz = veri["tek_dagilim"]
     print(f"  TEK chunk'li dosya : {d:,}")
     print(f"  token dagilimi     : min={en_az}  q1={q1}  medyan={medyan}  q3={q3}  max={en_cok}")
-    print(f"  token < 50         : {elli:,}  ({100.0 * elli / max(d, 1):.1f}%)  <-- bu bant")
-    print("                       kirik parse suphesi: bir sayfalik teblig bile 300+ token")
+    print(f"  token < 50         : {elli:,}  ({100.0 * elli / max(d, 1):.1f}%)  <-- kirik")
+    print("                       parse bandi. OLCULDU (2026-08-10): 0 dosya. Tek-chunk'lik")
+    print("                       dosyalarin tamami tek sayfalik BDDK Kurul karari; medyan")
+    print("                       204 token ve dagilim dar -- kirik parsein uzun kuyrugu YOK.")
+    print("                       ONCEKI '300+ token' esigi tahmindi ve olcumle curudu.")
     print(f"  token < 200        : {ikiyuz:,}  ({100.0 * ikiyuz / max(d, 1):.1f}%)")
     print()
     print("  Iki uctan ornek (yalnizca bir uc basmak hukmu onceden belirler):")
@@ -225,7 +254,11 @@ def main() -> int:
                          "(kucuk paydada oran anlamsiz)")
     ap.add_argument("--kimlik-limit", type=int, default=60,
                     help="Bolum B'de basilacak dosya sayisi")
-    ap.add_argument("--kapak-uzunluk", type=int, default=220,
+    ap.add_argument("--kapak-chunk", type=int, default=3,
+                    help="KAPAK'a katilacak ilk chunk sayisi. BDDK dosyalarinda chunk 0 "
+                         "'Goruslerinizi ... iletebilirsiniz' boilerplate'i; ASIL BASLIK "
+                         "sonraki chunk'ta kaliyor")
+    ap.add_argument("--kapak-uzunluk", type=int, default=300,
                     help="Kapak metninden basilacak karakter")
     ap.add_argument("--ornek", type=int, default=5, help="Bolum C'de her uctan ornek")
     ap.add_argument("--json", action="store_true", help="Ham JSON bas")
@@ -239,7 +272,8 @@ def main() -> int:
         with db.connection() as conn:
             env = conn.execute(_SQL_ENVANTER).fetchone()
             veri = _tara(conn, min_chunk=args.min_chunk,
-                         kimlik_limit=args.kimlik_limit, ornek=args.ornek)
+                         kimlik_limit=args.kimlik_limit, ornek=args.ornek,
+                         kapak_chunk=args.kapak_chunk)
     finally:
         close = getattr(db, "close", None)
         if callable(close):
