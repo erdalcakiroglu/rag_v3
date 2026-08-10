@@ -54,6 +54,20 @@ from ragintel.ingestion.parsing.glyph_repair import (
 )
 
 
+def _sessizlestir() -> None:
+    """docling_core'un tablo basina bir kez bastigi deprecation gurultusunu kis.
+
+    Uretim kodu `tbl.export_to_dataframe()`'i `doc` argumani olmadan cagiriyor
+    (docling_backend.py:212) ve docling_core her tablo icin bir WARNING satiri
+    basiyor. 8 dosyalik bir taramada bu 1.900 satir oldu ve raporu bogdu.
+    Burada YALNIZ probun kendi cikti gurultusu kisilir -- uretim davranisi
+    degismez, deprecation'in kendisi ayri bir kalemdir.
+    """
+    import logging
+
+    logging.getLogger("docling_core.types.doc.document").setLevel(logging.ERROR)
+
+
 def _force_utf8() -> None:
     for stream in (sys.stdout, sys.stderr):
         rc = getattr(stream, "reconfigure", None)
@@ -495,7 +509,18 @@ ORDER BY (d.imza_chunk > 0 OR d.kay_chunk > 0) DESC,
 _KAYDIRMA_KAR = "".join(chr(k) for k in list(range(0x03, 0x09)) + list(range(0x0E, 0x20)))
 
 
-def bolum_j(db, bin_deger: float, sn_sayfa: float, kazanc: float = 0.98) -> int:
+# PARSE MALIYETI -- Bolum I ile OLCULDU (2026-08-10, 11 dosya / 3,910 sayfa):
+# ortalama 0.31 sn/sayfa, aykiri deger (Bankacilik_Terminolojisi_2.pdf: bastan
+# sona tablo, sayfalarin %8'i ama surenin %56'si) haric 0.15. Dagilim 0.04-2.08
+# ile 50 kat, yani tek bir ortalama KESTIRIMCI DEGIL -- surucusu sayfa sayisi
+# degil TABLO YOGUNLUGU. Varsayilan aykirili ortalamadir (ihtiyatli taraf).
+# Eski 1.00 varsayimi OCR'in maliyetiydi (H1b/G2: 1.00-1.24 sn/sayfa) ve
+# parse'a yanlislikla uygulaniyordu -- bu J'yi 3 kat fazla pahali gosteriyordu.
+_SN_PARSE = 0.31
+
+
+def bolum_j(db, bin_deger: float, sn_sayfa: float, kazanc: float = 0.98,
+            sn_parse: float = _SN_PARSE) -> int:
     print("=" * 100)
     print("BOLUM J  KESIN REPROCESS KAPSAMI -- hangi dosya, hangi tedavi?")
     print("=" * 100)
@@ -547,33 +572,41 @@ def bolum_j(db, bin_deger: float, sn_sayfa: float, kazanc: float = 0.98) -> int:
             print(f"  {fid:>5} {ad[:46]:<46} {imza:>5}/{imza_tb:<4} "
                   f"{kay:>4}/{kay_tb:<4} {tire:>5} {sayfa:>6,}  {etiket}")
 
-    def _ozet(ad: str, grup: list, pay: str) -> tuple[int, float]:
+    def _ozet(ad: str, grup: list, ocr_kolu: bool, pay: str) -> float:
         syf = sum(r[7] for r in grup)
-        dk = syf * sn_sayfa / 60.0
+        dk = syf * sn_parse / 60.0
+        ek = syf * sn_sayfa / 60.0 if ocr_kolu else 0.0
         bz = sum(r[2] + r[4] for r in grup)
-        print(f"  {ad:<12}: {len(grup):>3} dosya  {syf:>6,} sayfa  ~{dk:>4.0f} dk"
-              f"   bozuk chunk {bz:>5,}  ({pay})")
-        return syf, dk
+        tr = sum(r[6] for r in grup)
+        print(f"  {ad:<12}: {len(grup):>3} dosya {syf:>6,} sayfa  parse ~{dk:>4.0f} dk"
+              f"{'  +OCR <' + format(ek, '4.0f') + ' dk' if ocr_kolu else '' :<16}"
+              f"  imza/kay {bz:>5,}  tire {tr:>4,}  ({pay})")
+        return dk + ek
 
     print()
-    _, dk_y = _ozet("OCR-YOGUN", yogun,
-                    f"kazancin %{100 * birikim / max(top_bozuk, 1):.1f}'i")
-    _, dk_k = _ozet("OCR-KUYRUK", kuyruk,
-                    f"kazancin %{100 * (top_bozuk - birikim) / max(top_bozuk, 1):.1f}'i")
-    _, dk_c = _ozet("CLEAN", temiz, "imza/kaydirma YOK, yalniz 0x02")
-    print(f"  {'TOPLAM':<12}: {len(satirlar):>3} dosya  "
+    dk_y = _ozet("OCR-YOGUN", yogun, True,
+                 f"imza kazancinin %{100 * birikim / max(top_bozuk, 1):.1f}'i")
+    dk_k = _ozet("OCR-KUYRUK", kuyruk, True,
+                 f"imza kazancinin %{100 * (top_bozuk - birikim) / max(top_bozuk, 1):.1f}'i")
+    dk_c = _ozet("CLEAN", temiz, False, "imza/kaydirma YOK, yalniz 0x02")
+    print(f"  {'TOPLAM':<12}: {len(satirlar):>3} dosya "
           f"{sum(r[7] for r in ocr) + sum(r[7] for r in temiz):>6,} sayfa  "
-          f"~{dk_y + dk_k + dk_c:>4.0f} dk")
-    print(f"\n  [{sn_sayfa:.2f} sn/sayfa varsayimi -- KITAP katmaninda OLCULMEDI.")
-    print("   G'de 1.45, kucuk mevzuat'ta 0.10 sn/sayfa cikti (14 kat fark).")
-    print("   Gercek deger icin: --tire-tarama 6 --katman buyuk]")
+          f"~{dk_y + dk_k + dk_c:.0f} dk (OCR ust siniriyla)")
+    print(f"\n  [parse {sn_parse:.2f} sn/sayfa = Bolum I olcumu; OCR EK maliyeti")
+    print(f"   {sn_sayfa:.2f} sn/sayfa (G2: 1.24) ve yalniz ISARETLI sayfalara")
+    print("   biner -- '+OCR <' sutunu bu yuzden UST SINIRDIR, gercegin cok")
+    print("   ustunde. Parse hizi 0.04-2.08 arasi degisir; surucusu sayfa sayisi")
+    print("   degil tablo yogunlugudur (--tire-tarama ile yeniden olcun).]")
     print("\n  'tb' sutunu = o bozuklugun TABLO kokenli olan payi. Buyuk olmasi")
     print("  dc99c78'in (tablo-farkinda tetik) neyi kurtardigini gosterir.")
+    print("\n  KUYRUK BIR KESME CIZGISI DEGIL, ONCELIK SIRASIDIR: siralama yalniz")
+    print("  imza+kaydirmaya bakar, oysa kuyruktaki dosyalar da 'tire' sutunu")
+    print("  kadar 0x02 onarimi kazanir. Butun kapsam zaten ~1-2 saat; atlamak")
+    print("  yerine sirayla kosmak daha az karisiktir.")
     print("\n  --- calistirilacak komutlar (SALT ONERI; bu prob YAZMAZ) ---")
-    for ad, grup, dk in (("1) OCR-YOGUN -- once bu", yogun, dk_y),
-                         ("2) CLEAN", temiz, dk_c),
-                         ("3) OCR-KUYRUK -- bedeli kazancindan buyuk, ISTEGE BAGLI",
-                          kuyruk, dk_k)):
+    for ad, grup, dk in (("1) OCR-YOGUN -- imza kazancinin tamami burada", yogun, dk_y),
+                         ("2) CLEAN -- OCR yok, yalniz 0x02", temiz, dk_c),
+                         ("3) OCR-KUYRUK -- en dusuk oncelik", kuyruk, dk_k)):
         print(f"  # {ad} ({len(grup)} dosya, ~{dk:.0f} dk)")
         print(f"  for i in {' '.join(str(r[0]) for r in grup)}; do "
               f"ragintel ingest reprocess $i; done\n")
@@ -867,6 +900,7 @@ def bolum_g(db, dosya_adi: str, sayfa: int, bas_sayfa: int, bin_deger: float | N
 
 def main() -> int:
     _force_utf8()
+    _sessizlestir()
     ap = argparse.ArgumentParser()
     ap.add_argument("--dosya", metavar="DOSYA_ADI",
                     help="Bolum G: tek dosyada uctan uca onarim (parse eder, yavas)")
@@ -900,6 +934,9 @@ def main() -> int:
     ap.add_argument("--kazanc-payi", type=float, default=0.98, dest="kazanc",
                     metavar="P", help="Bolum J: OCR kolunu YOGUN/KUYRUK ayiran "
                                       "kumulatif kazanc payi (varsayilan 0.98)")
+    ap.add_argument("--sn-parse", type=float, default=_SN_PARSE, dest="sn_parse",
+                    metavar="N", help=f"Bolum J: parse s/sayfa (olculen: "
+                                      f"{_SN_PARSE}; aykiri haric 0.15)")
     a = ap.parse_args()
 
     from ragintel.config.settings import DbSettings
@@ -914,7 +951,8 @@ def main() -> int:
         if a.tire_tarama is not None:
             return bolum_i(db, max(1, a.tire_tarama), a.katman)
         if a.kapsam:
-            return bolum_j(db, esik, a.sn_sayfa, min(max(a.kazanc, 0.0), 1.0))
+            return bolum_j(db, esik, a.sn_sayfa, min(max(a.kazanc, 0.0), 1.0),
+                           a.sn_parse)
         if a.sinir is not None:
             return bolum_h2(db, esik, max(1, a.sinir))
         return bolum_h(db, esik, a.sn_sayfa)

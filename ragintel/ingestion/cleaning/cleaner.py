@@ -52,9 +52,18 @@ _INLINE_WS = re.compile(r"[^\S\n]+")   # newline hariç ardışık boşluk
 # "Şubat" ile "risk-weighted" ayrılamaz ve tercih Türkçeden yana yapıldı:
 # korpus ve sorgular Türkçe, kaybedilen terimler Basel tablolarında kalıyor.
 #
-# DÜZYAZIDA DA GEREKLİ: `_strip_junk` 0x02'yi SİLER ve geriye "Şu bat" kalır —
-# DB'den görünmeyen, sessiz bir bozulma. Bu yüzden onarım `_strip_junk`tan
-# ÖNCE koşar ve tablolara da uygulanır.
+# SIRALAMA: onarım `_strip_junk`tan ÖNCE koşar. Sonra koşsaydı `_strip_junk`
+# 0x02'yi siler, geriye "Şu bat" kalır ve bağlam geri getirilemezdi.
+#
+# DEĞER TAMAMEN TABLO KOLUNDA (ölçüldü, `glif_onarim_probe` Bölüm I, 2026-08-10):
+# stored chunk'ında en çok 0x02 taşıyan 8 dosya ile en büyük 4 dosya parse
+# edilip temizlikten ÖNCE sayıldı — düzyazıda 12 dosyanın 12'sinde 0x02 = 0,
+# tabloda 709 geçiş. Yani docling'in metin katmanı düzyazıyı zaten
+# normalleştiriyor, glif yalnız TableFormer hücrelerinden geçiyor. Düzyazı kolu
+# bu korpusta HİÇ ateşlemiyor; savunma amaçlı ve bedelsiz (`not in text` ön
+# kontrolü) tutuluyor, ama "54 dosya bir alt sınırdır" varsayımı ÇÜRÜDÜ:
+# 0x02 kapsamı gerçekten tabloya özgü. Asıl kazanç, tablolara açılan dar
+# İP-2 istisnasıdır (`_tabloyu_onar`).
 TIRE_GLIF = "\x02"
 _TIRE = re.compile(r"(?<=[^\W\d_])\x02[ \t]?(?=([^\W\d_]))")
 
