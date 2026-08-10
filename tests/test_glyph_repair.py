@@ -98,6 +98,24 @@ def test_mesru_duzen_karakterleri_bozulma_sayilmaz():
     assert c0_yogunlugu(SAGLAM + "\n\t\r\x0b\x0c" * 20) == 0.0
 
 
+def test_tire_glifi_ocr_tetiklemez():
+    """0x02 TİRE glifidir (Bölüm F+G) — cleaning kayıpsız onarır.
+
+    Tam-sayfa OCR temiz düzyazıda %12.4 kayıp veriyor; onarılabilir bir
+    karakter için o bedeli ödemek yanlış. Bölüm D: yalnız 0x01/0x02 taşıyan
+    49 dosya vardı, gerçek kaydırma izi taşıyan yalnız 8.
+    """
+    hecelenmis = SAGLAM.replace("faaliyet", "faali\x02 yet")
+    assert c0_yogunlugu(hecelenmis) == 0.0
+    assert bozuk_sayfalar(_belge(_sayfa(1, hecelenmis))) == set()
+
+
+def test_tire_glifi_kaydirma_tespitini_zayiflatmaz():
+    """Aile-A kaydırması 0x03'ten başlar (0x20 - 0x1D); 0x02 onun dışında."""
+    assert "\x02" not in BOZUK_A
+    assert c0_yogunlugu(BOZUK_A) >= 0.5
+
+
 def test_imzasiz_kaydirilmis_sayfa_yalniz_c0_koluyla_yakalanir():
     """Kol-2'nin varlık sebebi: imza kolu bu sayfayı GÖRMÜYOR."""
     assert imza_yogunlugu(BOZUK_A) == 0.0            # kol-1 kör

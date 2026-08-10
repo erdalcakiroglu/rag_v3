@@ -59,7 +59,17 @@ IMZA = _IMZA_A + _IMZA_B
 
 # Meşru düzen kontrol karakterleri: sayfa/satır/sekme ayraçları. Bunlar bozulma
 # kanıtı DEĞİLDİR ve C0 ölçütünün dışında tutulur.
-MESRU_KONTROL = "\t\n\r\x0b\x0c"
+#
+# 0x02 de burada: TİRE glifidir (ölçüldü — c0_tanim_probe Bölüm F+G, 1155 geçiş
+# / 54 dosya) ve `cleaning.cleaner.onar_tire_glifi` tarafından KAYIPSIZ onarılır.
+# OCR'a gerek yoktur; tersine zararlıdır — tam-sayfa OCR temiz düzyazıda %12.4
+# kayıp ölçüldü. Aile-A kaydırması 0x03'ten başlar (0x20 - 0x1D), yani 0x02'yi
+# dışarıda bırakmak kaydırma tespitini ZAYIFLATMAZ.
+# BÜTÇE ETKİSİ (Bölüm D): yalnız 0x01/0x02 taşıyan 49 dosya / 519 chunk vardı;
+# gerçek kaydırma izi taşıyan yalnız 8 dosya / 241 chunk. H1b'nin "22 dosya,
+# 95 dk, kazancın %1'i" kuyruğu büyük ölçüde budur.
+# 0x01 ÖLÇÜLMEDİ, bu yüzden trigger'da KALIYOR — kanıt gelmeden çıkarılmaz.
+MESRU_KONTROL = "\t\n\r\x0b\x0c\x02"
 
 
 def imza_yogunlugu(metin: str) -> float:
@@ -80,7 +90,8 @@ def c0_yogunlugu(metin: str) -> float:
     budur ve bu ölçüt onu kapatır.
 
     `MESRU_KONTROL` dışarıda: \\n\\t\\r ile \\x0B/\\x0C (dikey sekme, sayfa
-    ayracı) her PDF'te meşru olarak bulunur.
+    ayracı) her PDF'te meşru olarak bulunur. \\x02 de dışarıda — tire glifidir
+    ve cleaning kayıpsız onarır; OCR bütçesini onun için harcamak yanlış.
     """
     n = len(metin)
     if n == 0:
