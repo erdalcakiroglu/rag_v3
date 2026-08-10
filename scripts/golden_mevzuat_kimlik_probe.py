@@ -99,7 +99,13 @@ WITH t AS (
                                OR chunk_text_norm LIKE '%%resmî gazete%%') AS rg_chunk,
            count(*) FILTER (WHERE chunk_text_norm LIKE '%%yönetmelik%%'
                                OR chunk_text_norm LIKE '%%tebliğ%%')       AS tur_chunk,
+           -- 'taslağ' kolu ZORUNLU: k->ğ yumusamasi yuzunden yalniz "taslak" arayan
+           -- desen basliktaki "TASLAĞI"yi GORMEZ. 2026-08-10'da tslk sutununun 11
+           -- taslak dosyasinda 1-2 cikmasinin sebebi buydu; hukmu kapak metni
+           -- kurtardi, sayac degil. (Yorumda da tek yuzde isareti YASAK: psycopg
+           -- paramstyle'i yorumu ayirmaz, kacissiz olan kosum-ani hataya doner.)
            count(*) FILTER (WHERE chunk_text_norm LIKE '%%taslak%%'
+                               OR chunk_text_norm LIKE '%%taslağ%%'
                                OR chunk_text_norm LIKE '%%görüşlerinizi%%') AS taslak_chunk,
            count(*) FILTER (WHERE chunk_text_norm LIKE '%%mülga%%'
                                OR chunk_text_norm LIKE '%%yürürlükten kaldır%%') AS mulga_chunk
@@ -164,6 +170,82 @@ ORDER BY 1 DESC, 3;
 """
 
 
+# --- Bölüm D: yürürlükteki resmî başlıklar ------------------------------------
+# NEDEN AYRI BÖLÜM: Bölüm B'nin `dosya_chunk >= --min-chunk` TABANI var; 2026-08-10
+# ölçümünde 978 dosya tabanın altında kaldı. Tabanı olan bir ölçüden "korpusta
+# yok" hükmü ÇIKARILAMAZ. Bölüm D taban KOYMAZ: her dosyanın kapak bölgesini
+# resmî başlıkla tarar, "yok" hükmü ancak buradan okunur.
+#
+# AYIRT EDEN: başlık KAPAKTA (ilk N chunk) geçiyorsa dosya O mevzuattır; yalnız
+# GÖVDEDE geçiyorsa atıftır. İkisi ayrı sayılır, toplanmaz -- bir yönetmeliğin
+# adını en çok, o yönetmelik hakkındaki kitap anar.
+#
+# TASLAK TUZAĞI (ölçüldü 2026-08-10): BDDK'nın Basel-IV paketi korpusta yalnızca
+# görüşe açılmış TASLAK olarak duruyor (`mevzuat_1290` = Sermaye Yeterliliği
+# Yönetmelik TASLAĞI). Resmî başlık taslakta da birebir geçer, o yüzden her
+# isabette 'taslak' işareti AYRICA basılır; yoksa taslak yürürlükteki metin
+# sanılır ve golden'a yanlış dayanak girer.
+RESMI_BASLIKLAR: list[dict] = [
+    # Desenler tam başlık DEĞİL, ayırt edici parçadır: tam başlık chunk sınırına
+    # bölünebilir ya da parse boşluğuyla kırılabilir; kısa parça buna dayanıklıdır.
+    {"ad": "Sermaye Yeterliliği Yönetmeliği",
+     "desen": "sermaye yeterliliğinin ölçülmesine"},
+    {"ad": "Likidite Karşılama Oranı Yönetmeliği",
+     "desen": "likidite karşılama oranı hesaplamasına"},
+    {"ad": "Likidite Yeterliliği Yönetmeliği",
+     "desen": "likidite yeterliliğinin ölçülmesine"},
+    {"ad": "Karşılıklar Yönetmeliği",
+     "desen": "ayrılacak karşılıklara ilişkin"},
+    {"ad": "Sır Niteliğindeki Bilgiler Yönetmeliği",
+     "desen": "sır niteliğindeki bilgilerin paylaşılması hakkında"},
+    {"ad": "Bilgi Sistemleri ve Elektronik Bankacılık Yönetmeliği",
+     "desen": "bilgi sistemleri ve elektronik bankacılık hizmetleri hakkında"},
+    {"ad": "Kaldıraç Düzeyi Yönetmeliği",
+     "desen": "kaldıraç düzeyinin ölçülmesine"},
+    {"ad": "Sistemik Önemli Bankalar Yönetmeliği",
+     "desen": "sistemik önemli bankalar hakkında"},
+    {"ad": "Sermaye Tamponları Yönetmeliği",
+     "desen": "sermaye koruma ve döngüsel sermaye tamponlarına"},
+    {"ad": "YP Net Genel Pozisyon Yönetmeliği",
+     "desen": "yabancı para net genel pozisyon"},
+    {"ad": "Özkaynaklar Yönetmeliği",
+     "desen": "bankaların özkaynaklarına ilişkin yönetmelik"},
+    {"ad": "İç Sistemler / İSEDES Yönetmeliği",
+     "desen": "iç sistemleri ve içsel sermaye yeterliliği değerlendirme"},
+    {"ad": "Kredi İşlemleri Yönetmeliği",
+     "desen": "bankaların kredi işlemlerine ilişkin yönetmelik"},
+    {"ad": "Destek Hizmeti Yönetmeliği",
+     "desen": "bankaların destek hizmeti almalarına"},
+]
+
+# TABAN YOK: her dosya taranır.
+# 'taslağ' kolu ZORUNLU: Türkçe k->ğ yumuşaması yüzünden LIKE '%taslak%' başlıkta
+# geçen "TASLAĞI"yı GÖRMEZ. Bölüm B'nin sayacındaki düşük tslk degerleri de bundandı.
+_SQL_BASLIK = """
+WITH n AS (
+    SELECT file_id, chunk_text_norm, page_number,
+           row_number() OVER (PARTITION BY file_id ORDER BY chunk_index) AS sira
+    FROM core_chunks
+), t AS (
+    SELECT file_id, count(*) AS dosya_chunk FROM core_chunks GROUP BY file_id
+)
+SELECT f.file_name,
+       f.status,
+       t.dosya_chunk,
+       min(n.page_number) FILTER (WHERE n.sira <= %(kapak_chunk)s) AS kapak_sayfa,
+       count(*)           FILTER (WHERE n.sira <= %(kapak_chunk)s) AS kapak_vurus,
+       count(*)           FILTER (WHERE n.sira >  %(kapak_chunk)s) AS govde_vurus,
+       bool_or(n.chunk_text_norm LIKE '%%taslak%%'
+            OR n.chunk_text_norm LIKE '%%taslağ%%')                AS taslak
+FROM n
+JOIN core_files f USING (file_id)
+JOIN t          USING (file_id)
+WHERE n.chunk_text_norm LIKE %(kalip)s
+GROUP BY f.file_name, f.status, t.dosya_chunk
+ORDER BY count(*) FILTER (WHERE n.sira <= %(kapak_chunk)s) DESC, f.file_name;
+"""
+
+
 def _tara(conn, *, min_chunk: int, kimlik_limit: int, ornek: int,
           kapak_chunk: int) -> dict:
     kimlikler = [
@@ -174,12 +256,27 @@ def _tara(conn, *, min_chunk: int, kimlik_limit: int, ornek: int,
             _SQL_KIMLIK, {"min_chunk": min_chunk, "kapak_chunk": kapak_chunk}).fetchall()
     ]
     (taban_alti,) = conn.execute(_SQL_TABAN_ALTI, {"min_chunk": min_chunk}).fetchone()
+
+    # Üretim eşlemesiyle AYNI normalizasyon: probun bulduğunu benchmark da bulur.
+    from ragintel.text import normalize_for_quote
+
+    basliklar = []
+    for b in RESMI_BASLIKLAR:
+        satirlar = conn.execute(_SQL_BASLIK, {
+            "kalip": "%" + normalize_for_quote(b["desen"]) + "%",
+            "kapak_chunk": kapak_chunk}).fetchall()
+        basliklar.append({**b, "isabetler": [
+            {"file_name": fn, "status": st, "dosya_chunk": dc, "kapak_sayfa": sp,
+             "kapak_vurus": kv, "govde_vurus": gv, "taslak": ts}
+            for fn, st, dc, sp, kv, gv, ts in satirlar]})
+
     tek = conn.execute(_SQL_TEK_DAGILIM).fetchone()
     ornekler = [
         {"uc": uc, "file_name": fn, "token_count": tk, "page": pg, "metin": txt}
         for uc, fn, tk, pg, txt in conn.execute(_SQL_TEK_ORNEK, {"n": ornek}).fetchall()
     ]
-    return {"kimlik_havuz": len(kimlikler),
+    return {"basliklar": basliklar,
+            "kimlik_havuz": len(kimlikler),
             "kimlikler": kimlikler[:kimlik_limit],
             "taban_alti": taban_alti,
             "tek_dagilim": tek,
@@ -245,6 +342,48 @@ def _print_human(env, veri: dict, *, min_chunk: int, kapak_uzunluk: int) -> None
     print()
 
 
+def _print_baslik(basliklar: list[dict], *, kapak_chunk: int) -> None:
+    print("-" * 100)
+    print("BOLUM D  YURURLUKTEKI RESMI BASLIK ARAMASI -- TABAN YOK, her dosya taranir")
+    print("-" * 100)
+    print("  Bolum B'nin chunk tabani var, bu bolumun YOK. 'Korpusta yok' hukmu ancak")
+    print("  BURADAN okunabilir; Bolum B'de gorunmemek yoklugu KANITLAMAZ.")
+    print(f"  KAPAK = baslik ilk {kapak_chunk} chunk'ta geciyor  -> dosya O mevzuattir.")
+    print("  atif  = baslik yalnizca sonraki chunk'larda geciyor -> dosya ondan BAHSEDIYOR.")
+    print("  TASLAK isareti = ayni dosyada 'taslak'/'taslag' geciyor. Yururlukte olmayan")
+    print("         metin golden'da dogru cevap OLAMAZ.")
+    print()
+    for b in basliklar:
+        kapakli = [i for i in b["isabetler"] if i["kapak_vurus"] > 0]
+        atif = [i for i in b["isabetler"] if i["kapak_vurus"] == 0]
+        saglam = [i for i in kapakli if not i["taslak"] and i["status"] == "COMPLETED"]
+        if not b["isabetler"]:
+            hukum = ("SIFIR VURUS -- desen yanlis da olabilir; sifir tek basina "
+                     "'yok' demek DEGILDIR")
+        elif not kapakli:
+            hukum = f"KAYNAK METIN YOK -- yalniz {len(atif)} dosyada ATIF olarak geciyor"
+        elif not saglam:
+            hukum = f"KULLANILAMAZ -- {len(kapakli)} kapak isabetinin hepsi taslak/COMPLETED-disi"
+        else:
+            hukum = f"KAYNAK VAR -- {len(saglam)} yururlukte aday"
+        print(f"  ### {b['ad']}")
+        print(f"      desen : {b['desen']}")
+        print(f"      HUKUM : {hukum}")
+        for i in kapakli:
+            isaret = "  <TASLAK>" if i["taslak"] else ""
+            if i["status"] != "COMPLETED":
+                isaret += f"  <{i['status']}: gold eslemesi bu dosyayi GOREMEZ>"
+            print(f"        [KAPAK] {_clip(i['file_name'], 50):<50} "
+                  f"chunk={i['dosya_chunk']:>5,} s.{str(i['kapak_sayfa'] or '-'):>4} "
+                  f"kapak={i['kapak_vurus']:>3} govde={i['govde_vurus']:>4}{isaret}")
+        for i in atif[:5]:
+            print(f"        [atif ] {_clip(i['file_name'], 50):<50} "
+                  f"chunk={i['dosya_chunk']:>5,} govde={i['govde_vurus']:>4}")
+        if len(atif) > 5:
+            print(f"        ... + {len(atif) - 5} atif dosyasi daha (kirpildi, hukmu degistirmez)")
+        print()
+
+
 def main() -> int:
     _force_utf8()
     ap = argparse.ArgumentParser(description=__doc__,
@@ -287,6 +426,7 @@ def main() -> int:
     else:
         _print_human(env, veri, min_chunk=args.min_chunk,
                      kapak_uzunluk=args.kapak_uzunluk)
+        _print_baslik(veri["basliklar"], kapak_chunk=args.kapak_chunk)
     return 0
 
 
