@@ -161,8 +161,16 @@ SELECT f.file_name, u.vurus, u.ilk_sayfa, u.vektorlu,
 FROM vurus u
 JOIN core_files f USING (file_id)
 JOIN toplam    t USING (file_id)
-ORDER BY (u.vurus::numeric / GREATEST(t.dosya_chunk, 1)) DESC, u.vurus DESC
-LIMIT %(limit)s;
+ORDER BY u.vurus DESC, (u.vurus::numeric / GREATEST(t.dosya_chunk, 1)) DESC;
+"""
+
+# Küçük payda artefaktının BOYUTU: tek-chunk'lık dosyalar yoğunlukta tanımı
+# gereği 1.000 alır. Kaç tane olduklarını bilmeden sıralama okunamaz.
+_SQL_KUCUK_DOSYA = """
+SELECT count(*) FILTER (WHERE n <= 1) AS tek,
+       count(*) FILTER (WHERE n <= 2) AS iki_alti,
+       count(*)                        AS toplam
+FROM (SELECT file_id, count(*) AS n FROM core_chunks GROUP BY file_id) s;
 """
 
 # Çapa adayları: alıntı ham maddesi. Uzun ve vektörlü chunk'lar önce.
@@ -181,7 +189,8 @@ LIMIT %(limit)s;
 """
 
 
-def _tara(conn, katalog: list[dict], *, dosya_limit: int, capa_limit: int) -> list[dict]:
+def _tara(conn, katalog: list[dict], *, dosya_limit: int, capa_limit: int,
+          min_chunk: int) -> list[dict]:
     """Her mevzuat için desen-bazlı vuruş + dosya dağılımı + çapa adayları."""
     from ragintel.text import normalize_for_quote
 
@@ -195,13 +204,24 @@ def _tara(conn, katalog: list[dict], *, dosya_limit: int, capa_limit: int) -> li
             desen_detay.append({"desen": ham, "chunk": ch, "dosya": ds, "vektorlu": vk})
 
         (dosya_sayisi,) = conn.execute(_SQL_DOSYA_SAYISI, {"kaliplar": kaliplar}).fetchone()
-        dosyalar = [
+        havuz = [
             {"file_name": fn, "vurus": v, "ilk_sayfa": sp, "vektorlu": vk,
              "dosya_chunk": dc, "ilk_chunk": ic, "baslikta": bs,
              "yogunluk": v / max(dc, 1)}
             for fn, v, sp, vk, dc, ic, bs in conn.execute(
-                _SQL_DOSYALAR, {"kaliplar": kaliplar, "limit": dosya_limit}).fetchall()
+                _SQL_DOSYALAR, {"kaliplar": kaliplar}).fetchall()
         ]
+        # İKİ sıralama: mutlak vuruş küçük paydaya kör, yoğunluk ise kaynak metni
+        # atıftan ayırır ama tek-chunk'lık dosyalarda anlamsız. Yoğunluk listesine
+        # taban konur; taban ALTINDAKİLER ayrıca sayılır (sessizce kırpılmaz).
+        yogun_aday = [d for d in havuz if d["dosya_chunk"] >= min_chunk]
+        dosyalar = {
+            "vurusa_gore": havuz[:dosya_limit],
+            "yogunluga_gore": sorted(
+                yogun_aday, key=lambda d: (-d["yogunluk"], -d["vurus"]))[:dosya_limit],
+            "taban_alti": len(havuz) - len(yogun_aday),
+            "havuz": len(havuz),
+        }
         capalar = [
             {"file_name": fn, "page": pg, "chunk_index": ix, "token_count": tk,
              "vektorlu": vk, "section_title": st, "metin": txt}
@@ -215,7 +235,8 @@ def _tara(conn, katalog: list[dict], *, dosya_limit: int, capa_limit: int) -> li
     return sonuc
 
 
-def _print_human(env, kayitlar: list[dict], capa_goster: int) -> None:
+def _print_human(env, kucuk, kayitlar: list[dict], capa_goster: int,
+                 min_chunk: int) -> None:
     dosya, chunk, vektorlu, tamamlanmamis = env
     print("BOLUM A  KORPUS ENVANTERI")
     print("=" * 100)
@@ -254,18 +275,35 @@ def _print_human(env, kayitlar: list[dict], capa_goster: int) -> None:
     print("  tekrar tekrar gecer (yogunluk yuksek, ilk_chunk kucuk, basligta=E);")
     print("  atif yapan kitapta bir-iki kez gecer (yogunluk ~0, ilk_chunk buyuk).")
     print("  Ucu birlikte okunur; tek bir isaret kesin degildir.")
-    for k in kayitlar:
-        if not k["dosyalar"]:
-            continue
-        print()
-        print(f"  ### {k['ad']}")
+    print()
+    print(f"  KUCUK PAYDA UYARISI: korpusta {kucuk[0]:,} dosya TEK chunk, {kucuk[1]:,} dosya")
+    print(f"  <=2 chunk ({100.0 * kucuk[1] / max(kucuk[2], 1):.1f}%). Bunlar yogunlukta")
+    print("  tanimi geregi 1.000 alir ve gercek kaynak metni asagi iter -- bu yuzden")
+    print(f"  yogunluk listesine taban kondu: dosya_chunk >= {min_chunk}. Mutlak vurus")
+    print("  listesi tabansizdir; ikisi birlikte okunur.")
+
+    def _tablo(baslik: str, satirlar: list[dict]) -> None:
+        print(f"    -- {baslik}")
         print(f"    {'dosya':<46} {'vurus':>6} {'top':>6} {'yogun':>7} "
               f"{'ilkchk':>7} {'sayfa':>6}  bslk")
-        for d in k["dosyalar"]:
+        if not satirlar:
+            print("    (yok)")
+            return
+        for d in satirlar:
             print(f"    {_clip(d['file_name'], 46):<46} {d['vurus']:>6,} "
                   f"{d['dosya_chunk']:>6,} {d['yogunluk']:>7.3f} "
                   f"{d['ilk_chunk']:>7,} {str(d['ilk_sayfa'] or '-'):>6}  "
                   f"{'E' if d['baslikta'] else '-'}")
+
+    for k in kayitlar:
+        d = k["dosyalar"]
+        if not d["havuz"]:
+            continue
+        print()
+        print(f"  ### {k['ad']}")
+        _tablo(f"EN COK VURUS (taban yok; {d['havuz']} dosya degiyor)", d["vurusa_gore"])
+        _tablo(f"EN YOGUN (dosya_chunk >= {min_chunk}; "
+               f"{d['taban_alti']} dosya taban altinda kaldi)", d["yogunluga_gore"])
     print()
 
     print("-" * 100)
@@ -315,6 +353,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="Yalniz bu anahtar(lar)i tara (yinelenebilir). Orn: --mevzuat tfrs9")
     ap.add_argument("--dosya-limit", type=int, default=8, help="Mevzuat basi listelenecek dosya")
     ap.add_argument("--capa-limit", type=int, default=6, help="Mevzuat basi cekilecek capa adayi")
+    ap.add_argument("--min-chunk", type=int, default=20,
+                    help="Yogunluk siralamasinin tabani: bu kadar chunk'i olmayan dosya "
+                         "yogunluk listesine girmez (kucuk payda artefakti)")
     ap.add_argument("--capa-goster", type=int, default=2, help="Insan ciktisinda basilacak capa")
     ap.add_argument("--json", action="store_true", help="Ham JSON bas")
     args = ap.parse_args(argv)
@@ -335,8 +376,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with db.connection() as conn:
             env = conn.execute(_SQL_ENVANTER).fetchone()
+            kucuk = conn.execute(_SQL_KUCUK_DOSYA).fetchone()
             kayitlar = _tara(conn, katalog,
-                             dosya_limit=args.dosya_limit, capa_limit=args.capa_limit)
+                             dosya_limit=args.dosya_limit, capa_limit=args.capa_limit,
+                             min_chunk=args.min_chunk)
     finally:
         close = getattr(db, "close", None)
         if callable(close):
@@ -346,10 +389,12 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(
             {"envanter": {"dosya": env[0], "chunk": env[1], "vektorlu": env[2],
                           "tamamlanmamis": env[3]},
+             "kucuk_dosya": {"tek_chunk": kucuk[0], "iki_alti": kucuk[1],
+                             "toplam": kucuk[2]},
              "mevzuat": kayitlar},
             ensure_ascii=False, indent=2))
     else:
-        _print_human(env, kayitlar, args.capa_goster)
+        _print_human(env, kucuk, kayitlar, args.capa_goster, args.min_chunk)
     return 0
 
 
