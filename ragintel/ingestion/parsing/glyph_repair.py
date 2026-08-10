@@ -99,11 +99,59 @@ def bozukluk_yogunlugu(metin: str) -> float:
     return imza_yogunlugu(metin) + c0_yogunlugu(metin)
 
 
+def tablo_metinleri(parsed: ParsedDocument) -> dict[int, str]:
+    """Sayfa numarası -> o sayfanın tablolarının düzleştirilmiş metni.
+
+    `page_no` taşımayan tablolar (xlsx sayfaları) dışarıda kalır; onların
+    sayfa kavramı yoktur ve bu modül yalnız PDF sayfası için çağrılır.
+    """
+    kova: dict[int, list[str]] = {}
+    for t in parsed.tables:
+        if t.page_no is None or not t.flattened_text:
+            continue
+        kova.setdefault(t.page_no, []).append(t.flattened_text)
+    return {no: "\n".join(v) for no, v in kova.items()}
+
+
+def _birlesik(duzyazi: str, tablo: str) -> str:
+    """Yalnız UZUNLUK kapıları için — yoğunluk ASLA birleşik metinde ölçülmez."""
+    if not tablo:
+        return duzyazi
+    return f"{duzyazi}\n{tablo}" if duzyazi else tablo
+
+
+def en_bozuk(*parcalar: str) -> float:
+    """Parçaların EN YÜKSEK bozukluk yoğunluğu — toplamınki değil.
+
+    SEYRELTME YASAĞI: düzyazı ile tabloyu birleştirip tek yoğunluk ölçmek
+    yanlış NEGATİF üretir. 1000 karakterlik düzyazıda 50 C0 (yoğunluk 50)
+    yanına 100.000 karakterlik temiz bir tablo gelirse birleşik yoğunluk
+    0.495'e düşer ve 0.5 eşiğinin ALTINDA kalır — bugün yakalanan sayfa
+    yarın kaçardı. Parçalar ayrı ölçülüp maksimum alınınca düzyazı kolu
+    tabloların varlığından hiç etkilenmez; tablo kolu yalnızca EKLENİR.
+    """
+    return max((bozukluk_yogunlugu(p) for p in parcalar), default=0.0)
+
+
 def bozuk_sayfalar(
     parsed: ParsedDocument, *, imza_bin: float = 10.0, c0_bin: float = 0.5,
     min_karakter: int = 200,
 ) -> set[int]:
     """Metin katmanı bozuk olan sayfa numaraları — İKİ ölçüt, VEYA'lı.
+
+    SAYFANIN METNİ İKİ PARÇADIR: `Page.text` (düzyazı) ve O SAYFANIN TABLOLARI.
+    `Page.text` yalnızca `text_blocks`tir; tablolar ParsedDocument'ta AYRI
+    alandır. Yalnız düzyazıya bakmak ÖLÇÜLMÜŞ bir kör nokta üretiyordu
+    (2026-08-10, `c0_tanim_probe` Bölüm E): korpusta C0 taşıyan 760 chunk'ın
+    **760'ı** tablo kökenliydi, düzyazı 0 — tablo tabanı %21.2 iken. Mekanizma:
+    `cleaner._strip_junk` düzyazıdaki tüm kategori-C karakterlerini siler,
+    `cleaner.py:121` tabloları muaf tutar. Düzyazısı temiz / tablosu bozuk
+    sayfa tespit DIŞINDA kalıyordu.
+
+    İKİ PARÇA AYRI ÖLÇÜLÜR, BİRLEŞTİRİLMEZ (bkz. `en_bozuk`): birleştirmek
+    büyük ve temiz bir tablonun bozuk düzyazıyı eşiğin altına seyreltmesine
+    yol açar. Her parça kendi eşiğine karşı tartılır, sayfa herhangi biri
+    tetiklerse işaretlenir.
 
     KOL-1 (imza): 1000 karakterde imza karakteri. Türkçe diyakritik yoğunluğu
     DEĞİL — bozulma diyakritiği yok etmiş olabilir de olmayabilir de (aile-B
@@ -122,26 +170,37 @@ def bozuk_sayfalar(
     Kol-2 kol-1'i kapsamaz: aynı ölçümde birlik 232 sayfa, tek başına C0 230 —
     yani imzanın tek başına yakaladığı 2 sayfa var. İki kol da gerekli.
 
-    `min_karakter` kısa sayfaları (kapak, boş sayfa, tek satırlık başlık)
-    dışarıda bırakır — orada yoğunluk tek bir karakterle patlar.
+    EŞİK YENİDEN ÖLÇÜLMEDİ ve gerekmiyor: ayrı ölçüm sayesinde DÜZYAZI KOLU
+    BİT BİT ESKİSİYLE AYNI kalır — tabloların varlığı onun paydasına dokunmaz,
+    yani 639 sayfalık temiz örneklemde ölçülen "yanlış pozitif sıfır" sonucu
+    aynen geçerlidir. Tablo kolu yalnızca EKLENİR ve ancak tablo metninin
+    KENDİSİ eşiği aşarsa tetikler.
+
+    `min_karakter` HER PARÇAYA AYRI uygulanır: kısa metinde yoğunluk tek
+    karakterle patlar ve bu tablo için de doğrudur. Kazanç şurada: düzyazısı
+    iki satır olan bir tablo sayfası eskiden tümüyle eleniyordu, artık
+    tablosu yeterince uzunsa değerlendirilir.
 
     KALAN KÖR NOKTA: kaynağında ne Türkçe diyakritik ne de boşluk bulunan bir
     sayfa (gerçekçi değil) hâlâ yakalanmaz. Ölçütün kapsamadığı üçüncü bir
     aile varsa bu iki kol onu da göstermez; kanıt gelmeden ölçüt eklenmez.
     """
     out: set[int] = set()
+    tablo = tablo_metinleri(parsed)
     for p in parsed.pages:
-        metin = p.text
-        if len(metin) < min_karakter:
-            continue
-        if imza_yogunlugu(metin) >= imza_bin:
-            out.add(p.page_no)
-        elif c0_bin > 0.0 and c0_yogunlugu(metin) >= c0_bin:
-            out.add(p.page_no)
+        for metin in (p.text, tablo.get(p.page_no, "")):
+            if len(metin) < min_karakter:
+                continue
+            if imza_yogunlugu(metin) >= imza_bin:
+                out.add(p.page_no)
+            elif c0_bin > 0.0 and c0_yogunlugu(metin) >= c0_bin:
+                out.add(p.page_no)
     return out
 
 
-def _daha_iyi(aday: Page, mevcut: Page | None) -> bool:
+def _daha_iyi(
+    aday: Page, mevcut: Page | None, *, aday_tablo: str = "", mevcut_tablo: str = "",
+) -> bool:
     """OCR sayfası mevcut sayfanın yerini almayı hak ediyor mu?
 
     İki koşul: (1) anlamlı miktarda metin üretmiş olmalı — OCR bir sayfayı hiç
@@ -152,16 +211,27 @@ def _daha_iyi(aday: Page, mevcut: Page | None) -> bool:
     sayfada imza yoğunluğu hem öncesinde hem sonrasında 0'dır; yalnız imzaya
     bakan karşılaştırma `0 < 0` verip OCR'ın doğru okumasını REDDEDER. O hâlde
     C0 kolu tetiklense bile onarım hiçbir sayfaya uygulanmazdı.
+
+    KARŞILAŞTIRMA TABLOYU DA İÇERİR — `bozuk_sayfalar` ile AYNI parçalar
+    üzerinden, ve aynı sebeple maksimumla (`en_bozuk`), toplamla değil. İkisi
+    ayrışırsa kol kendi kendini iptal eder: tablosu yüzünden seçilen bir sayfa,
+    düzyazısı zaten temiz olduğu için burada `0 < 0` ile reddedilir ve tespit
+    genişlemesi hiçbir işe yaramaz.
+
+    UZUNLUK kapıları ise birleşik metne bakar — onlar "OCR anlamlı hacimde
+    metin üretti mi" sorusudur, yoğunluk sorusu değil; tablo ağırlıklı bir
+    sayfa aksi hâlde "OCR boş döndü" sanılır.
     """
-    metin = aday.text
+    metin = _birlesik(aday.text, aday_tablo)
     if len(metin.strip()) < 40:
         return False
     if mevcut is None:
         return True
-    eski = mevcut.text
+    eski = _birlesik(mevcut.text, mevcut_tablo)
     if len(metin) < 0.25 * len(eski):
         return False
-    return bozukluk_yogunlugu(metin) < bozukluk_yogunlugu(eski)
+    return (en_bozuk(aday.text, aday_tablo)
+            < en_bozuk(mevcut.text, mevcut_tablo))
 
 
 def _sayfa_ofsetleri(sayfalar: list[Page]) -> dict[int, int]:
@@ -201,12 +271,18 @@ def birlestir(
 
     # OCR yalnız bir sayfa aralığıyla koşulmuş olabilir; sayfa listesi
     # referanstan alınır ki hiçbir sayfa DÜŞMESİN.
+    ref_tablo = tablo_metinleri(referans)
+    ocr_tablo = tablo_metinleri(ocr)
+
     kullanilan: set[int] = set()
     reddedilen: list[int] = []
     for no in sorted(set(ref_sayfa) | set(ocr_sayfa)):
         aday = ocr_sayfa.get(no) if no in ocr_sayfalar else None
         kaynak = ref_sayfa.get(no)
-        if aday is not None and _daha_iyi(aday, kaynak):
+        if aday is not None and _daha_iyi(
+            aday, kaynak,
+            aday_tablo=ocr_tablo.get(no, ""), mevcut_tablo=ref_tablo.get(no, ""),
+        ):
             kullanilan.add(no)
             kaynak = aday
         elif aday is not None:

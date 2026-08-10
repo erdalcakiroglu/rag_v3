@@ -124,6 +124,81 @@ def test_kisa_c0_sayfasi_degerlendirilmez():
     assert bozuk_sayfalar(pd) == set()
 
 
+# --- tespit: tablo kolu -----------------------------------------------------
+# ÖLÇÜM (c0_tanim_probe Bölüm E, 2026-08-10): korpusta C0 taşıyan 760 chunk'ın
+# 760'ı TABLO kökenli, düzyazı 0 — tablo tabanı %21.2 iken. Sebep: cleaner
+# düzyazıdaki C0'ı siler (cleaner.py:_strip_junk), tabloları muaf tutar
+# (cleaner.py:121). Tetik yalnız `Page.text` okuduğu sürece bu bozulmayı
+# yapısal olarak göremezdi.
+
+# Bozuk düzyazıyı 0.5 eşiğinin ALTINA seyreltecek kadar büyük TEMİZ tablo.
+# Kat sayısı ölçülerek seçildi: 200 kat yetmiyordu (0.699), 400 kat yetiyor.
+DEV_TEMIZ = SAGLAM * 400
+
+
+def _tablolu(metin: str, tablo: str, sayfa_no: int = 1) -> ParsedDocument:
+    pd = _belge(_sayfa(sayfa_no, metin))
+    pd.tables = [Table(index=0, data=[[tablo]], flattened_text=tablo,
+                       page_no=sayfa_no)]
+    return pd
+
+
+def test_duzyazisi_temiz_tablosu_bozuk_sayfa_yakalanir():
+    """KÖR NOKTANIN KENDİSİ: eski tetik burada boş küme dönerdi."""
+    pd = _tablolu(SAGLAM, BOZUK_A)
+    assert c0_yogunlugu(SAGLAM) == 0.0               # düzyazı gerçekten temiz
+    assert bozuk_sayfalar(pd) == {1}
+
+
+def test_bozuk_tablo_imza_koluyla_da_yakalanir():
+    """Tablo kolu iki ölçütü de taşır, yalnız C0'ı değil."""
+    assert bozuk_sayfalar(_tablolu(SAGLAM, BOZUK), c0_bin=0.0) == {1}
+
+
+def test_temiz_tablo_yanlis_pozitif_uretmez():
+    assert bozuk_sayfalar(_tablolu(SAGLAM, SAGLAM)) == set()
+
+
+def test_buyuk_temiz_tablo_bozuk_duzyaziyi_SEYRELTMEZ():
+    """REGRESYON: parçalar birleştirilip tek yoğunluk ölçülseydi bu sayfa KAÇARDI.
+
+    Düzyazı tek başına eşiğin çok üstünde; yanına yeterince büyük temiz bir
+    tablo konunca birleşik yoğunluk 0.5'in ALTINA düşer (ilk satır bunu
+    kanıtlıyor, varsaymıyor). `en_bozuk` maksimum aldığı için düzyazı kolu
+    tablonun varlığından hiç etkilenmez.
+    """
+    pd = _tablolu(BOZUK_A, DEV_TEMIZ)
+    assert c0_yogunlugu(BOZUK_A + "\n" + DEV_TEMIZ) < 0.5   # seyrelme gerçek
+    assert bozuk_sayfalar(pd) == {1}                        # yine de yakalanır
+
+
+def test_kisa_duzyazili_tablo_sayfasi_artik_degerlendirilir():
+    """İçindekiler/tablo sayfası: düzyazı `min_karakter` altında, tablo değil."""
+    pd = _tablolu("Tablo 3.1", BOZUK_A)
+    assert len("Tablo 3.1") < 200 <= len(BOZUK_A)
+    assert bozuk_sayfalar(pd) == {1}
+
+
+def test_kisa_tablo_degerlendirilmez():
+    """`min_karakter` tabloya da uygulanır — kısa metinde yoğunluk patlar."""
+    assert bozuk_sayfalar(_tablolu(SAGLAM, _kaydir("Toplam 12"))) == set()
+
+
+def test_sayfasiz_tablo_tespiti_bozmaz():
+    """xlsx tablosunun `page_no`su yoktur; hiçbir sayfaya iliştirilemez."""
+    pd = _belge(_sayfa(1, SAGLAM))
+    pd.tables = [Table(index=0, data=[[BOZUK_A]], flattened_text=BOZUK_A,
+                       page_no=None, sheet_name="Sayfa1")]
+    assert bozuk_sayfalar(pd) == set()
+
+
+def test_ayni_sayfanin_tablolari_birlikte_tartilir():
+    pd = _belge(_sayfa(1, SAGLAM))
+    pd.tables = [Table(index=0, data=[["x"]], flattened_text=SAGLAM, page_no=1),
+                 Table(index=1, data=[["y"]], flattened_text=BOZUK_A, page_no=1)]
+    assert bozuk_sayfalar(pd) == {1}
+
+
 # --- birleştirme ------------------------------------------------------------
 
 def test_bozuk_sayfa_ocrdan_saglam_sayfa_referanstan_gelir():
@@ -199,6 +274,36 @@ def test_tablo_sayfasiyla_birlikte_tasinir_ve_yeniden_numaralanir():
     assert [(t.index, t.page_no, t.flattened_text) for t in out.tables] == [
         (0, 1, "a"), (1, 2, "ocr2"),
     ]
+
+
+def test_tablosu_yuzunden_secilen_sayfa_gercekten_onarilir():
+    """REGRESYON: tespit tabloyu görüp `_daha_iyi` görmezse kol kendini iptal eder.
+
+    Düzyazı iki tarafta da temiz (yoğunluk 0). Yalnız düzyazıya bakan bir
+    karşılaştırma `0 < 0` verip OCR'ı reddeder, sayfa alınmaz ve tablo bozuk
+    kalır — tespiti genişletmek hiçbir işe yaramamış olurdu.
+    """
+    ref = _tablolu(SAGLAM, BOZUK_A)
+    ocr = _tablolu(SAGLAM, TEMIZ_ASCII)
+    assert bozuk_sayfalar(ref) == {1}
+    out = birlestir(ref, ocr, {1})
+    assert [t.flattened_text for t in out.tables] == [TEMIZ_ASCII]
+    assert bozuk_sayfalar(out) == set()
+
+
+def test_ocr_tabloyu_bozduysa_sayfa_degistirilmez():
+    """Tek yönlülük tablo kolu için de geçerli."""
+    ref = _tablolu(SAGLAM, TEMIZ_ASCII)
+    out = birlestir(ref, _tablolu(SAGLAM, BOZUK_A), {1})
+    assert [t.flattened_text for t in out.tables] == [TEMIZ_ASCII]
+
+
+def test_tablosu_temiz_duzyazisi_bozuk_sayfada_tablo_seyreltme_yapmaz():
+    """`_daha_iyi` de maksimum alır: dev temiz tablo bozuk düzyazıyı örtmez."""
+    ref = _tablolu(BOZUK_A, DEV_TEMIZ)
+    out = birlestir(ref, _tablolu(TEMIZ_ASCII, DEV_TEMIZ), {1})
+    assert out.pages[0].text == TEMIZ_ASCII          # onarım UYGULANDI
+    assert bozuk_sayfalar(out) == set()
 
 
 def test_sekiller_her_zaman_referanstan_gelir():
