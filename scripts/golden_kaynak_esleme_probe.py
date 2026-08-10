@@ -124,18 +124,44 @@ LEFT JOIN core_vectors v USING (chunk_id)
 WHERE c.chunk_text_norm LIKE %(kalip)s;
 """
 
-# Mevzuat başına en iyi dosyalar (tüm desenlerin OR'u).
-_SQL_DOSYALAR = """
-SELECT f.file_name,
-       count(*)                        AS vurus,
-       min(c.page_number)              AS ilk_sayfa,
-       count(v.chunk_id)               AS vektorlu
+# Mevzuata DEĞEN dosya sayısı -- LIMIT'ten ÖNCE, sayı limitin kendisi olmasın.
+_SQL_DOSYA_SAYISI = """
+SELECT count(DISTINCT c.file_id)
 FROM core_chunks c
+WHERE c.chunk_text_norm LIKE ANY(%(kaliplar)s);
+"""
+
+# Mevzuat başına en iyi dosyalar (tüm desenlerin OR'u).
+#
+# KAYNAK mı ATIF mı: bir desenin dosyada geçmesi, o mevzuatın korpusta BULUNDUĞUNU
+# göstermez -- ona atıf yapan her doküman da vurur. Ayırt eden üç işaret birlikte
+# basılır: (a) yoğunluk = vuruş / dosyanın toplam chunk'ı; kaynak metinde kendi
+# başlığı tekrar tekrar geçer, atıf yapan kitapta bir-iki kez. (b) ilk_chunk --
+# kaynak metinde başlık kapak/ilk chunk'ta (index küçük), atıfta gövdenin ortasında.
+# (c) baslikta -- desen `section_title`'da geçiyorsa dosya o mevzuatı BÖLÜM olarak
+# taşıyor. Hiçbiri tek başına kesin değil; üçü birlikte okunur.
+_SQL_DOSYALAR = """
+WITH vurus AS (
+    SELECT c.file_id,
+           count(*)                                    AS vurus,
+           min(c.page_number)                          AS ilk_sayfa,
+           min(c.chunk_index)                          AS ilk_chunk,
+           count(v.chunk_id)                           AS vektorlu,
+           bool_or(c.section_title IS NOT NULL
+                   AND lower(c.section_title) LIKE ANY(%(kaliplar)s)) AS baslikta
+    FROM core_chunks c
+    LEFT JOIN core_vectors v USING (chunk_id)
+    WHERE c.chunk_text_norm LIKE ANY(%(kaliplar)s)
+    GROUP BY c.file_id
+), toplam AS (
+    SELECT file_id, count(*) AS dosya_chunk FROM core_chunks GROUP BY file_id
+)
+SELECT f.file_name, u.vurus, u.ilk_sayfa, u.vektorlu,
+       t.dosya_chunk, u.ilk_chunk, u.baslikta
+FROM vurus u
 JOIN core_files f USING (file_id)
-LEFT JOIN core_vectors v USING (chunk_id)
-WHERE c.chunk_text_norm LIKE ANY(%(kaliplar)s)
-GROUP BY f.file_name
-ORDER BY vurus DESC, f.file_name
+JOIN toplam    t USING (file_id)
+ORDER BY (u.vurus::numeric / GREATEST(t.dosya_chunk, 1)) DESC, u.vurus DESC
 LIMIT %(limit)s;
 """
 
@@ -168,9 +194,12 @@ def _tara(conn, katalog: list[dict], *, dosya_limit: int, capa_limit: int) -> li
             ch, ds, vk = conn.execute(_SQL_DESEN, {"kalip": kalip}).fetchone()
             desen_detay.append({"desen": ham, "chunk": ch, "dosya": ds, "vektorlu": vk})
 
+        (dosya_sayisi,) = conn.execute(_SQL_DOSYA_SAYISI, {"kaliplar": kaliplar}).fetchone()
         dosyalar = [
-            {"file_name": fn, "vurus": v, "ilk_sayfa": sp, "vektorlu": vk}
-            for fn, v, sp, vk in conn.execute(
+            {"file_name": fn, "vurus": v, "ilk_sayfa": sp, "vektorlu": vk,
+             "dosya_chunk": dc, "ilk_chunk": ic, "baslikta": bs,
+             "yogunluk": v / max(dc, 1)}
+            for fn, v, sp, vk, dc, ic, bs in conn.execute(
                 _SQL_DOSYALAR, {"kaliplar": kaliplar, "limit": dosya_limit}).fetchall()
         ]
         capalar = [
@@ -181,6 +210,7 @@ def _tara(conn, katalog: list[dict], *, dosya_limit: int, capa_limit: int) -> li
         ]
         toplam = sum(d["chunk"] for d in desen_detay)
         sonuc.append({**m, "desen_detay": desen_detay, "toplam_vurus": toplam,
+                      "dosya_sayisi": dosya_sayisi,
                       "dosyalar": dosyalar, "capalar": capalar})
     return sonuc
 
@@ -201,12 +231,13 @@ def _print_human(env, kayitlar: list[dict], capa_goster: int) -> None:
     print("-" * 100)
     print("BOLUM B  MEVZUAT CAPA KONTROLU -- taslaktaki her kaynak korpusta var mi?")
     print("-" * 100)
+    print("  UYARI: 'vurus' ATIFLARI DA sayar -- bir mevzuata deginen her kitap vurur.")
+    print("  Mevzuatin KENDI metninin korpusta olup olmadigini Bolum B2 ayirir.")
     print(f"  {'mevzuat':<52} {'vurus':>7} {'dosya':>6}  soru")
     for k in kayitlar:
-        ds = len({d["file_name"] for d in k["dosyalar"]})
         isaret = "" if k["toplam_vurus"] else "   <-- CAPA YOK"
-        print(f"  {_clip(k['ad'], 52):<52} {k['toplam_vurus']:>7,} {ds:>6}  "
-              f"{','.join(k['sorular'])}{isaret}")
+        print(f"  {_clip(k['ad'], 52):<52} {k['toplam_vurus']:>7,} "
+              f"{k['dosya_sayisi']:>6,}  {','.join(k['sorular'])}{isaret}")
     print()
     print("  Desen kirilimi (sifirin koku: mevzuat mi yok, desen mi yanlis?):")
     for k in kayitlar:
@@ -217,11 +248,36 @@ def _print_human(env, kayitlar: list[dict], capa_goster: int) -> None:
     print()
 
     print("-" * 100)
+    print("BOLUM B2  KAYNAK mi ATIF mi? -- mevzuatin KENDI metni korpusta mi?")
+    print("-" * 100)
+    print("  yogunluk = vurus / dosyanin toplam chunk'i. Kaynak metinde kendi basligi")
+    print("  tekrar tekrar gecer (yogunluk yuksek, ilk_chunk kucuk, basligta=E);")
+    print("  atif yapan kitapta bir-iki kez gecer (yogunluk ~0, ilk_chunk buyuk).")
+    print("  Ucu birlikte okunur; tek bir isaret kesin degildir.")
+    for k in kayitlar:
+        if not k["dosyalar"]:
+            continue
+        print()
+        print(f"  ### {k['ad']}")
+        print(f"    {'dosya':<46} {'vurus':>6} {'top':>6} {'yogun':>7} "
+              f"{'ilkchk':>7} {'sayfa':>6}  bslk")
+        for d in k["dosyalar"]:
+            print(f"    {_clip(d['file_name'], 46):<46} {d['vurus']:>6,} "
+                  f"{d['dosya_chunk']:>6,} {d['yogunluk']:>7.3f} "
+                  f"{d['ilk_chunk']:>7,} {str(d['ilk_sayfa'] or '-'):>6}  "
+                  f"{'E' if d['baslikta'] else '-'}")
+    print()
+
+    print("-" * 100)
     print("BOLUM C  HUKUM -- hangi sorular dayanaksiz?")
     print("-" * 100)
     bos = [k for k in kayitlar if not k["toplam_vurus"]]
     if not bos:
-        print("  Taslaktaki 13 mevzuatin TAMAMI korpusta capa buluyor.")
+        print(f"  {len(kayitlar)} mevzuatin tamami en az bir vurus aliyor -- yani hicbir soru")
+        print("  DESEN duzeyinde dayanaksiz degil. Bu HENUZ 'kaynak metin korpusta' demek")
+        print("  DEGILDIR: vurus atif da olabilir. Kesin hukum Bolum B2'den okunur --")
+        print("  yogunlugu dusuk + ilk_chunk'i buyuk bir mevzuat yalnizca ATIFLA temsil")
+        print("  ediliyordur ve o mevzuata dayanan sorular yeniden capalanmalidir.")
     else:
         etkilenen = sorted({s for k in bos for s in k["sorular"]})
         print(f"  CAPASIZ mevzuat : {len(bos)}")
@@ -257,7 +313,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="golden_kaynak_esleme_probe")
     ap.add_argument("--mevzuat", action="append", default=None,
                     help="Yalniz bu anahtar(lar)i tara (yinelenebilir). Orn: --mevzuat tfrs9")
-    ap.add_argument("--dosya-limit", type=int, default=5, help="Mevzuat basi listelenecek dosya")
+    ap.add_argument("--dosya-limit", type=int, default=8, help="Mevzuat basi listelenecek dosya")
     ap.add_argument("--capa-limit", type=int, default=6, help="Mevzuat basi cekilecek capa adayi")
     ap.add_argument("--capa-goster", type=int, default=2, help="Insan ciktisinda basilacak capa")
     ap.add_argument("--json", action="store_true", help="Ham JSON bas")
