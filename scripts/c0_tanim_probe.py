@@ -46,6 +46,12 @@ NE OLCER (alti bolum, hepsi SALT-OKUMA, tek SELECT turu, parse YOK):
      kokenlidir (M-2b). Kor nokta hipotezinin dogrudan sinavi.
   F) 0x02'nin ve kaydirmanin BAGLAMI: cevresindeki metin repr() ile basilir.
      "Sayi" bir karakterin ne oldugunu soylemez; metne bakmadan hukum yok.
+  G) 0x02'NIN KOMSU PROFILI. Bolum F'nin 8 ornegi 0x02'yi satir-sonu heceleme
+     tiresi gosterdi ("Su\\x02 bat"->Subat, "Denet\\x02 leme"->Denetleme) ama
+     8 ornek 519 chunk'a kural yazdirmaz. Bolum G tum gecisleri sol/sag
+     karakter sinifina gore sayar ve kural adayinin (kucuk+0x02+kucuk ->
+     birlestir) KAPSAMINI yuzdeyle, URETECEGI kelimeleri de ismen basar.
+     Kural ancak uretilen kelimeler gercek Turkce cikarsa yazilir.
 
 NE OLCMEZ: esigin dogru olup olmadigini. Esik 639 sayfalik TEMIZ ornekleme
 karsi olculdu (0.5, yanlis pozitif sifir) ve bu sorunun cevabi onu
@@ -222,6 +228,16 @@ FROM (
 ) s;
 """
 
+# 0x02'nin TAM METNI. Bolum F'nin 8 ornegi "satir sonu heceleme tiresi"
+# dusundurdu ama 8 ornek 519 chunk'a kural yazdirmaz. Siniflandirma Python'da
+# yapilir (SQL'de karakter-sinifi mantigi okunmaz olurdu); sorgu salt-okuma.
+_SQL_STX_METIN = """
+SELECT c.chunk_text
+FROM core_chunks c
+WHERE strpos(c.chunk_text, chr(2)) > 0
+LIMIT %(n)s;
+"""
+
 # BAGLAM: karakterin ne oldugunu sayi degil METIN soyler. Ilk gecisin
 # cevresinden bir pencere kesilir; kontrol karakterleri Python'da repr() ile
 # gorunur kilinir.
@@ -235,6 +251,84 @@ WHERE strpos(c.chunk_text, chr(%(kod)s)) > 0
 ORDER BY f.file_name, c.chunk_index
 LIMIT %(n)s;
 """
+
+
+def _sinif(ch: str | None) -> str:
+    """Karakterin sinifi -- kuralin dayanacagi tek ayrim."""
+    if ch is None:
+        return "-yok-"
+    if ch == "\n":
+        return "satir"
+    if ch.isspace():
+        return "bosluk"
+    if ch.isdigit():
+        return "rakam"
+    if ch.isalpha():
+        return "kucuk" if ch.islower() else "buyuk"
+    return "diger"
+
+
+_KELIME_DISI = " \t\n\r|.,;:!?()[]{}\"'«»…"
+
+
+def _kelime_sol(metin: str, i: int) -> str:
+    j = i
+    while j > 0 and metin[j - 1] not in _KELIME_DISI:
+        j -= 1
+    return metin[j:i]
+
+
+def _kelime_sag(metin: str, i: int) -> str:
+    j = i
+    while j < len(metin) and metin[j] not in _KELIME_DISI:
+        j += 1
+    return metin[i:j]
+
+
+def _stx_profili(metinler: list[str], *, ornek: int) -> dict:
+    """0x02'nin sol/sag komsu sinifi dagilimi + birlestirmenin URETECEGI kelimeler.
+
+    Kural adayi: `kucuk harf` + 0x02 + (bosluk?) + `kucuk harf` -> BIRLESTIR.
+    Bunun disi (buyuk harf, rakam, noktalama komsulari) heceleme degildir ve
+    kural onlara DOKUNMAZ; ayri sayilir ki kapsam durustce gorunsun.
+    """
+    kalip: dict[tuple[str, str, str], int] = {}
+    kelimeler: dict[str, int] = {}
+    dokunulmaz: dict[str, int] = {}
+    toplam = 0
+    for metin in metinler:
+        i = metin.find("\x02")
+        while i >= 0:
+            toplam += 1
+            sol = metin[i - 1] if i > 0 else None
+            j = i + 1
+            bosluk = 0
+            while j < len(metin) and metin[j] in " \t":
+                bosluk += 1
+                j += 1
+            sag = metin[j] if j < len(metin) else None
+            anahtar = (_sinif(sol), "bosluk" if bosluk else "bitisik", _sinif(sag))
+            kalip[anahtar] = kalip.get(anahtar, 0) + 1
+            if _sinif(sol) == "kucuk" and _sinif(sag) == "kucuk":
+                w = _kelime_sol(metin, i) + _kelime_sag(metin, j)
+                if w:
+                    kelimeler[w] = kelimeler.get(w, 0) + 1
+            else:
+                pencere = metin[max(0, i - 30): j + 30]
+                dokunulmaz[pencere] = dokunulmaz.get(pencere, 0) + 1
+            i = metin.find("\x02", i + 1)
+    kapsanan = sum(v for k, v in kalip.items() if k[0] == "kucuk" and k[2] == "kucuk")
+    return {
+        "toplam": toplam,
+        "kapsanan": kapsanan,
+        "kalip": sorted(({"sol": k[0], "ara": k[1], "sag": k[2], "kez": v}
+                         for k, v in kalip.items()),
+                        key=lambda x: -x["kez"]),
+        "kelimeler": sorted(({"kelime": k, "kez": v} for k, v in kelimeler.items()),
+                            key=lambda x: (-x["kez"], x["kelime"]))[:ornek * 4],
+        "dokunulmaz": sorted(({"baglam": k, "kez": v} for k, v in dokunulmaz.items()),
+                             key=lambda x: -x["kez"])[:ornek],
+    }
 
 
 def _tara(conn, *, ornek: int) -> dict:
@@ -251,7 +345,9 @@ def _tara(conn, *, ornek: int) -> dict:
             for fn, ci, pn, tb, bg in
             conn.execute(_SQL_ORNEK, {"kod": kod, "n": ornek}).fetchall()
         ]
+    stx = [r[0] for r in conn.execute(_SQL_STX_METIN, {"n": 5000}).fetchall()]
     return {
+        "stx": _stx_profili(stx, ornek=ornek),
         "sinif": [{"file_name": fn, "dar_chunk": dc, "kay_chunk": kc,
                    "uym_chunk": uc, "tablo_chunk": tc, "duzyazi_chunk": zc,
                    "bulgular": bg}
@@ -435,6 +531,37 @@ def _print_human(veri: dict, *, dosya_limit: int) -> None:
             print(f"    {_clip(o['file_name'], 44):<44} chunk={o['chunk_index']:<5} "
                   f"s.{o['page_number'] or 0:<5} tablo={'EVET' if o['tablo'] else 'hayir'}")
             print(f"      {_clip(repr(o['baglam']), 150)}")
+
+    # -- G -------------------------------------------------------------------
+    g = veri["stx"]
+    print()
+    print("-" * 100)
+    print("BOLUM G · 0x02 KOMSU PROFILI -- 'heceleme tiresi' hukmunun sinavi")
+    print("-" * 100)
+    print("  Kural adayi: kucuk harf + 0x02 + (bosluk?) + kucuk harf -> BIRLESTIR.")
+    print("  Bunun disina (buyuk harf/rakam/noktalama komsusu) DOKUNULMAZ.")
+    print()
+    if not g["toplam"]:
+        print("  0x02 gecisi bulunamadi.")
+        return
+    print(f"  toplam 0x02 gecisi        : {g['toplam']}")
+    pay = 100.0 * g["kapsanan"] / g["toplam"]
+    print(f"  kuralin KAPSADIGI         : {g['kapsanan']}  (%{pay:.1f})")
+    print(f"  kuralin DOKUNMADIGI       : {g['toplam'] - g['kapsanan']}  "
+          f"(%{100.0 - pay:.1f})")
+    print()
+    print(f"  {'sol':<8} {'ara':<9} {'sag':<8} {'kez':>7}")
+    for k in g["kalip"]:
+        print(f"  {k['sol']:<8} {k['ara']:<9} {k['sag']:<8} {k['kez']:>7}")
+    print()
+    print("  BIRLESTIRME NE URETIR (hukum burada verilir -- kelime Turkce mi?):")
+    for w in g["kelimeler"]:
+        print(f"    {w['kez']:>4}x  {w['kelime']}")
+    if g["dokunulmaz"]:
+        print()
+        print("  KURALIN DOKUNMADIGI GECISLER (bunlar ne? ayri karar gerekir):")
+        for d in g["dokunulmaz"]:
+            print(f"    {d['kez']:>4}x  {_clip(repr(d['baglam']), 110)}")
 
 
 def main() -> int:
