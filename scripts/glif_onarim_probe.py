@@ -17,11 +17,19 @@ DEGILDIR -- korpus bu prob ile degismez.
   H bolumu (varsayilan): korpus geneli tetik envanteri + OCR butcesi (SQL, parse yok)
   H2 bolumu (--sinir N): kuyruktaki (az bozuk chunk'li) dosyalarin chunk METNI
 
+DIKKAT -- H, TETIGIN KENDISINI OLCMEZ. H depolanmis chunk'lar uzerinden ve
+YALNIZ imza olcutuyle calisan bir TAHMINDIR; uretim tetigi ise SAYFA uzerinde
+ve iki kolla (imza + C0) calisir. "Yeni tablo-farkinda tetik hangi sayfalari
+aciyor?" sorusunun cevabi YALNIZ G bolumundedir (--dosya). Korpus geneli sayfa
+envanteri diye bir sey yok: 1118 PDF'in yeniden parse'i gerekirdi.
+
 Kullanim (H200, /opt/ragintel):
     python scripts/glif_onarim_probe.py
     python scripts/glif_onarim_probe.py --sinir 2
+    # ucuz: yalniz "tetik ne seciyor, tabloyu goruyor mu" -- OCR kosmaz
+    python scripts/glif_onarim_probe.py --dosya 2bankakartlari_2.pdf --yalniz-tetik
+    # pahali: uctan uca onarim + goz denetimi
     python scripts/glif_onarim_probe.py --dosya 60._Yilinda_Turkiye_Bankalar_Birligi_2.pdf --sayfa 12
-    python scripts/glif_onarim_probe.py --dosya Bankacilik_Kanunu_%2528Turkce%2529_2.pdf --sayfa 24 --bas-sayfa 10
 """
 
 from __future__ import annotations
@@ -34,7 +42,9 @@ from ragintel.ingestion.parsing.glyph_repair import (
     IMZA,
     birlestir,
     bozuk_sayfalar,
+    c0_yogunlugu,
     imza_yogunlugu,
+    tablo_metinleri,
 )
 
 
@@ -242,23 +252,67 @@ def bolum_h2(db, bin_deger: float, tavan: int) -> int:
 
 
 # =============================================================== BOLUM G =====
-def _sayfa_ozet(p) -> tuple[int, float]:
+# TABLO-FARKINDA RAPORLAMA. Bu bolum bir sure yalniz `p.text` okuyordu ve
+# uretim tetigiyle AYNI kor noktayi tasiyordu: c0_tanim_probe Bolum E'de
+# olculdu ki C0 tasiyan 760 chunk'in 760'i (kaydirma tasiyan 241'in 241'i)
+# TABLO kokenli, duzyazi 0. Yani duzyazi sutunlari temiz gorunurken bozukluk
+# raporun disinda kaliyordu. Artik her olcum duzyazi/tablo AYRI verilir.
+def _sayfa_ozet(p, tablo: str = "") -> tuple[int, float, float, int, float, float]:
+    """(dy_kar, dy_imza, dy_c0, tb_kar, tb_imza, tb_c0) -- ASLA birlesik olcum.
+
+    Birlestirip tek yogunluk olcmek buyuk temiz bir tablonun bozuk duzyaziyi
+    (veya tersinin) esigin altina SEYRELTMESI demektir; uretimdeki `en_bozuk`
+    de bu yuzden max alir, toplam degil.
+    """
     m = p.text
-    return len(m), imza_yogunlugu(m)
+    return (len(m), imza_yogunlugu(m), c0_yogunlugu(m),
+            len(tablo), imza_yogunlugu(tablo), c0_yogunlugu(tablo))
 
 
-def _ornek_satirlar(metin: str, n: int = 4) -> list[str]:
+def _neden(dy: str, tb: str, imza_bin: float, c0_bin: float, min_kar: int) -> str:
+    """Sayfayi hangi PARCA secti? Tetigin kendi mantigini birebir tekrarlar."""
+    etiket = []
+    for ad, metin in (("duzyazi", dy), ("tablo", tb)):
+        if len(metin) < min_kar:
+            continue
+        if imza_yogunlugu(metin) >= imza_bin:
+            etiket.append(f"{ad}/imza")
+        elif c0_bin > 0.0 and c0_yogunlugu(metin) >= c0_bin:
+            etiket.append(f"{ad}/c0")
+    return "+".join(etiket) if etiket else "-"
+
+
+def _tum_tablo_metni(pd) -> str:
+    return "\n".join(tablo_metinleri(pd).values())
+
+
+def _ornek_satirlar(metin: str, n: int = 4, asgari: int = 45) -> list[str]:
     out = []
     for satir in metin.splitlines():
         s = satir.strip()
-        if len(s) >= 45:
+        if len(s) >= asgari:
             out.append(s)
         if len(out) >= n:
             break
     return out
 
 
-def bolum_g(db, dosya_adi: str, sayfa: int, bas_sayfa: int, bin_deger: float | None) -> int:
+def _goster(baslik: str, metin: str, n: int = 2, asgari: int = 45) -> None:
+    """Kontrol karakterleri gorunmez oldugu icin <0xNN> olarak yazilir --
+    aksi halde 'temiz gorunen' bir satir bozuk oldugunu gizler."""
+    satirlar = _ornek_satirlar(metin, n, asgari)
+    print(f"   {baslik}")
+    if not satirlar:
+        print("     (ornek satir yok)")
+        return
+    for s in satirlar:
+        gorunur = "".join(c if ord(c) >= 0x20 or c in "\t" else f"<0x{ord(c):02X}>"
+                          for c in s)
+        print(f"     {gorunur[:130]}")
+
+
+def bolum_g(db, dosya_adi: str, sayfa: int, bas_sayfa: int, bin_deger: float | None,
+            yalniz_tetik: bool = False) -> int:
     print("=" * 100)
     print(f"BOLUM G  UCTAN UCA ONARIM -- {dosya_adi}")
     print("=" * 100)
@@ -316,12 +370,46 @@ def bolum_g(db, dosya_adi: str, sayfa: int, bas_sayfa: int, bin_deger: float | N
     ref = dbk._map_document(_cevir(be._converter(False)).document, ocr=False)
     t_ref = time.perf_counter() - t0
     bozuk = bozuk_sayfalar(ref, imza_bin=esik, c0_bin=c0_esik, min_karakter=min_kar)
+    ref_tablo = tablo_metinleri(ref)
     print(f"  referans: {len(ref.pages)} sayfa, {len(ref.body_text):,} karakter, "
+          f"{len(ref.tables)} tablo / {len(_tum_tablo_metni(ref)):,} tablo karakteri, "
           f"{t_ref:.1f}s")
     print(f"  bozuk sayfa: {len(bozuk)}/{len(ref.pages)}  {sorted(bozuk)[:25]}")
+
+    # --- G1b ATIF: sayfayi DUZYAZI mi TABLO mu secti? -----------------------
+    # Tablo kolunun tek basina acdigi sayfalar, dc99c78 oncesi tetigin
+    # GORMEDIGI sayfalardir; bu satir o farkin kendisidir.
+    yalniz_tablo = yalniz_duzyazi = ikisi = 0
+    if bozuk:
+        print(f"\n  {'sayfa':>5} | {'dy_kar':>7} {'dy_imza':>7} {'dy_c0':>6} | "
+              f"{'tb_kar':>7} {'tb_imza':>7} {'tb_c0':>6} | SECEN")
+        for p in ref.pages:
+            if p.page_no not in bozuk:
+                continue
+            tb = ref_tablo.get(p.page_no, "")
+            dk, di, dc, tk, ti, tc = _sayfa_ozet(p, tb)
+            secen = _neden(p.text, tb, esik, c0_esik, min_kar)
+            if secen.startswith("tablo") and "duzyazi" not in secen:
+                yalniz_tablo += 1
+            elif secen.startswith("duzyazi") and "tablo" not in secen:
+                yalniz_duzyazi += 1
+            else:
+                ikisi += 1
+            print(f"  {p.page_no:>5} | {dk:>7,} {di:>7.1f} {dc:>6.1f} | "
+                  f"{tk:>7,} {ti:>7.1f} {tc:>6.1f} | {secen}")
+        print(f"\n  YALNIZ TABLO yuzunden secilen : {yalniz_tablo}   "
+              f"yalniz duzyazi: {yalniz_duzyazi}   ikisi: {ikisi}")
+        print("  (yalniz-tablo sutunu = dc99c78 oncesi tetigin KACIRDIGI sayfalar)")
+
     if not bozuk:
         print("\n  Tetik ATESLENMEDI -> uretimde bu dosyaya dokunulmaz. Olcum burada biter.")
         print("  (Bu bir BASARISIZLIK degil; dosyanin metin katmani saglam demektir.)")
+        return 0
+
+    if yalniz_tetik:
+        ilk, son = min(bozuk), max(bozuk)
+        print("\n  --yalniz-tetik: OCR KOSULMADI (pahali kisim atlandi).")
+        print(f"  Onerilen dar pencere:  --bas-sayfa {ilk} --sayfa {son - ilk + 1}")
         return 0
 
     # ------------------------------------------------------------------ G2
@@ -347,13 +435,25 @@ def bolum_g(db, dosya_adi: str, sayfa: int, bas_sayfa: int, bin_deger: float | N
     ref_s = {p.page_no: p for p in ref.pages}
     ocr_s = {p.page_no: p for p in ocr.pages}
     yeni_s = {p.page_no: p for p in birlesik.pages}
-    print(f"  {'sayfa':>5} {'tetik':>6} | {'ref_kar':>8} {'ref_im':>7} | "
-          f"{'ocr_kar':>8} {'ocr_im':>7} | {'KARAR':<12} {'son_im':>7}")
+    ocr_tablo = tablo_metinleri(ocr)
+    yeni_tablo = tablo_metinleri(birlesik)
+    # Bozukluk sutunlari en_bozuk mantigiyla: duzyazi/tablo AYRI, buyuk olan.
+    print(f"  {'sayfa':>5} {'tetik':>6} | {'ref_dy':>7} {'ref_tb':>7} {'ref_koti':>8} | "
+          f"{'ocr_dy':>7} {'ocr_tb':>7} {'ocr_koti':>8} | {'KARAR':<14} {'son_koti':>8}")
     degisen = korunan = reddedilen = 0
+
+    def _koti(p, tablo: str) -> float:
+        return max(imza_yogunlugu(p.text) + c0_yogunlugu(p.text),
+                   imza_yogunlugu(tablo) + c0_yogunlugu(tablo))
+
     for no in sorted(yeni_s):
-        rk, ri = _sayfa_ozet(ref_s[no]) if no in ref_s else (0, 0.0)
-        ok, oi = _sayfa_ozet(ocr_s[no]) if no in ocr_s else (0, 0.0)
-        _sk, si = _sayfa_ozet(yeni_s[no])
+        rtb, otb, ytb = (ref_tablo.get(no, ""), ocr_tablo.get(no, ""),
+                         yeni_tablo.get(no, ""))
+        rk = len(ref_s[no].text) if no in ref_s else 0
+        ok = len(ocr_s[no].text) if no in ocr_s else 0
+        rkoti = _koti(ref_s[no], rtb) if no in ref_s else 0.0
+        okoti = _koti(ocr_s[no], otb) if no in ocr_s else 0.0
+        skoti = _koti(yeni_s[no], ytb)
         tetik = "BOZUK" if no in bozuk else "-"
         if no in bozuk and yeni_s[no].text == (ocr_s[no].text if no in ocr_s else None):
             karar, degisen = "OCR'DAN", degisen + 1
@@ -361,8 +461,10 @@ def bolum_g(db, dosya_adi: str, sayfa: int, bas_sayfa: int, bin_deger: float | N
             karar, reddedilen = "RED(ref kaldi)", reddedilen + 1
         else:
             karar, korunan = "referans", korunan + 1
-        print(f"  {no:>5} {tetik:>6} | {rk:>8,} {ri:>7.1f} | {ok:>8,} {oi:>7.1f} | "
-              f"{karar:<12} {si:>7.1f}")
+        print(f"  {no:>5} {tetik:>6} | {rk:>7,} {len(rtb):>7,} {rkoti:>8.1f} | "
+              f"{ok:>7,} {len(otb):>7,} {okoti:>8.1f} | {karar:<14} {skoti:>8.1f}")
+    print(f"\n  OCR'dan alinan: {degisen}   reddedilen: {reddedilen}   "
+          f"dokunulmayan: {korunan}")
 
     # ------------------------------------------------------------------ G4
     print("\n" + "-" * 100)
@@ -375,8 +477,17 @@ def bolum_g(db, dosya_adi: str, sayfa: int, bas_sayfa: int, bin_deger: float | N
     print(f"  sayfa sayisi korundu mu: {len(ref.pages)} -> {len(birlesik.pages)} "
           f"{'EVET' if len(birlesik.pages) >= len(ref.pages) else 'HAYIR -- SAYFA DUSTU'}")
     print(f"  karakter   : {len(ref.body_text):,} -> {len(birlesik.body_text):,}")
-    print(f"  imza/1000  : {imza_yogunlugu(ref.body_text):.2f} -> "
-          f"{imza_yogunlugu(birlesik.body_text):.2f}")
+    print(f"  DUZYAZI    : imza/1000 {imza_yogunlugu(ref.body_text):.2f} -> "
+          f"{imza_yogunlugu(birlesik.body_text):.2f}   "
+          f"c0/1000 {c0_yogunlugu(ref.body_text):.2f} -> "
+          f"{c0_yogunlugu(birlesik.body_text):.2f}")
+    # ASIL SINAV: bu dosyada bozukluk duzyazida degil TABLODA (Bolum E).
+    # Duzyazi satiri iyilesip bu satir iyilesmezse onarim SAHTEDIR.
+    r_tb, y_tb = _tum_tablo_metni(ref), _tum_tablo_metni(birlesik)
+    print(f"  TABLO      : imza/1000 {imza_yogunlugu(r_tb):.2f} -> "
+          f"{imza_yogunlugu(y_tb):.2f}   "
+          f"c0/1000 {c0_yogunlugu(r_tb):.2f} -> {c0_yogunlugu(y_tb):.2f}   "
+          f"(karakter {len(r_tb):,} -> {len(y_tb):,})")
     print(f"  dil        : {ref.language} -> {birlesik.language}")
     print(f"  tablo      : {len(ref.tables)} -> {len(birlesik.tables)}  "
           f"(index 0..n araliksiz mi: "
@@ -407,13 +518,14 @@ def bolum_g(db, dosya_adi: str, sayfa: int, bas_sayfa: int, bin_deger: float | N
     print("-" * 100)
     ornek_no = sorted(bozuk)[:2]
     for no in ornek_no:
-        print(f"\n  --- sayfa {no} (BOZUK olarak isaretlendi) ---")
-        print("   ONCE (metin katmani):")
-        for s in _ornek_satirlar(ref_s[no].text if no in ref_s else "", 3):
-            print(f"     {s[:110]}")
-        print("   SONRA (birlesik):")
-        for s in _ornek_satirlar(yeni_s[no].text, 3):
-            print(f"     {s[:110]}")
+        secen = _neden(ref_s[no].text if no in ref_s else "",
+                       ref_tablo.get(no, ""), esik, c0_esik, min_kar)
+        print(f"\n  --- sayfa {no} (BOZUK; secen: {secen}) ---")
+        _goster("DUZYAZI  ONCE :", ref_s[no].text if no in ref_s else "")
+        _goster("DUZYAZI  SONRA:", yeni_s[no].text)
+        # Bozukluk tabloda oldugu icin GOZ DENETIMININ ASIL YERI burasi.
+        _goster("TABLO    ONCE :", ref_tablo.get(no, ""), asgari=20)
+        _goster("TABLO    SONRA:", yeni_tablo.get(no, ""), asgari=20)
     saglam_no = [p.page_no for p in birlesik.pages if p.page_no not in bozuk][:1]
     for no in saglam_no:
         print(f"\n  --- sayfa {no} (tetiklenmedi -- DEGISMEMIS olmali) ---")
@@ -433,6 +545,10 @@ def main() -> int:
                     help="Bolum G: yalniz N sayfa (0 = tam dosya)")
     ap.add_argument("--bas-sayfa", type=int, default=1, dest="bas_sayfa", metavar="N",
                     help="Bolum G: pencere bu sayfadan baslar (onyuz temsili degildir)")
+    ap.add_argument("--yalniz-tetik", action="store_true", dest="yalniz_tetik",
+                    help="Bolum G: G1'den sonra DUR -- OCR kosturmaz (ucuz). "
+                         "'Yeni tablo kolu bu dosyada sayfa aciyor mu?' sorusu "
+                         "icin yeterlidir; pahali G2-G5 atlanir")
     ap.add_argument("--imza-bin", type=float, default=None, dest="imza_bin",
                     metavar="N", help="Esigi gecici olarak degistir (config'e DOKUNMAZ)")
     ap.add_argument("--sn-sayfa", type=float, default=1.0, dest="sn_sayfa",
@@ -449,7 +565,8 @@ def main() -> int:
     esik = a.imza_bin if a.imza_bin is not None else 10.0
     try:
         if a.dosya:
-            return bolum_g(db, a.dosya, max(0, a.sayfa), max(1, a.bas_sayfa), a.imza_bin)
+            return bolum_g(db, a.dosya, max(0, a.sayfa), max(1, a.bas_sayfa),
+                           a.imza_bin, a.yalniz_tetik)
         if a.sinir is not None:
             return bolum_h2(db, esik, max(1, a.sinir))
         return bolum_h(db, esik, a.sn_sayfa)
