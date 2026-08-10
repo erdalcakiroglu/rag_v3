@@ -626,6 +626,17 @@ class GlyphRepair(BaseModel):
                     "bu değeri aşarsa sayfa bozuk sayılır. Ölçüldü: gerçekten bozuk dosyalar "
                     "27..120, metni sağlam olup meşru imza taşıyanlar 5'in altında.",
     )
+    control_per_1k: float = Field(
+        default=0.5, ge=0.0, le=1000.0,
+        description="İKİNCİ KOL. Sayfa metninde 1000 karakter başına anlamsız C0 kontrol "
+                    "karakteri (\\n\\t\\r ve \\x0B\\x0C hariç) bu değeri aşarsa sayfa bozuk "
+                    "sayılır. Gerekçe: aile-A'nın +0x1D kaydırması boşluğu (0x20) 0x03'e "
+                    "düşürür, yani diyakritiksiz bir sayfa imza üretmese bile C0 yağmuru "
+                    "üretir — imza kolunun kör noktası budur. Eşik veriden seçildi "
+                    "(2026-08-10, glif_esik_probe): 639 sayfalık temiz örneklemde 0.5'te "
+                    "yanlış pozitif SIFIR, bozuk dosyada 231 sayfanın 230'u yakalanıyor; "
+                    "1.0'da 222'ye, 10.0'da 129'a düşüyor. 0.0 KOLU KAPATIR.",
+    )
     min_page_chars: int = Field(
         default=200, ge=0, le=100000,
         description="Bu uzunluğun altındaki sayfalar tetiği hiç değerlendirmez — kapak/boş "

@@ -57,6 +57,11 @@ _IMZA_B = (
 IMZA = _IMZA_A + _IMZA_B
 
 
+# Meşru düzen kontrol karakterleri: sayfa/satır/sekme ayraçları. Bunlar bozulma
+# kanıtı DEĞİLDİR ve C0 ölçütünün dışında tutulur.
+MESRU_KONTROL = "\t\n\r\x0b\x0c"
+
+
 def imza_yogunlugu(metin: str) -> float:
     """1000 karakter başına imza karakteri sayısı."""
     n = len(metin)
@@ -65,27 +70,64 @@ def imza_yogunlugu(metin: str) -> float:
     return 1000.0 * sum(metin.count(c) for c in IMZA) / n
 
 
-def bozuk_sayfalar(
-    parsed: ParsedDocument, *, imza_bin: float = 10.0, min_karakter: int = 200
-) -> set[int]:
-    """Metin katmanı bozuk olan sayfa numaraları.
+def c0_yogunlugu(metin: str) -> float:
+    """1000 karakter başına ANLAMSIZ C0 kontrol karakteri sayısı.
 
-    ÖLÇÜT imza yoğunluğudur, Türkçe diyakritik yoğunluğu DEĞİL. Sebep: bozulma
-    diyakritiği yok etmiş olabilir de olmayabilir de (aile-B diyakritiği yerine
-    başka glif koyar, aile-A tamamen siler), ama imza karakteri her iki ailede
-    de metinde DURUR. Eşik 10/1000 keyfi değil: Bölüm E'de gerçekten bozuk
-    dosyalar 27..120 aralığında, metni sağlam olup az miktarda meşru imza
-    taşıyanlar (OSMANLI 1.73, Catikkas 4.60) 5'in altında ölçüldü.
+    Aile-A'nın kaydırması (+0x1D) TÜM basılabilir aralığa uygulanır: boşluk
+    (0x20) 0x03'e, 'T' (0x54) '7'ye düşer. Boşluk her metinde en sık karakter
+    olduğundan, kaydırılmış bir sayfa imza karakteri hiç üretmese bile C0
+    kontrol karakteri YAĞMURU üretir. İmza kolunun kör noktası tam olarak
+    budur ve bu ölçüt onu kapatır.
+
+    `MESRU_KONTROL` dışarıda: \\n\\t\\r ile \\x0B/\\x0C (dikey sekme, sayfa
+    ayracı) her PDF'te meşru olarak bulunur.
+    """
+    n = len(metin)
+    if n == 0:
+        return 0.0
+    k = sum(1 for c in metin if ord(c) < 0x20 and c not in MESRU_KONTROL)
+    return 1000.0 * k / n
+
+
+def bozukluk_yogunlugu(metin: str) -> float:
+    """İki kolun toplamı — 'bu metin ne kadar bozuk' tek sayıda.
+
+    `_daha_iyi` bunu kullanır: yalnız imzaya bakan bir karşılaştırma, aile-A
+    ile bozulmuş diyakritiksiz bir sayfada 0 < 0 verir ve OCR'ın DOĞRU
+    okumasını reddeder — yani C0 kolu tetiklese bile onarım uygulanmazdı.
+    """
+    return imza_yogunlugu(metin) + c0_yogunlugu(metin)
+
+
+def bozuk_sayfalar(
+    parsed: ParsedDocument, *, imza_bin: float = 10.0, c0_bin: float = 0.5,
+    min_karakter: int = 200,
+) -> set[int]:
+    """Metin katmanı bozuk olan sayfa numaraları — İKİ ölçüt, VEYA'lı.
+
+    KOL-1 (imza): 1000 karakterde imza karakteri. Türkçe diyakritik yoğunluğu
+    DEĞİL — bozulma diyakritiği yok etmiş olabilir de olmayabilir de (aile-B
+    yerine başka glif koyar, aile-A tamamen siler), ama imza karakteri her iki
+    ailede de metinde DURUR. Eşik 10/1000 keyfi değil: gerçekten bozuk dosyalar
+    27..120, metni sağlam olup az miktarda meşru imza taşıyanlar (OSMANLI 1.73,
+    Catikkas 4.60) 5'in altında ölçüldü.
+
+    KOL-2 (C0): 1000 karakterde anlamsız kontrol karakteri. Eşik 0.5 VERİDEN
+    seçildi (`scripts/glif_esik_probe.py`, 2026-08-10): 639 sayfalık temiz
+    örneklemde 0.5'te YANLIŞ POZİTİF SIFIR, ve C0 üreten bozuk dosyada 231
+    sayfanın 230'u yakalanıyor (%99.6). Daha yüksek her eşik yalnız kaybettirir
+    (1.0'da 222, 10.0'da 129 sayfa). 0.0 vermek kolu KAPATIR — 'her sayfa
+    bozuk' demek değil.
+
+    Kol-2 kol-1'i kapsamaz: aynı ölçümde birlik 232 sayfa, tek başına C0 230 —
+    yani imzanın tek başına yakaladığı 2 sayfa var. İki kol da gerekli.
 
     `min_karakter` kısa sayfaları (kapak, boş sayfa, tek satırlık başlık)
     dışarıda bırakır — orada yoğunluk tek bir karakterle patlar.
 
-    BİLİNEN KÖR NOKTA: kaynağında hiç Türkçe diyakritik olmayan bir sayfa
-    aile-A ile bozulduğunda imza üretmez (yalnız kaydırılmış ASCII kalır) ve
-    burada YAKALANMAZ. Türkçe mevzuat/bankacılık metninde diyakritiksiz tam
-    sayfa gerçekçi değil; yine de eşik düşürülerek değil, ayrı bir ölçütle
-    (işlev sözcüğü yoğunluğu) kapatılmalıdır — o ölçüt sayısal tablo
-    sayfalarında yanlış pozitif verdiği için bilinçli olarak EKLENMEDİ.
+    KALAN KÖR NOKTA: kaynağında ne Türkçe diyakritik ne de boşluk bulunan bir
+    sayfa (gerçekçi değil) hâlâ yakalanmaz. Ölçütün kapsamadığı üçüncü bir
+    aile varsa bu iki kol onu da göstermez; kanıt gelmeden ölçüt eklenmez.
     """
     out: set[int] = set()
     for p in parsed.pages:
@@ -93,6 +135,8 @@ def bozuk_sayfalar(
         if len(metin) < min_karakter:
             continue
         if imza_yogunlugu(metin) >= imza_bin:
+            out.add(p.page_no)
+        elif c0_bin > 0.0 and c0_yogunlugu(metin) >= c0_bin:
             out.add(p.page_no)
     return out
 
@@ -102,7 +146,12 @@ def _daha_iyi(aday: Page, mevcut: Page | None) -> bool:
 
     İki koşul: (1) anlamlı miktarda metin üretmiş olmalı — OCR bir sayfayı hiç
     okuyamadığında birkaç karakter döner ve o sayfayı almak metni SİLMEK olur;
-    (2) imza yoğunluğu düşmüş olmalı — onarımın tanımı budur.
+    (2) bozukluk yoğunluğu düşmüş olmalı — onarımın tanımı budur.
+
+    (2) İMZA DEĞİL `bozukluk_yogunlugu`: aile-A ile bozulmuş diyakritiksiz bir
+    sayfada imza yoğunluğu hem öncesinde hem sonrasında 0'dır; yalnız imzaya
+    bakan karşılaştırma `0 < 0` verip OCR'ın doğru okumasını REDDEDER. O hâlde
+    C0 kolu tetiklense bile onarım hiçbir sayfaya uygulanmazdı.
     """
     metin = aday.text
     if len(metin.strip()) < 40:
@@ -112,7 +161,7 @@ def _daha_iyi(aday: Page, mevcut: Page | None) -> bool:
     eski = mevcut.text
     if len(metin) < 0.25 * len(eski):
         return False
-    return imza_yogunlugu(metin) < imza_yogunlugu(eski)
+    return bozukluk_yogunlugu(metin) < bozukluk_yogunlugu(eski)
 
 
 def _sayfa_ofsetleri(sayfalar: list[Page]) -> dict[int, int]:

@@ -299,6 +299,7 @@ class ParseAdapter:
         bozuk = bozuk_sayfalar(
             final.parsed,
             imza_bin=float(cfg.signature_per_1k),
+            c0_bin=float(getattr(cfg, "control_per_1k", 0.0)),
             min_karakter=int(cfg.min_page_chars),
         )
         if not bozuk:
@@ -339,6 +340,7 @@ class ParseAdapter:
         kalan = bozuk_sayfalar(
             birlesik,
             imza_bin=float(cfg.signature_per_1k),
+            c0_bin=float(getattr(cfg, "control_per_1k", 0.0)),
             min_karakter=int(cfg.min_page_chars),
         )
         # İDDİA ETME, DOĞRULA: birleştirme sonrası bozuk sayfa gerçekten

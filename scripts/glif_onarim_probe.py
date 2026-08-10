@@ -279,10 +279,11 @@ def bolum_g(db, dosya_adi: str, sayfa: int, bas_sayfa: int, bin_deger: float | N
     ing, kal, ps = _parse_ayarlari(db)
     gr = kal.glyph_repair
     esik = float(gr.signature_per_1k) if bin_deger is None else bin_deger
+    c0_esik = float(getattr(gr, "control_per_1k", 0.0))
     min_kar = int(gr.min_page_chars)
     print(f"  file_id={fid}  yol={yol}")
     print(f"  config: enabled={gr.enabled} signature_per_1k={gr.signature_per_1k} "
-          f"min_page_chars={min_kar} max_retry={gr.max_retry}")
+          f"control_per_1k={c0_esik} min_page_chars={min_kar} max_retry={gr.max_retry}")
     if bin_deger is not None:
         print(f"  (esik --imza-bin ile {esik} yapildi -- config DEGISMEDI)")
     pencere = f"{bas_sayfa}-{bas_sayfa + sayfa - 1}" if sayfa else "TAM DOSYA"
@@ -314,7 +315,7 @@ def bolum_g(db, dosya_adi: str, sayfa: int, bas_sayfa: int, bin_deger: float | N
     t0 = time.perf_counter()
     ref = dbk._map_document(_cevir(be._converter(False)).document, ocr=False)
     t_ref = time.perf_counter() - t0
-    bozuk = bozuk_sayfalar(ref, imza_bin=esik, min_karakter=min_kar)
+    bozuk = bozuk_sayfalar(ref, imza_bin=esik, c0_bin=c0_esik, min_karakter=min_kar)
     print(f"  referans: {len(ref.pages)} sayfa, {len(ref.body_text):,} karakter, "
           f"{t_ref:.1f}s")
     print(f"  bozuk sayfa: {len(bozuk)}/{len(ref.pages)}  {sorted(bozuk)[:25]}")
@@ -367,7 +368,7 @@ def bolum_g(db, dosya_adi: str, sayfa: int, bas_sayfa: int, bin_deger: float | N
     print("\n" + "-" * 100)
     print("G4 DOGRULAMA -- iddia degil, YENIDEN OLCUM")
     print("-" * 100)
-    kalan = bozuk_sayfalar(birlesik, imza_bin=esik, min_karakter=min_kar)
+    kalan = bozuk_sayfalar(birlesik, imza_bin=esik, c0_bin=c0_esik, min_karakter=min_kar)
     onarilan = len(bozuk) - len(kalan)
     print(f"  once bozuk : {len(bozuk)}   sonra bozuk: {len(kalan)}   "
           f"ONARILAN: {onarilan}")
