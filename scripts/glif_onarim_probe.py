@@ -22,6 +22,10 @@ DEGILDIR -- korpus bu prob ile degismez.
       duzyazi ayrimli, cikti = `ragintel ingest reprocess` icin file_id listesi.
       Bolum D (c0_tanim_probe) bunun yerini TUTMAZ: D yalniz C0 sayar, oysa
       imzayla bozulmus bir tablo hic C0 uretmeden bozuk olabilir.
+  K bolumu (--bulgular): reprocess SONRASI hesap. J tek basina yaniltir --
+      kalan satirlarin cogu basarisizlik degil, maliyet kapisinin BILEREK
+      atladigi kuyruktur. K, kalintiyi qc_findings'teki encoding_* bulgusuyla
+      eslestirip dort sinifa ayirir; 'INCELE' sutunu gercek acik kalemdir.
 
 DIKKAT -- H, TETIGIN KENDISINI OLCMEZ. H depolanmis chunk'lar uzerinden ve
 YALNIZ imza olcutuyle calisan bir TAHMINDIR; uretim tetigi ise SAYFA uzerinde
@@ -613,6 +617,112 @@ def bolum_j(db, bin_deger: float, sn_sayfa: float, kazanc: float = 0.98,
     return 0
 
 
+# =============================================================== BOLUM K =====
+# REPROCESS SONRASI HESAP: "kalan bozukluk beklenen mi, kacak mi?"
+#
+# J reprocess'ten SONRA da satir gosterir ve bu tek basina yaniltici: kalan
+# satirlarin cogu BASARISIZLIK DEGIL, maliyet kapisinin (min_broken_page_ratio)
+# bilerek atladigi kuyruktur. Ayrimi yapan sey qc_findings'teki bulgudur:
+#   encoding_repaired  -> onarim kostu ve KAZANC URETTI (detail: onarilan/kalan)
+#   encoding_broken    -> bulgu yazildi ama onarim KOSMADI ya da kazanc yoktu
+#                         (detail: 'maliyet kapisi' / 'BASARISIZ' / 'UYGULANMADI')
+# Bulgusu HIC OLMAYAN ama hala imza tasiyan dosya UCUNCU siniftir ve asil
+# ilgilenilmesi gereken odur: sayfa duzeyindeki tetik onu hic gormemis,
+# chunk duzeyinde ise iz var. Bu bolum ucunu ayirir.
+_SQL_BULGU = """
+WITH c AS (
+    SELECT c.file_id,
+           length(c.chunk_text) AS kar,
+           length(c.chunk_text) - length(translate(c.chunk_text, %(imza)s, ''))
+               AS im,
+           length(c.chunk_text) - length(translate(c.chunk_text, %(kay)s, ''))
+               AS kay,
+           length(c.chunk_text) - length(translate(c.chunk_text, %(tire)s, ''))
+               AS tire
+    FROM core_chunks c
+),
+d AS (
+    SELECT file_id,
+           count(*) FILTER (WHERE kar >= 200 AND 1000.0 * im / kar >= %(bin)s)
+               AS imza_chunk,
+           count(*) FILTER (WHERE kay > 0)  AS kay_chunk,
+           count(*) FILTER (WHERE tire > 0) AS tire_chunk
+    FROM c GROUP BY file_id
+),
+b AS (
+    SELECT DISTINCT ON (q.file_id) q.file_id, q.finding, q.detail
+    FROM qc_findings q
+    WHERE q.finding IN ('encoding_repaired', 'encoding_broken')
+    ORDER BY q.file_id, q.finding_id DESC
+)
+SELECT coalesce(b.file_id, d.file_id) AS fid, f.file_name,
+       b.finding, b.detail,
+       coalesce(d.imza_chunk, 0), coalesce(d.kay_chunk, 0),
+       coalesce(d.tire_chunk, 0)
+FROM d
+FULL JOIN b USING (file_id)
+JOIN core_files f ON f.file_id = coalesce(b.file_id, d.file_id)
+WHERE b.finding IS NOT NULL
+   OR d.imza_chunk > 0 OR d.kay_chunk > 0 OR d.tire_chunk > 0
+ORDER BY (coalesce(d.imza_chunk, 0) + coalesce(d.kay_chunk, 0)) DESC,
+         coalesce(b.finding, '');
+"""
+
+
+def _kapi_mi(detail: str) -> bool:
+    return "maliyet kapisi" in (detail or "")
+
+
+def bolum_k(db, bin_deger: float) -> int:
+    print("=" * 100)
+    print("BOLUM K  REPROCESS SONRASI HESAP -- kalan bozukluk beklenen mi?")
+    print("=" * 100)
+    with db.connection() as conn:
+        satirlar = conn.execute(_SQL_BULGU, {
+            "imza": IMZA, "kay": _KAYDIRMA_KAR, "tire": "\x02", "bin": bin_deger,
+        }).fetchall()
+    if not satirlar:
+        print("  Ne bulgu ne kalinti var -- glif kolu hic tetiklenmemis.")
+        return 0
+
+    onarilan, kapi, basarisiz, bulgusuz = [], [], [], []
+    for (fid, ad, bulgu, detail, imza, kay, tire) in satirlar:
+        k = (int(fid), ad, detail or "", int(imza), int(kay), int(tire))
+        if bulgu == "encoding_repaired":
+            onarilan.append(k)
+        elif bulgu == "encoding_broken":
+            (kapi if _kapi_mi(detail) else basarisiz).append(k)
+        else:
+            bulgusuz.append(k)
+
+    gruplar = (
+        ("ONARILDI (kapiyi gecti, kazanc uretti)", onarilan, "beklenen: kalinti ~0"),
+        ("KAPI ATLADI (oran < min_broken_page_ratio)", kapi,
+         "BEKLENEN kalinti -- tekrar reprocess AYNI sonucu verir"),
+        ("ONARIM BASARISIZ / KAZANC YOK", basarisiz, "INCELE"),
+        ("BULGU YOK ama chunk'ta iz VAR", bulgusuz,
+         "INCELE -- sayfa tetigi gormedi, chunk duzeyinde iz var"),
+    )
+    for baslik, grup, not_ in gruplar:
+        print(f"\n  --- {baslik}: {len(grup)} dosya  [{not_}]")
+        if not grup:
+            continue
+        print(f"  {'fid':>5} {'dosya':<42} {'imza':>5} {'kay':>4} {'tire':>5}  detail")
+        for (fid, ad, detail, imza, kay, tire) in grup:
+            print(f"  {fid:>5} {ad[:42]:<42} {imza:>5} {kay:>4} {tire:>5}  "
+                  f"{detail[:70]}")
+
+    kalinti_beklenen = sum(r[3] + r[4] for r in kapi)
+    kalinti_incele = sum(r[3] + r[4] for r in basarisiz + bulgusuz)
+    kalinti_onarilan = sum(r[3] + r[4] for r in onarilan)
+    print(f"\n  Kalan bozuk chunk: beklenen(kapi) {kalinti_beklenen:,} | "
+          f"onarilanlarda artik {kalinti_onarilan:,} | INCELENECEK {kalinti_incele:,}")
+    tire_toplam = sum(r[5] for r in onarilan + kapi + basarisiz + bulgusuz)
+    print(f"  Kalan 0x02 chunk: {tire_toplam:,}"
+          "   (0 olmali -- cleaning kolu kosulsuz calisir, kapiya tabi degil)")
+    return 0
+
+
 # =============================================================== BOLUM G =====
 # TABLO-FARKINDA RAPORLAMA. Bu bolum bir sure yalniz `p.text` okuyordu ve
 # uretim tetigiyle AYNI kor noktayi tasiyordu: c0_tanim_probe Bolum E'de
@@ -931,6 +1041,10 @@ def main() -> int:
     ap.add_argument("--kapsam", action="store_true",
                     help="Bolum J: kesin reprocess kapsami (imza VE C0 birlikte, "
                          "tablo/duzyazi ayrimli) -- file_id listesi uretir")
+    ap.add_argument("--bulgular", action="store_true",
+                    help="Bolum K: reprocess SONRASI hesap -- kalan bozuklugu "
+                         "qc_findings ile eslestirip 'kapi bilerek atladi' ile "
+                         "'kacak' olani ayirir")
     ap.add_argument("--kazanc-payi", type=float, default=0.98, dest="kazanc",
                     metavar="P", help="Bolum J: OCR kolunu YOGUN/KUYRUK ayiran "
                                       "kumulatif kazanc payi (varsayilan 0.98)")
@@ -950,6 +1064,8 @@ def main() -> int:
                            a.imza_bin, a.yalniz_tetik)
         if a.tire_tarama is not None:
             return bolum_i(db, max(1, a.tire_tarama), a.katman)
+        if a.bulgular:
+            return bolum_k(db, esik)
         if a.kapsam:
             return bolum_j(db, esik, a.sn_sayfa, min(max(a.kazanc, 0.0), 1.0),
                            a.sn_parse)
