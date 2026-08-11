@@ -1,0 +1,154 @@
+# RagIntel Golden Dataset v1 — BDDK korpusuna ÇIPALANMIŞ (30 soru)
+
+> Bu belge `RagIntel_Turk_Bankacilik_Golden_Dataset_v1.md` taslağının yerine geçer.
+> Taslak bilgiden yazılmıştı; bu sürüm **korpusun metninden kesildi**.
+> Kaynak: `golden_v1_kaynak_probe` çıktısı (`docs/result.txt`, 2026-08-11).
+
+## 0. Neden yeniden yazıldı
+
+Taslağın 30 sorusundan **21'i korpusta bulunmayan yönetmeliklere** çıpalanmıştı.
+Bu bir atıf hatası değil, ölçüm aracının kendisinin boşlukta durmasıydı — eski
+golden'ın başına gelenin (quote eşleme 0/43, tüm metrikler 0.000) aynısı.
+
+Ölçüldü (`golden_mevzuat_kimlik_probe` Bölüm D + `golden_v1_kaynak_probe`):
+
+| Taslağın dayandığı kaynak | Korpusta kaynak metni | Düşen soru |
+|---|---|---|
+| Sermaye Yeterliliği Yönetmeliği | **YOK** | E03, M01, M04, M05, H01, H02, H06, H07, H09 |
+| Likidite Yeterliliği Yönetmeliği | **YOK** | E04, M05, H01, H06, H07 |
+| Kaldıraç Yönetmeliği | **YOK** | E09, M01, H01, H09 |
+| Sermaye Tamponları Yönetmeliği | **YOK** | M04, H09 |
+| YP Net Genel Pozisyon Yönetmeliği | **YOK** | M09 |
+| Sistemik Önemli Bankalar Yönetmeliği | **YOK** (yalnız `mevzuat_1167` atıf yapar) | E10, M10 |
+| Karşılık Yönetmeliği | **YOK** | E05, M03, H02, H03, H06, H08 |
+
+Korpusun gerçek bileşimi: **kanunlar** (5411 / 5464 / 6361) + **BDDK rehberleri**
++ **tebliğ/genelgeler** + **TBB yayınları**. Set bunun üzerine kuruldu.
+
+## 1. Bilerek DIŞARIDA bırakılanlar
+
+**5411 m.33 (bağımsız denetim) — KORPUS ÇELİŞİYOR, soru yazılamaz.**
+Korpustaki iki baskı farklı hüküm veriyor:
+
+- `5411 sayılı Bankacılık Kanunu.pdf` chunk=38 → *"(Değişik birinci fıkra: 6/12/2012-6362/145 md.) Kamu Gözetimi, Muhasebe ve Denetim Standartları Kurumu tarafından yetkilendirilmiş…"* — **yürürlükteki metin**
+- `5411_Guncel_2.pdf` chunk=38 → *"Bu Kanunun 15 inci maddesine göre yetkilendirilecek bağımsız denetim kuruluşlarının çalışmalarına ilişkin esaslar Türkiye Serbest Muhasebeci Malî Müşavirler…"* — **2005 orijinali, mülga**
+
+Adında "Guncel" geçen dosya güncel değil. Retriever hangisini döndürürse
+döndürsün "doğru" sayılamaz. Bu bir **korpus kusuru**; ayrı kalem olarak
+işlenmeli (yanlış baskının elenmesi veya sürüm etiketlenmesi).
+
+**Ölü desenler** (yetkili kaynağı getirmedi, golden'a girmedi):
+`özkaynak` (914 chunk; tepe isabet hesap planı dökümü `mevzuat_1334`),
+`gerçeğe uygun değer` (222 chunk; aynı sorun — çipa dosya-adıyla kuruldu),
+`likidite karşılama oranı` (tepe isabetler kısaltma tabloları),
+`iç sistemlere ilişkin` (tek isabet, yanlış kanun),
+`müşteri sırrı` (tepe isabet kaynakça sayfası),
+`sistemik önemli banka` (tepe isabet org şeması tablosu).
+
+**Havuz bayat:** prob 72 dosyalık reprocess'ten ÖNCE koştu; 57 dosya "C0 artığı
+(reprocess bekliyor)" diye elenmişti. Reprocess bitti (0x02 korpustan silindi),
+prob tekrar koşturulunca havuz büyür ve yeni çıpalar açılabilir.
+
+---
+
+## 2. Kolay — tek doküman, tek chunk (`single_fact`)
+
+| ID | Soru | Golden Answer | gold_evidence (dosya · s. · alıntı) |
+|---|---|---|---|
+| E01 | Bir banka istediği her finansal faaliyeti serbestçe yürütebilir mi? | Hayır. 5411 m.4 faaliyet konularını **sayma yöntemiyle** belirler; bankalar diğer kanunlardaki hükümler saklı kalmak kaydıyla yalnız maddede sayılan faaliyetleri gerçekleştirebilir (mevduat/katılım fonu kabulü, kredi verme, ödeme ve fon transferi, saklama, kart işlemleri vb.). | `5411_Guncel_2.pdf` s.3 · `5411 sayılı Bankacılık Kanunu.pdf` s.3 — "Bankalar, diğer kanunlarda öngörülen hükümler saklı kalmak kaydıyla aşağıda belirtilen faaliyetleri gerçekleştirebilirler" |
+| E02 | Kuruluş izni alan bir banka doğrudan faaliyete başlayabilir mi? | Hayır. Kuruluş veya şube açma izni alan bankaların Kurul'dan **ayrıca faaliyet izni** alması şarttır (5411 m.10). İzinler Resmî Gazete'de yayımlanır. | `5411 sayılı Bankacılık Kanunu.pdf` s.7 — "Bu Kanunun 6 ncı maddesi çerçevesinde kuruluş veya Türkiye'de şube açma izni alan bankaların, Kuruldan ayrıca faaliyet izni alması şarttır" |
+| E03 | Bir bankanın tek bir gerçek/tüzel kişiye veya risk grubuna kullandırabileceği kredinin üst sınırı nedir? | Özkaynakların **yüzde yirmibeşi** (5411 m.54). Bu oran m.49/2'deki risk grubu için yüzde yirmi olarak uygulanır; Kurul yüzde yirmibeşe kadar yükseltmeye yetkilidir. | `5411_Guncel_2.pdf` s.21 · `5411 sayılı Bankacılık Kanunu.pdf` s.25 — "kullandırılabilecek kredilerin toplamı özkaynakların yüzde yirmibeşini aşamaz" |
+| E04 | Banka kurucu ortaklarında iflas/konkordato açısından hangi şart aranır? | Kurucu ortakların 2004 sayılı İcra ve İflas Kanunu hükümlerine göre **müflis olmaması, konkordato ilan etmemiş olması**, uzlaşma suretiyle yeniden yapılandırma başvurusunun tasdik edilmemiş olması ve haklarında iflasın ertelenmesi kararı verilmemiş olması gerekir (5411 m.8). | `5411_Guncel_2.pdf` s.6 · `5411 sayılı Bankacılık Kanunu.pdf` s.6 — "2004 sayılı İcra ve İflas Kanunu hükümlerine göre müflis olmaması, konkordato ilân etmiş olmaması" |
+| E05 | Kurum personelinin görevi sırasında öğrendiği sırlara ilişkin yükümlülüğü nedir? | Kurul/Fon başkan ve üyeleri ile personeli, öğrendikleri banka, bağlı ortaklık, iştirak ve **müşteri sırlarını** kanunen yetkili olanlardan başkasına açıklayamaz ve kendi/başkası yararına kullanamaz (5411 m.73). Yükümlülük dışarıdan destek hizmeti alınan kişi ve kuruluşları da kapsar. | `5411_Guncel_2.pdf` s.28 · `5411 sayılı Bankacılık Kanunu.pdf` s.34 — "görevleri sırasında öğrendikleri bankalara ve bunların bağlı ortaklık, iştirak, birlikte kontrol edilen ortaklıkları ve müşterilerine ait sırları" |
+| E06 | Bir veri hangi andan itibaren müşteri sırrı sayılır? | Bankacılık faaliyetlerine özgü olarak **bankayla müşteri ilişkisi kurulduktan sonra oluşan** veriler müşteri sırrı niteliğini kazanır (5411 m.73/3 uyarınca, BDDK 2022 genelgesi). | `mevzuat_1135.pdf` s.2 — "bankayla müşteri ilişkisi kurulduktan sonra oluşan veriler müşteri sırrı niteliğini haiz olmaktadır" |
+| E07 | Kart sözleşmelerinin yazılı şekline ilişkin punto/renk şartı nedir? | **En az on iki punto ve koyu siyah harflerle** hazırlanmış yazılı şekil; ya da uzaktan iletişim araçlarıyla mesafeli olarak veya Kurul'un yazılı şekil yerine geçeceğini belirlediği yöntemle (5464 m.24). | `5464 sayılı Banka Kartları ve Kredi Kartları Kanunu` s.9 — "en az on iki punto ve koyu siyah harflerle hazırlanacak yazılı şekilde" |
+| E08 | Finansal kiralama sözleşmesi nedir? | Kiralayanın, kiracının talebi ve seçimi üzerine üçüncü kişiden veya kiracıdan satın aldığı ya da hâlihazırda mülkiyetindeki bir malın **zilyetliğini**, her türlü faydayı sağlamak üzere **kira bedeli karşılığında** kiracıya bırakmasını öngören sözleşmedir (6361 m.18). | `6361 sayılı Finansal Kiralama, Faktoring, Finansman…` s.12 — "kiralayanın, kiracının talebi ve seçimi üzerine üçüncü bir kişiden veya bizzat kiracıdan satın aldığı veya başka suretle temin ettiği" |
+| E09 | Faktoring sözleşmesi hangi fonksiyonları içerebilir? | Fatura ile tevsik edilen (veya Kurulca belirlenen esaslarla tevsik edilebilen) alacakların devralınması suretiyle **tahsilat**, **borçlu ve müşteri hesaplarının tutulması**, bunun yanı sıra **finansman** veya **faktoring garantisi** fonksiyonlarından biri ya da tümü (6361 m.38). | `6361 sayılı Finansal Kiralama, Faktoring, Finansman…` s.17 — "müşterisine sağladığı tahsilat, borçlu ve müşteri hesaplarının tutulmasının yanı sıra finansman veya faktoring garantisi fonksiyonlarından herhangi birini ya da tümünü içeren sözleşmedir" |
+| E10 | Mevduat ve katılım fonları kim tarafından sigorta edilir, kapsam dışı olanlar kimlerdir? | **Tasarruf Mevduatı Sigorta Fonu** tarafından. Kredi kuruluşları nezdindeki **resmi kuruluşlara, kredi kuruluşlarına ve finansal kuruluşlara ait** mevduat/katılım fonları kapsam dışıdır (5411 m.63). Kredi kuruluşları sigortaya tâbi kısım üzerinden prim öder. | `5411 sayılı Bankacılık Kanunu.pdf` s.29 — "haricindeki tüm mevduat ve katılım fonları, Tasarruf Mevduatı Sigorta Fonu tarafından sigorta edilir" |
+
+---
+
+## 3. Orta — doğru bölümü bulma + yorumlama
+
+| ID | Soru | Golden Answer | gold_evidence |
+|---|---|---|---|
+| M01 | Kurul'un istediği tedbirler alınmazsa banka için süre bakımından nasıl bir sınır işler? | Tedbirlerin Kurul'un verdiği süre içinde **ya da her hâlükârda en geç oniki ay içinde** kısmen/tamamen alınmaması hâlinde — veya alınmasına rağmen mali bünyenin güçlendirilemeyeceğinin tespiti hâlinde — faaliyet izninin kaldırılması ya da Fon'a devir gündeme gelir (5411 m.71). | `5411_Guncel_2.pdf` s.28 · `5411 sayılı Bankacılık Kanunu.pdf` s.33 — "her halükârda en geç oniki ay içinde kısmen ya da tamamen alınmaması" |
+| M02 | Kredi riskinde önemli artış olmayan bir finansal araç için hiç karşılık ayrılmaz mı? | Ayrılır. Önemli artış yoksa zarar karşılığı **12 aylık beklenen kredi zararına eşit** bir tutardan ölçülür (TFRS 9 § 5.5.5). Tüm kredi tutarları için daima BKZ hesaplanması esastır; "karşılıksız" bir kategori yoktur. | `mevzuat_0943.pdf` s.12 — "önemli derecede artış meydana gelmemiş olması durumunda işletme söz konusu finansal araca ilişkin zarar karşılığını 12 aylık beklenen kredi zararlarına eşit bir tutardan ölçer" |
+| M03 | Ömür boyu beklenen kredi zararı hangi durumda finansal tablolara alınır? | İlk defa finansal tablolara alınmasından bu yana **kredi riskinde önemli artış** olan tüm finansal araçlar için — bireysel ya da toplu olarak, makul ve **ileriye yönelik** olanlar dâhil desteklenebilir tüm bilgiler dikkate alınarak (TFRS 9 § 5.5.4). | `mevzuat_0943.pdf` s.13 — "ilk defa finansal tablolara alınmasından bu yana kredi riskinde önemli artışlar olan tüm finansal araçlar için" |
+| M04 | Sorunlu bir alacak yeniden yapılandırıldığında bankanın işi biter mi? | Hayır. Rehber, yapılandırma **uygulandıktan sonra** bankaların bunların **etkililiğini ve etkinliğini izlemesini** ister; yapılandırma olasılıkları sorunlu alacağın olumsuz etkilerini ortadan kaldırmak ve sınırlandırmak amacıyla değerlendirilir. | `mevzuat_1040.pdf` s.13 — "Yeniden yapılandırma uygulanması halinde, bankalar bunların etkililiğini ve etkinliğini izlemelidir" |
+| M05 | Likidite ölçütlerinin izlenmesi tek başına yeterli midir? | Hayır. Likidite ölçütlerinden **ayrı olarak**, likidite pozisyonu veya olası fon gereksinimlerindeki artan riskleri önceden tespit eden **erken uyarı göstergeleri** kullanılmalıdır; içsel veriler kadar dışsal göstergeler de kullanılabilir. | `mevzuat_0954.pdf` s.10 — "Likidite ölçütlerinden ayrı olarak, likidite pozisyonu veya olası fon gereksinimlerine ilişkin artan risklerin önceden tespit edilmesine yönelik olarak erken uyarı göstergeleri kullanılmalıdır" |
+| M06 | Bankacılık hesaplarından kaynaklanan faiz oranı riski için ölçüm yapmak yeterli midir? | Hayır. İlke 1'e göre BHFOR **tespit edilmeli, ölçülmeli, izlenmeli, kontrol edilmeli ve yönetilmelidir**; ayrıca bankacılık hesaplarından kaynaklanan kredi farkı riski (BHKFFR) de izlenip değerlendirilmelidir. | `mevzuat_1291.pdf` s.3 — "BHFOR bankalarca tespit edilmeli, ölçülmeli, izlenmeli, kontrol edilmeli ve yönetilmelidir" |
+| M07 | Faizsiz bankacılık danışma komitesi üyelerinde hangi öğrenim ve deneyim şartları aranır? | Üyelerin **asgari üçte ikisinin** İlahiyat veya dengi alanda en az lisans öğrenimi görmüş **ya da** faizsiz finans alanında yüksek lisans/doktora derecesine sahip olması **ve ayrıca** faizsiz finans alanında **en az üç yıl** mesleki deneyimi bulunması zorunludur; Kurul bu şartları tüm üyeler için arayabilir. | `mevzuat_1323.pdf` s.2 — "faizsiz finans alanında yüksek lisans ya da doktora derecesine sahip olmanın yanı sıra, faizsiz finans alanında en az üç yıl mesleki deneyime sahip olması zorunludur" |
+| M08 | Gerçeğe uygun değer ölçümünde yönetişim sorumluluğu kimdedir? | **Yönetim kurulunda.** Risk yönetimi ve finansal raporlama amaçlı olarak gerçeğe uygun değerle ölçülen bütün finansal araçlar için yeterli yönetim yapılanması ve kontrol süreçlerinin oluşturulmasını sağlamak yönetim kurulunun görevidir; süreçler banka genelinde tutarlı ve risk yönetimiyle bütünleşik olmalıdır. | `mevzuat_0945.pdf` s.2 — "Yönetim kurulu, risk yönetimi ve finansal raporlama amaçları için gerçeğe uygun değer yöntemiyle değeri belirlenen bütün finansal araçlara ilişkin yeterli yönetim yapılanmasının ve kontrol süreçlerinin oluşturulmasını sağlamalıdır" |
+| M09 | Kredi izlemesinde erken uyarı göstergeleri neye dayandırılmalıdır? | Kredi riskindeki artışları **zamanında** tespit etmeye imkân veren uygun bir **BT ve veri altyapısı** tarafından desteklenen nicel ve nitel EUG'lar; toplam portföy, alt portföy, sektör, coğrafi bölge ve münferit alacak bazında geliştirilmeli, sürdürülmeli ve düzenli değerlendirilmelidir. | `mevzuat_1041.pdf` s.46 — "zamanında tespit etmeye imkan veren uygun bir BT ve veri altyapısı tarafından desteklenen" |
+| M10 | Önlem planı rehberi hangi bankaları muhatap alır? | Rehberdeki "Banka" tanımı **Sistemik Önemli Bankalar Hakkında Yönetmeliğin 3'üncü maddesinin birinci fıkrasının (o) bendinde** tanımlanan bankalara atıf yapar; yani rehber sistemik önemli bankalar içindir. *(Not: anılan Yönetmeliğin kendi metni korpusta yoktur — cevap atıf düzeyinde kalır.)* | `mevzuat_1167.pdf` s.1 — "Sistemik Önemli Bankalar Hakkında Yönetmeliğin 3 üncü maddesinin birinci fıkrasının" |
+
+---
+
+## 4. Zor — çok doküman, TEK odak
+
+> Tasarım kuralı: iki parçalı ("X'i ve Y'yi açıklayın") soru **yazılmadı**.
+> Ölçüldü ve ders alındı — iki parçalı synthesis sorusu recall'ü sahte olarak
+> çökertiyor (bkz. `rerank-ab-onveri`, rr-ext recall %3). Her soru tek bir şey
+> sorar; çok-dokümanlılık cevabın **dayanağından** gelir, sorunun parçalarından değil.
+
+| ID | Soru | Golden Answer | gold_evidence |
+|---|---|---|---|
+| H01 | Bankaların kredi karşılığı ayırma yükümlülüğü hangi düzeyde doğar? | İki katmanlı: **kanun düzeyinde** 5411 m.53, bankalara doğmuş/doğması muhtemel zararlar ve değer azalışları için yeterli düzeyde karşılık ayrılmasına ilişkin **politika oluşturma ve uygulama** yükümlülüğü getirir; **ölçüm düzeyinde** ise tutar TFRS 9 beklenen kredi zararı yaklaşımıyla, BCBS'e paralel üç parametre (TO, THK, RMT) üzerinden belirlenir. | `5411_Guncel_2.pdf` s.20 — "doğmuş veya doğması muhtemel zararların karşılanması ve bunlar dışında kalan varlıkların değer azalışları için yeterli düzeyde karşılık ayrılmasına" · `Finansal_Riskler_ve_Turev_Urunler_2.pdf` s.105 — "beklenen kredi zararı hesaplaması için BCBS tarafından belirlenen beklenen kredi zararı yaklaşımına paralel şekilde 3 temel parametre bulunmaktadır" |
+| H02 | Banka bir müşteri verisini üçüncü tarafla paylaşırken hangi çerçeveye tabidir? | 5411 m.73'ün sır saklama yükümlülüğü, verinin **banka-müşteri ilişkisi kurulduktan sonra oluşmuş olması** hâlinde müşteri sırrı rejimini devreye sokar; paylaşım ancak kanunen yetkili olanlara veya ilgili düzenlemelerdeki istisnalar çerçevesinde ve **ölçülü** biçimde yapılabilir. Yükümlülük dışarıdan destek hizmeti alınan kişi/kuruluşları da kapsar. | `5411 sayılı Bankacılık Kanunu.pdf` s.34 — "görevleri sırasında öğrendikleri bankalara ve bunların bağlı ortaklık, iştirak, birlikte kontrol edilen ortaklıkları ve müşterilerine ait sırları" · `mevzuat_1135.pdf` s.2 — "bankayla müşteri ilişkisi kurulduktan sonra oluşan veriler müşteri sırrı niteliğini haiz olmaktadır" |
+| H03 | Likidite yetersizliği tek başına bir kuruluşun faaliyet izninin kaldırılmasına yol açabilir mi? | Evet, kuruluş türüne göre. **6361 m.50/A** tasarruf finansman şirketleri için likidite düzeyinin sürdürülememesini veya güvenilir hesaplanamamasını doğrudan bir kaldırma/tasfiye sebebi sayar. **5411 m.71**'de ise bankalar için yol dolaylıdır: önce m.70 tedbirleri, bunların süresinde veya en geç oniki ayda alınmaması hâlinde izin kaldırma/Fon'a devir. | `6361 sayılı Finansal Kiralama, Faktoring, Finansman…` s.26 — "Likidite düzeyinin sürdürülememesi veya sürdürülemeyeceğinin anlaşılması, likidite hesaplamasının güvenilir şekilde gerçekleştirilememesi" · `5411_Guncel_2.pdf` s.28 — "her halükârda en geç oniki ay içinde kısmen ya da tamamen alınmaması" |
+| H04 | Henüz sorunlu hâle gelmemiş bir kredide bankanın izleme yükümlülüğü var mıdır? | Evet. Kredi izleme sistemleri, kredi riskindeki artışları zamanında tespit eden **BT ve veri altyapısıyla desteklenen EUG'lar** üzerine kurulur; sorunlu alacak rehberi de yapılandırma sonrası izlemeyi zorunlu tutar. İzleme yükümlülüğü sorunlu hâle gelmeyi beklemez. | `mevzuat_1041.pdf` s.46 — "zamanında tespit etmeye imkan veren uygun bir BT ve veri altyapısı tarafından desteklenen" · `mevzuat_1040.pdf` s.13 — "Yeniden yapılandırma uygulanması halinde, bankalar bunların etkililiğini ve etkinliğini izlemelidir" |
+| H05 | Değerleme süreçlerinin doğruluğu bankanın kendi beyanına mı bırakılmıştır? | Hayır. İç katmanda **yönetim kurulu**, gerçeğe uygun değerle ölçülen bütün araçlar için yeterli yönetim yapılanması ve kontrol süreçlerini kurmakla yükümlüdür; dış katmanda **Kurum**, İç Sistemler ve İSEDES Yönetmeliği kapsamında bankaların sermaye gereksinimlerini etkin belirleyip belirlemediğini düzenli denetler ve gerektiğinde talimat/yaptırım mekanizmalarını işletir. | `mevzuat_0945.pdf` s.2 — "Yönetim kurulu, risk yönetimi ve finansal raporlama amaçları için gerçeğe uygun değer yöntemiyle değeri belirlenen bütün finansal araçlara ilişkin yeterli yönetim yapılanmasının ve kontrol süreçlerinin oluşturulmasını sağlamalıdır" · `mevzuat_0944.pdf` s.3 — "Kurum, İç Sistemler ve İSEDES Yönetmeliği kapsamında bankaların riskleri için bulundurmaları gereken sermaye gereksinimlerini etkin bir biçimde belirleyip belirlemediklerini" |
+| H06 | Faiz oranı riski için tutulacak sermayeyi kim belirler? | Birincil sorumluluk bankadadır: BHFOR tespit/ölçüm/izleme/kontrol/yönetim döngüsü İlke 1 ile bankaya yüklenir. Ancak bu içsel belirlemenin **etkinliği Kurum tarafından denetlenir** — İç Sistemler ve İSEDES Yönetmeliği kapsamında bankaların riskleri için bulundurmaları gereken sermaye gereksinimlerini etkin belirleyip belirlemedikleri düzenli olarak incelenir. | `mevzuat_1291.pdf` s.3 — "BHFOR bankalarca tespit edilmeli, ölçülmeli, izlenmeli, kontrol edilmeli ve yönetilmelidir" · `mevzuat_0944.pdf` s.3 — "Kurum, İç Sistemler ve İSEDES Yönetmeliği kapsamında bankaların riskleri için bulundurmaları gereken sermaye gereksinimlerini etkin bir biçimde belirleyip belirlemediklerini" |
+| H07 | Banka kartı ile kredi kartı arasındaki hukuki fark nedir? | **Banka kartı**, mevduat hesabı veya özel cari hesapların kullanımı dâhil bankacılık hizmetlerinden yararlanmayı sağlar — yani kart hamilinin **kendi hesabına** bağlıdır. **Kredi kartı** ise nakit kullanımı gerekmeksizin mal/hizmet alımı veya nakit çekme olanağı sağlar; fizikî varlığı bulunmayan kart numarası da bu kapsamdadır (5464 m.3). | `5464 sayılı Banka Kartları ve Kredi Kartları Kanunu` s.1 — "Banka kartı: Mevduat hesabı veya özel carî hesapların kullanımı dahil bankacılık hizmetlerinden yararlanmayı sağlayan kartı" ve "Nakit kullanımı gerekmeksizin mal ve hizmet alımı veya nakit çekme olanağı sağlayan basılı kartı" |
+| H08 | Faizsiz bankacılık uyumu bankanın ticari tercihi midir, düzenleyici yükümlülük mü? | Düzenleyici yükümlülüktür. Tebliğ, **5411 m.29 ve m.93**'e dayanılarak hazırlanmıştır; kurulan danışma komitesi üst düzey yönetimin ve ilgili tarafların etkisinden **uzak ve bağımsız** karar almak zorundadır ve banka menfaat çatışmalarını önleyecek tedbirleri almakla yükümlüdür. | `mevzuat_1323.pdf` s.1 — "Bu Tebliğ, 19/10/2005 tarihli ve 5411 sayılı Bankacılık Kanununun 29 uncu ve 93 üncü maddelerine dayanılarak hazırlanmıştır" · `mevzuat_1323.pdf` s.2 — "Danışma komitesi, üst düzey yönetim ve ilgili bütün tarafların etkisinden uzak ve bağımsız şekilde karar alır" |
+| H09 | Açık bankacılıkta API üzerinden veri paylaşımı yalnızca teknik bir entegrasyon mudur? | Hayır. API teknik olarak "bir yazılım veya programın hedef yazılımda belirlenen işlev ve bilgileri kullanmasını sağlayan arayüz"dür; ancak paylaşım Bankaların Bilgi Sistemleri ve Elektronik Bankacılık Hizmetleri Hakkında Yönetmelik kapsamında **bilgi sistemlerinin yönetimi ve elektronik bankacılık hizmetlerinin sunulması** rejimine tabidir; buna kimlik doğrulama ve işlem güvenliği kriterleri eklenir. | `acik-bankacilik-uygulamalari-potansiyel-etkileri-ve…` s.21 — "bir yazılım veya programın hedef yazılım veya programda belirlenen işlev ve bilgileri kullanmasını sağlayan arayüzdür" · aynı dosya s.28 — "bankaların işlemlerini gerçekleştirirken kullandıkları bilgi sistemlerinin yönetimi ile elektronik bankacılık hizmetlerinin sunulması" |
+| H10 | Likidite göstergelerinde bozulma tespit eden bir bankanın hazır bulundurması gereken nedir? | Erken uyarı göstergeleri bozulmayı **önceden** tespit etmeye yarar; tespitin karşılığı, mali bünyeyi **korumak veya iyileştirmek ve faaliyetleri sürdürmek** amacıyla önceden hazırlanmış, zamanında ve etkili şekilde uygulanabilecek bir **önlem planıdır**. Gösterge ile plan aynı zincirin iki halkasıdır. | `mevzuat_0954.pdf` s.10 — "Likidite ölçütlerinden ayrı olarak, likidite pozisyonu veya olası fon gereksinimlerine ilişkin artan risklerin önceden tespit edilmesine yönelik olarak erken uyarı göstergeleri kullanılmalıdır" · `mevzuat_1167.pdf` s.1 — "mali bünyelerini korumak veya iyileştirmek ve faaliyetlerini sürdürmek amacıyla" |
+
+---
+
+## 5. Kaynak dağılımı
+
+| Kaynak | Tür | Soru |
+|---|---|---|
+| 5411 sayılı Bankacılık Kanunu (2 baskı) | Kanun | E01–E05, E10, M01, H01, H02, H03 |
+| 5464 sayılı Banka/Kredi Kartları Kanunu | Kanun | E07, H07 |
+| 6361 sayılı Fin. Kiralama, Faktoring, Finansman | Kanun | E08, E09, H03 |
+| `mevzuat_0943` TFRS 9 rehberi | Rehber | M02, M03 |
+| `mevzuat_0944` denetim / İSEDES | Rehber | H05, H06 |
+| `mevzuat_0945` gerçeğe uygun değer | Rehber | M08, H05 |
+| `mevzuat_0954` likidite | Rehber | M05, H10 |
+| `mevzuat_1040` sorunlu alacak | Rehber | M04, H04 |
+| `mevzuat_1041` kredi izleme | Rehber | M09, H04 |
+| `mevzuat_1167` önlem planı | Rehber | M10, H10 |
+| `mevzuat_1291` BHFOR | Rehber | M06, H06 |
+| `mevzuat_1323` faizsiz bankacılık | Tebliğ | M07, H08 |
+| `mevzuat_1135` sır paylaşımı genelgesi | Genelge | E06, H02 |
+| `acik-bankacilik-…` | TBB yayını | H09 |
+| `Finansal_Riskler_ve_Turev_Urunler_2` | Kitap | H01 |
+
+15 ayrı kaynak, 20 ayrı chunk. Tek dosyaya çıpalama yok — mükerrer baskılarda
+alıntı **tüm baskılarda** evidence olarak yazılır (`golden_alinti_probe`
+mükerrer-baskı kuralı), yoksa recall sahte olarak çöker.
+
+## 6. Puanlama ve veri modeli
+
+Taslağın 4–9. bölümleri (10 puan/soru, ağırlıklı metrikler %35/%30/%25/%10,
+`required_concepts`, retrieval/generation ayrımı) **aynen geçerlidir** ve
+buraya tekrarlanmadı — bkz. `RagIntel_Turk_Bankacilik_Golden_Dataset_v1.md`
+bölüm 4–9.
+
+## 7. Doğrulama — yüklemeden ÖNCE koşulacak
+
+```bash
+cd /opt/ragintel && git pull
+python scripts/golden_alinti_probe.py --alinti-dosya docs/golden_v1_alintilar.txt \
+  > docs/alinti_dogrulama.txt 2>&1
+```
+
+Bekleme: 30 alıntının **30'u** için `ISABET >= 1`. Tek bir `ISABET: 0` bile
+`gates.evidence_precondition`i çıkış 2'ye düşürür ve gate hiç koşmaz — o yüzden
+yükleme (`eval load`) bu çıktı temiz olmadan yapılmaz.
+
+`ISABET: 0` çıkarsa kök iki türlüdür ve probun bastığı `normalize` satırı
+ikisini ayırır: (a) alıntı korpusta yok, (b) desen normalize edilince değişti.
