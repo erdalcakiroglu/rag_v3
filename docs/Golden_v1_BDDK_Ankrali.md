@@ -131,6 +131,52 @@ prob tekrar koşturulunca havuz büyür ve yeni çıpalar açılabilir.
 alıntı **tüm baskılarda** evidence olarak yazılır (`golden_alinti_probe`
 mükerrer-baskı kuralı), yoksa recall sahte olarak çöker.
 
+Alıntı çözümlemesi koştu (`--alinti-dosya`, 2026-08-11): **31 alıntının 31'i
+`ISABET >= 1`**, sıfır ıska. Çözümleme 32 dosyada **77 ayrı `(dosya, sayfa)`
+evidence girdisi** verdi; bunlar 30 kayda dağıtılınca (H katmanı çıpa paylaşır)
+toplam **94 evidence** oluyor. Ham çıktı `docs/golden_v1_evidence.json`.
+
+## 5b. Mükerrer baskının recall'e ÖLÇÜLEN bedeli
+
+Mükerrer-baskı kuralı doğru ama bedava değil. `recall_at_k` bu kod tabanında
+sert paydalı: `len(gold ∩ topk) / len(gold)` (`ragintel/eval/metrics.py`).
+5411 korpusta 6 baskıda durduğu için bazı soruların gold kümesi 6–9 chunk;
+k=5'te bu kümenin tamamı **fiziksel olarak** dönemez.
+
+| Kayıt | gold chunk | recall@5 tavanı | recall@10 | recall@20 |
+|---|---|---|---|---|
+| `gs-bddk-h01` | 9 | **0.556** | 1.000 | 1.000 |
+| `gs-bddk-e03` | 8 | **0.625** | 1.000 | 1.000 |
+| `gs-bddk-e01` | 7 | **0.714** | 1.000 | 1.000 |
+| `gs-bddk-e02` / `h02` / `h03` | 6 | **0.833** | 1.000 | 1.000 |
+
+**Set geneli recall@5 tavanı = 0.946.** Kusursuz bir retriever bile bunu aşamaz;
+30 kaydın 6'sı etkileniyor. recall@10 ve recall@20 tavanı 1.000 — sorun yalnız
+k=5'te.
+
+Sonuçlar:
+- **Manşet metrik recall@10 olmalı.** recall@5 okunacaksa 1.0'a değil **0.946'ya**
+  göre okunur; aksi hâlde korpus mükerrerliği retriever kusuru gibi raporlanır.
+- `nDCG@k` ve `MRR` bu tavandan **etkilenmez** (IDCG `min(|gold|, k)` alır,
+  MRR ilk isabete bakar) — k=5'te sağlıklı okunan metrikler bunlar.
+- Metrik kodu **değiştirilmedi**. Gerçek çözüm ölçüde değil korpusta: 5411'in
+  fazla baskılarının elenmesi (§1'deki korpus kusuru kalemiyle aynı iş) tavanı
+  kendiliğinden 1.0'a çıkarır.
+
+## 5c. AÇIK EKSİK — `unanswerable` kolu yok
+
+v0'da 36 kaydın **5'i** `answerable=false` idi. Bu sette **0**. Taslakta da
+yoktu; yeni bir eksik değil ama devredilmemeli: M-17 honesty ölçütü
+(`honest = declined ∧ (kaynak=0 ∨ coverage=1.0)`) cevaplanamaz soru olmadan
+**hiç koşamaz**. Set bu hâliyle retrieval'i ölçer, dürüstlüğü ölçmez.
+
+Kolu kurmanın malzemesi hazır: §0'daki 7 yönetmelik kaynak metni korpusta yok,
+yani "asgari sermaye yeterliliği oranı yönetmelikte kaç?" tipi sorular tam da
+cevaplanamaz. **Ama önce yokluk doğrulanmalı** — korpustaki kitaplar (ör.
+`Kitap-Banka_Muhasebesi`) aynı oranı anlatıyor olabilir; gerçekte cevaplanabilir
+bir soruyu `unanswerable` yazmak dürüst sistemi yanlış saydırır. Yokluk
+`golden_alinti_probe --alinti` ile ölçülmeden bu kol yazılmaz.
+
 ## 6. Puanlama ve veri modeli
 
 Taslağın 4–9. bölümleri (10 puan/soru, ağırlıklı metrikler %35/%30/%25/%10,
@@ -138,17 +184,57 @@ Taslağın 4–9. bölümleri (10 puan/soru, ağırlıklı metrikler %35/%30/%25
 buraya tekrarlanmadı — bkz. `RagIntel_Turk_Bankacilik_Golden_Dataset_v1.md`
 bölüm 4–9.
 
-## 7. Doğrulama — yüklemeden ÖNCE koşulacak
+## 7. Doğrulama zinciri
+
+**Adım 1 — alıntı çözümlemesi. KOŞTU, GEÇTİ (2026-08-11).**
 
 ```bash
-cd /opt/ragintel && git pull
-python scripts/golden_alinti_probe.py --alinti-dosya docs/golden_v1_alintilar.txt \
-  > docs/alinti_dogrulama.txt 2>&1
+python scripts/golden_alinti_probe.py --alinti-dosya docs/golden_v1_alintilar.txt
 ```
 
-Bekleme: 30 alıntının **30'u** için `ISABET >= 1`. Tek bir `ISABET: 0` bile
-`gates.evidence_precondition`i çıkış 2'ye düşürür ve gate hiç koşmaz — o yüzden
-yükleme (`eval load`) bu çıktı temiz olmadan yapılmaz.
+31/31 `ISABET >= 1`, sıfır ıska. Tek bir `ISABET: 0` bile
+`gates.evidence_precondition`i çıkış 2'ye düşürür ve gate hiç koşmazdı.
+Çıktı `docs/golden_v1_evidence.json` olarak saklandı.
 
-`ISABET: 0` çıkarsa kök iki türlüdür ve probun bastığı `normalize` satırı
-ikisini ayırır: (a) alıntı korpusta yok, (b) desen normalize edilince değişti.
+**Adım 2 — `doc_scope` teyidi. BEKLİYOR, ZORUNLU.**
+
+`map_gold_chunks` adayları `f.file_name = … AND f.doc_scope = rec.doc_scope`
+ile süzer (`ragintel/eval/repository.py`). Scope yanlışsa aday kümesi **boş**
+döner, 94 evidence'ın 94'ü unmapped olur ve metrikler 0.000 çıkar — eski
+golden'ın arızasının birebir aynısı, üstelik "korpus kötü" gibi okunur.
+Varsayım yasak, ölçülür:
+
+```bash
+python scripts/golden_alinti_probe.py --dosya "5411 sayılı Bankacılık Kanunu.pdf" --dosya-limit 1
+```
+
+Başlıktaki `doc_scope` alanı ne diyorsa Adım 3'e o verilir.
+
+**Adım 3 — JSONL üretimi (DB'ye dokunmaz).**
+
+```bash
+python scripts/golden_v1_jsonl_uret.py --doc-scope <ADIM-2'DEKİ DEĞER>
+```
+
+30 kayıt / 94 evidence / 32 dosya yazar ve `load_golden_jsonl` şema+benzersizlik
+doğrulamasından geçirir. Soru-cevap metni bu belgeden, alıntılar probe
+çıktısından okunur — script hiçbir metni kendi yazmaz.
+
+**Adım 4 — kuru koşum (yükleme ÖNCESİ).**
+
+```bash
+python -m ragintel.eval retrieval --from-file eval/golden/v1.jsonl --variant hybrid --json
+```
+
+`--from-file` seti DB'ye yazmadan koşar. Bakılacak tek sayı önce metrikler
+değil **eşleme oranı**: `mapped_evidence` 94/94 olmalı. 94'ün altındaysa
+`unmapped` listesi hangi `(dosya, sayfa, alıntı)` üçlüsünün düştüğünü söyler —
+neredeyse kesin `doc_scope` ya da sayfa kayması demektir, o hâlde yükleme yapılmaz.
+
+Metrikler okunurken §5b geçerli: **manşet recall@10**, recall@5 tavanı 0.946.
+
+**Adım 5 — yükleme. Ayrı ve bilinçli adım; hiçbir probe bunu yapmaz.**
+
+```bash
+python -m ragintel.eval load eval/golden/v1.jsonl --version v1-bddk
+```
