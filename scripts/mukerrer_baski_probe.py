@@ -152,22 +152,20 @@ def main() -> int:
             tum_id = sorted({i for k in kumeler for i in k})
             bilgi_rows = conn.execute(
                 """
-                SELECT f.file_id, f.file_name,
+                SELECT f.file_id, f.file_name, f.quality_score AS skor,
                        count(c.chunk_id) AS chunk_n,
                        count(DISTINCT c.page_number) AS sayfa_n,
-                       max(m.quality_score) AS skor,
                        string_agg(c.chunk_text, ' ') AS govde
                 FROM core_files f
                 LEFT JOIN core_chunks c USING (file_id)
-                LEFT JOIN metrics_ingestion m USING (file_id)
                 WHERE f.file_id = ANY(%s)
-                GROUP BY f.file_id, f.file_name;
+                GROUP BY f.file_id, f.file_name, f.quality_score;
                 """,
                 (tum_id,),
             ).fetchall()
 
         bilgi = {}
-        for fid, ad, chunk_n, sayfa_n, skor, govde in bilgi_rows:
+        for fid, ad, skor, chunk_n, sayfa_n, govde in bilgi_rows:
             metin = govde or ""
             yillar = [int(y) for y in _YIL.findall(metin)]
             bilgi[fid] = {
