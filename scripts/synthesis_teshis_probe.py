@@ -106,6 +106,17 @@ def _cipa_gold(conn, repo, normalize_for_quote, ev: dict, doc_scope: str) -> set
     return {c["chunk_id"] for c in cands if qn and qn in (c["chunk_text_norm"] or "")}
 
 
+_SINIF_SIRASI = ("BULUNDU", "GEC", "YANLIS_CHUNK", "DOSYA_YOK")
+
+
+def _daha_iyi(a: dict, b: dict) -> bool:
+    """Aynı alıntının iki baskısından hangisi daha iyi konumda (sınıf, sonra sıra)."""
+    ia, ib = _SINIF_SIRASI.index(a["sinif"]), _SINIF_SIRASI.index(b["sinif"])
+    if ia != ib:
+        return ia < ib
+    return (a["gold_rank"] or 10**9) < (b["gold_rank"] or 10**9)
+
+
 def _sinifla(gold_rank: int | None, dosya_rank: int | None, esik: int) -> str:
     if gold_rank is not None and gold_rank <= esik:
         return "BULUNDU"
@@ -196,12 +207,19 @@ def main() -> int:
         for rec in kayitlar:
             siralama = retriever.rank(rec.question, rec.doc_scope, args.derinlik)
             if kontrol is not None:
+                # İki ayrı şey sorulur, yoksa sapmanın sebebi bilinemez:
+                #   yol farkı mı (store vs service, AYNI k)?
+                #   derinlik farkı mı (ANN aday havuzu k'ya göre değişir)?
                 servis_k = int(rc.max_top_k)
                 bekleyen = kontrol.rank(rec.question, rec.doc_scope, servis_k)
-                if bekleyen != siralama[:len(bekleyen)]:
-                    ortak = len(set(bekleyen) & set(siralama[:len(bekleyen)]))
-                    sapma.append({"id": rec.id, "servis_n": len(bekleyen),
-                                  "ortak": ortak})
+                sig_derin = siralama[:len(bekleyen)]
+                if bekleyen != sig_derin:
+                    sig_sig = retriever.rank(rec.question, rec.doc_scope, servis_k)
+                    sapma.append({
+                        "id": rec.id, "servis_n": len(bekleyen),
+                        "ortak_derin": len(set(bekleyen) & set(sig_derin)),
+                        "yol_ayni": sig_sig == bekleyen,
+                    })
             yer = {cid: i + 1 for i, cid in enumerate(siralama)}
             with db.connection() as conn:
                 cid_dosya = _chunk_dosyalari(conn, siralama)
@@ -220,36 +238,47 @@ def main() -> int:
                         "gold_rank": gold_rank, "dosya_rank": dosya_rank,
                         "sinif": _sinifla(gold_rank, dosya_rank, args.esik),
                     })
-            # Çıpalar dosya bazında tekilleştirilir: mükerrer baskı aynı çıpayı
-            # N kez tekrar eder, sınıf dağılımını sahte olarak şişirirdi.
-            gorulen: set[tuple[str, str]] = set()
-            tekil = []
+            # İKİ SAYIM, ikisi de gerekli:
+            #  • cipalar   — evidence girdisi başına. recall'ün paydasıyla aynı
+            #                (mükerrer baskı orada da ayrı ayrı sayılır).
+            #  • alintilar — AYRI ALINTI başına, baskılar arası en iyi sıra.
+            #                Sebep teşhisi bunu ister: aynı cümlenin 6 baskısı
+            #                6 bağımsız kanıt değildir, dağılımı şişirir.
+            per_alinti: dict[str, dict] = {}
             for c in cipalar:
-                anahtar = (c["file_name"], c["quote"])
-                if anahtar in gorulen:
-                    continue
-                gorulen.add(anahtar)
-                tekil.append(c)
+                onceki = per_alinti.get(c["quote"])
+                if onceki is None or _daha_iyi(c, onceki):
+                    per_alinti[c["quote"]] = c
+            alintilar = list(per_alinti.values())
             rapor.append({
                 "id": rec.id, "category": rec.category,
                 "question": _clip(rec.question),
-                "cipa_sayisi": len(tekil),
-                "bulunan_cipa": sum(1 for c in tekil if c["sinif"] == "BULUNDU"),
-                "cipalar": tekil,
+                "cipa_sayisi": len(cipalar),
+                "alinti_sayisi": len(alintilar),
+                "bulunan_alinti": sum(1 for c in alintilar if c["sinif"] == "BULUNDU"),
+                "cipalar": cipalar,
+                "alintilar": alintilar,
             })
 
-        sinif_sirasi = ["BULUNDU", "GEC", "YANLIS_CHUNK", "DOSYA_YOK"]
-        ozet: dict[str, dict[str, int]] = {}
-        for r in rapor:
-            kova = ozet.setdefault(r["category"], {s: 0 for s in sinif_sirasi})
-            for c in r["cipalar"]:
-                kova[c["sinif"]] += 1
+        sinif_sirasi = list(_SINIF_SIRASI)
+
+        def _dagilim(alan: str) -> dict[str, dict[str, int]]:
+            d: dict[str, dict[str, int]] = {}
+            for r in rapor:
+                kova = d.setdefault(r["category"], {s: 0 for s in sinif_sirasi})
+                for c in r[alan]:
+                    kova[c["sinif"]] += 1
+            return d
+
+        ozet = _dagilim("alintilar")
+        ozet_cipa = _dagilim("cipalar")
 
         sonuc = {"kaynak": kaynak_ad, "variant": args.variant,
                  "derinlik": args.derinlik, "esik": args.esik,
                  "servis_max_top_k": int(rc.max_top_k),
                  "tutarlilik_sapmasi": sapma,
-                 "ozet": ozet, "kayitlar": rapor}
+                 "ozet_alinti": ozet, "ozet_cipa": ozet_cipa,
+                 "kayitlar": rapor}
 
         if args.json:
             print(json.dumps(sonuc, ensure_ascii=False, indent=2))
@@ -261,25 +290,43 @@ def main() -> int:
               "asar; parametreler uretim config'inden)")
         if kontrol is not None:
             if sapma:
-                print(f"\n!! TUTARLILIK SAPMASI: {len(sapma)} kayitta store ve servis "
-                      f"ilk {int(rc.max_top_k)} sirasi AYNI DEGIL —")
-                print("   asagidaki siniflar suphelidir, once bu aciklanmali.")
-                for s in sapma[:10]:
-                    print(f"   {s['id']}: ortak {s['ortak']}/{s['servis_n']}")
+                yol_ayni = sum(1 for s in sapma if s["yol_ayni"])
+                print(f"\ntutarlilik: {len(sapma)} kayitta ilk {int(rc.max_top_k)} "
+                      "sira store ile servis arasinda ayni degil.")
+                print(f"  bunlarin {yol_ayni}/{len(sapma)}'inde store AYNI k ile "
+                      "kosuldugunda servisle BIREBIR ayni ciktı")
+                print("  → sapmanin sebebi yol degil DERINLIK (ANN aday havuzu "
+                      "k'ya gore degisir); beklenen artefakt, siniflar gecerli.")
+                if yol_ayni < len(sapma):
+                    print(f"  !! {len(sapma) - yol_ayni} kayitta AYNI k'da bile "
+                          "ayrisiyor — YOL FARKI var, o kayitlarin siniflari SUPHELI:")
+                    for s in sapma:
+                        if not s["yol_ayni"]:
+                            print(f"     {s['id']}: ortak "
+                                  f"{s['ortak_derin']}/{s['servis_n']}")
             else:
                 print("tutarlilik: store ilk 20 == servis 20 (TUM kayitlarda)")
         print()
 
-        print("=== ÇIPA SINIF DAĞILIMI (kategori bazında) ===")
-        basliklar = "  ".join(f"{s:>13}" for s in sinif_sirasi)
-        print(f"{'kategori':<20}{'cipa':>6}  {basliklar}")
-        for kat in sorted(ozet):
-            kova = ozet[kat]
-            toplam = sum(kova.values())
-            hucreler = "  ".join(
-                f"{kova[s]:>4} %{100 * kova[s] / toplam:>5.1f}" if toplam else f"{0:>13}"
-                for s in sinif_sirasi)
-            print(f"{kat:<20}{toplam:>6}  {hucreler}")
+        def _tablo(d: dict[str, dict[str, int]], birim: str) -> None:
+            basliklar = "  ".join(f"{s:>13}" for s in sinif_sirasi)
+            print(f"{'kategori':<20}{birim:>6}  {basliklar}")
+            for kat in sorted(d):
+                kova = d[kat]
+                toplam = sum(kova.values())
+                hucreler = "  ".join(
+                    f"{kova[s]:>4} %{100 * kova[s] / toplam:>5.1f}" if toplam
+                    else f"{0:>13}" for s in sinif_sirasi)
+                print(f"{kat:<20}{toplam:>6}  {hucreler}")
+
+        print("=== SINIF DAĞILIMI · AYRI ALINTI başına (SEBEP TEŞHİSİ İÇİN BU) ===")
+        print("(mükerrer baskılar tekilleştirildi; baskılar arası EN İYİ konum)")
+        _tablo(ozet, "alinti")
+
+        print("\n=== SINIF DAĞILIMI · evidence girdisi başına (recall paydasıyla aynı) ===")
+        print("(baskılar ayrı ayrı sayılır; karnedeki sayıların türediği taban)")
+        _tablo(ozet_cipa, "cipa")
+
         print("\nOKUMA: GEC = sıralama sorunu (chunk dönüyor, k altında kalıyor).")
         print("       YANLIS_CHUNK = dosya bulunuyor ama alıntı başka chunk'ta.")
         print(f"       DOSYA_YOK = dosya top-{args.derinlik} içinde HİÇ yok "
@@ -287,24 +334,29 @@ def main() -> int:
         print("       synthesis ile single_fact dağılımı BENZERSE sorun "
               "synthesis'e özgü değildir.")
 
-        print("\n=== ÇOK-ÇIPALI KAYITLARDA DAĞILIM (yapısal ceza testi) ===")
-        cok = [r for r in rapor if r["cipa_sayisi"] > 1]
+        print("\n=== YAPISAL CEZA TESTİ — çok ALINTILI kayıtlar ===")
+        print("(mükerrer baskı burada sayılmaz: 6 baskı çok-dokümanlılık değildir)")
+        cok = [r for r in rapor if r["alinti_sayisi"] > 1]
         if not cok:
-            print("  (çok çıpalı kayıt yok)")
+            print("  (çok alıntılı kayıt yok)")
         else:
-            for n in range(0, max(r["cipa_sayisi"] for r in cok) + 1):
-                adet = sum(1 for r in cok if r["bulunan_cipa"] == n)
-                if adet:
-                    print(f"  {n} çıpası bulunan kayıt: {adet}")
+            for kat in sorted({r["category"] for r in cok}):
+                grup = [r for r in cok if r["category"] == kat]
+                dagilim = {}
+                for r in grup:
+                    dagilim[r["bulunan_alinti"]] = dagilim.get(r["bulunan_alinti"], 0) + 1
+                yazi = ", ".join(f"{n} bulundu: {a}" for n, a in sorted(dagilim.items()))
+                print(f"  {kat:<16} (n={len(grup)})  {yazi}")
             print("  'tam 1 bulundu' baskınsa sorgu TEK dokümana kilitleniyor;")
             print("  '0 bulundu' baskınsa sorun yapısal ceza DEĞİL, erişimin kendisi.")
 
         print("\n=== KAYIT KAYIT ===")
         for r in sorted(rapor, key=lambda x: (x["category"], x["id"])):
             print(f"\n[{r['category']}] {r['id']}  "
-                  f"({r['bulunan_cipa']}/{r['cipa_sayisi']} çıpa bulundu)")
+                  f"({r['bulunan_alinti']}/{r['alinti_sayisi']} alıntı bulundu; "
+                  f"{r['cipa_sayisi']} evidence)")
             print(f"  S: {r['question']}")
-            for c in r["cipalar"]:
+            for c in r["alintilar"]:
                 gr = c["gold_rank"] if c["gold_rank"] is not None else "-"
                 dr = c["dosya_rank"] if c["dosya_rank"] is not None else "-"
                 print(f"  {c['sinif']:<13} gold#{gr:<5} dosya#{dr:<5} "
