@@ -282,7 +282,7 @@ python scripts/golden_v1_jsonl_uret.py --doc-scope default --dislanan mevzuat_13
 doğrulamasından geçirir. Soru-cevap metni bu belgeden, alıntılar probe
 çıktısından okunur — script hiçbir metni kendi yazmaz.
 
-**Adım 4 — kuru koşum (yükleme ÖNCESİ).**
+**Adım 4 — kuru koşum (yükleme ÖNCESİ). KOŞTU, GEÇTİ (2026-08-12).**
 
 ```bash
 python -m ragintel.eval retrieval --from-file eval/golden/v1.jsonl --variant hybrid --json
@@ -293,10 +293,59 @@ değil **eşleme oranı**: `mapped_evidence` 93/93 olmalı. 93'ün altındaysa
 `unmapped` listesi hangi `(dosya, sayfa, alıntı)` üçlüsünün düştüğünü söyler —
 neredeyse kesin `doc_scope` ya da sayfa kayması demektir, o hâlde yükleme yapılmaz.
 
+Sonuç: **93/93 = 1.0, unmapped 0.** Ölçüm aracı ayakta; bundan sonraki her
+sayı korpus/retriever hakkındadır, araç hakkında değil.
+
 Metrikler okunurken §5b geçerli: **manşet recall@10**, recall@5 tavanı 0.946.
 
-**Adım 5 — yükleme. Ayrı ve bilinçli adım; hiçbir probe bunu yapmaz.**
+Çıktı `2>&1` ile dosyaya alınırsa başına log satırları düşer ve `json.load`
+patlar; ilk `gold_mapping` taşıyan nesne `JSONDecoder().raw_decode` ile taranır.
+
+**Adım 5 — yükleme. Ayrı ve bilinçli adım; hiçbir probe bunu yapmaz.
+KOŞTU (2026-08-12): `inserted: 30, skipped: 0`.**
 
 ```bash
 python -m ragintel.eval load eval/golden/v1.jsonl --version v1-bddk
 ```
+
+---
+
+## 8. v1 BASELINE — ilk geçerli karne (2026-08-12, `hybrid`, n=30)
+
+Eşleme 93/93 olduğu için bu sayılar **gerçek**: araç kusuru değil, sistemin
+BDDK korpusundaki hâli. Karbon-vergisi dönemine ait hiçbir rakamla
+karşılaştırılamaz (farklı korpus, farklı set) — bu satır sıfır noktasıdır.
+
+| | recall@5 | recall@10 | recall@20 | nDCG@10 | MRR | n |
+|---|---|---|---|---|---|---|
+| **genel** | 0.4093 | **0.4968** | 0.5704 | 0.3824 | 0.3882 | 30 |
+| `single_fact` | 0.5667 | 0.6786 | 0.7152 | 0.5189 | 0.5180 | 19 |
+| `synthesis` | 0.0511 | **0.1011** | 0.2522 | 0.0611 | 0.0806 | 10 |
+| `citation_sensitive` | 1.0 | 1.0 | 1.0 | 1.0 | 1.0 | 1 |
+
+`citation_sensitive` n=1 — istatistik değil, tek gözlem; "%100" diye okunamaz.
+
+**Manşet bulgu: `synthesis` çöküyor.** single_fact recall@10 0.6786 iken
+synthesis 0.1011 — 6.7 kat fark. Bu setin ölçmek için var olduğu şey tam da bu.
+
+Üç aday açıklama var, henüz **ayırt edilmedi**:
+
+1. **Yapısal ceza.** synthesis kayıtlarının gold'u iki AYRI dokümandan geliyor;
+   tek sorgunun top-k'sında ikisinin de bulunması gerekiyor. `recall_at_k`
+   paydası sert olduğu için bir çıpayı bulmak 0.5 veriyor. Ama bu tek başına
+   yetmiyor: kuyrukta h08 ve h10 **tüm k'larda 0.0** — hiçbir çıpa bulunmamış.
+   Yani ceza var, ama tek sebep o değil.
+2. **Sorgu-doküman uyumsuzluğu.** Soru A+B konusunu birlikte soruyor; retriever
+   A'nın dokümanına kilitleniyor, B hiç yüzeye çıkmıyor.
+3. **Ölçüt kusuru ihtimali — atlanmamalı.** [[rerank-ab-onveri]] dersinde
+   synthesis'te ölçülen %3 recall'ün kökü retriever değil ölçü aracıydı.
+   Bu sette iki parçalı soru bilerek yazılmadı (§4), ama iddia
+   ölçülmeden doğru sayılamaz.
+
+Ayırt edici ölçüm: sıfır alan synthesis kayıtları için top-20'de çıpa
+dosyalarının HİÇ görünüp görünmediğine bakmak. Görünüyor ama sıralama düşükse
+(2); hiç görünmüyorsa sorgu terimleri chunk metniyle örtüşmüyor demektir.
+Bu ölçülmeden synthesis'e müdahale edilmez.
+
+`recall@5` 0.4093, §5b tavanı 0.946'nın çok altında — yani düşüklüğün kaynağı
+mükerrer baskı tavanı DEĞİL, gerçek erişim başarımı.
