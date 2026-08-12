@@ -17,10 +17,23 @@ NEDEN AD'A BAKILMAZ
     seçim yapmak bu projede bir kez daha yanıldı (bkz. `mevzuat_1340` vakası).
     Karar İÇERİKTEN verilir.
 
+NEDEN HASH EŞİTLİĞİ YETMEDİ (2026-08-12 ölçüldü)
+    İlk sürüm chunk metni hash'iyle çalıştı ve %60 eşikte **tek çift** buldu.
+    Oysa `gs-bddk-e01`'in alıntısı 7 dosyada, 5411 altı baskıda duruyor.
+    Kök: hash TAM eşitlik ister; farklı PDF'ler farklı chunk sınırı üretir,
+    aynı cümle farklı yerlerden bölününce hash tutmaz. Yakalanan tek çift
+    (7. ve 8. baskı) aynı dizgiden basıldığı için tutmuştu.
+    Çözüm: hash yalnız ADAY üretir, karar İÇERİLME testiyle verilir —
+    küçük dosyadan örneklenen metin pencereleri büyük dosyada aranır.
+    Bu, golden alıntı eşlemesinin ta kendisidir (`position(... in
+    chunk_text_norm)`), yani chunk sınırından bağımsızdır.
+
 ÖLÇTÜĞÜ ŞEYLER
-    küme     chunk metni hash'i üzerinden dosya-dosya örtüşme (Jaccard değil,
-             KÜÇÜK dosyaya oranlanır: 40 sayfalık bir özet 700 sayfalık kanunun
-             içinde erirse örtüşme küçük tarafta %100'dür, kümeye girmelidir)
+    aday     (a) hash örtüşmesi düşük eşikte + (b) AYNI golden alıntısını
+             taşıyan dosya çiftleri (alıntı çözümlemesi bunu zaten ölçtü)
+    içerilme küçük dosyadan N metin penceresi, büyük dosyada kaçı bulunuyor —
+             kümeyi bu belirler (KÜÇÜK dosyaya oranlıdır: 40 sayfalık özet
+             700 sayfalık kanunun içinde erirse küçük tarafta %100'dür)
     güncellik  "(Değişik:", "(Ek:", "(Mülga:" işaretçi sayısı + metinde geçen
              EN GEÇ yıl. Konsolide mevzuat metinlerinde bu işaretçiler
              değişiklikleri taşır; 2005 orijinali ile güncel metni ayırır.
@@ -49,9 +62,16 @@ from pathlib import Path
 
 VARSAYILAN_ESIK = 0.60
 VARSAYILAN_MIN_UZUNLUK = 200
+ADAY_ESIGI = 0.05          # hash örtüşmesi: aday olmaya yeter, karara yetmez
+ORNEK_SAYISI = 25          # içerilme testi için pencere sayısı
+PENCERE = 160              # pencere uzunluğu (karakter)
 
 # Konsolide mevzuat metninde değişiklik işaretçileri.
-_ISARET = re.compile(r"\(\s*(?:De[ğg]i[şs]ik|Ek|M[üu]lga)\s*[:.]", re.IGNORECASE)
+# Parantez ŞART DEĞİL: ilk koşumda 203 sayfalık Bankacılık Kanunu metninde
+# işaretçi sayısı 0 çıktı — parantez/boşluk deseni PDF'ten PDF'e değişiyor.
+# Diyakritikler de bozulmuş olabilir (korpusta ölçülmüş bir kusur), o yüzden
+# ğ/g ve ş/s birlikte kabul edilir.
+_ISARET = re.compile(r"\(?\s*(?:De[ğg]i[şs]ik|M[üu]lga)\s*:", re.IGNORECASE)
 _YIL = re.compile(r"\b(19[89]\d|20[0-2]\d)\b")
 
 
@@ -135,15 +155,89 @@ def main() -> int:
                 (args.doc_scope, args.min_uzunluk),
             ).fetchall()
 
-            secili = []
+            # --- ADAY ÜRETİMİ (karar değil) ---
+            aday: set[tuple[int, int]] = set()
             for f1, f2, ortak, n1, n2 in ciftler:
                 kucuk = min(n1, n2)
-                oran = ortak / kucuk if kucuk else 0.0
+                if kucuk and ortak / kucuk >= ADAY_ESIGI:
+                    aday.add((f1, f2))
+
+            # Golden alıntı çözümlemesi aynı metni taşıyan dosyaları ZATEN ölçtü.
+            # Hash'in kaçırdığı baskılar buradan gelir.
+            ad_id = {}
+            if golden_dosyalari:
+                for fid, ad in conn.execute(
+                    "SELECT file_id, file_name FROM core_files "
+                    "WHERE file_name = ANY(%s) AND doc_scope = %s "
+                    "AND status = 'COMPLETED';",
+                    (list(golden_dosyalari), args.doc_scope),
+                ).fetchall():
+                    ad_id[ad] = fid
+                alinti_dosya: dict[str, set[int]] = {}
+                for satir in args.golden.read_text(encoding="utf-8").splitlines():
+                    if not satir.strip():
+                        continue
+                    for ev in json.loads(satir).get("gold_evidence", []):
+                        fid = ad_id.get(ev["file_name"])
+                        if fid is not None:
+                            alinti_dosya.setdefault(ev["quote"], set()).add(fid)
+                for fidler in alinti_dosya.values():
+                    sirali = sorted(fidler)
+                    for i, a in enumerate(sirali):
+                        for b in sirali[i + 1:]:
+                            aday.add((a, b))
+
+            if not aday:
+                print("aday mükerrer çift YOK.")
+                return 0
+
+            # --- İÇERİLME TESTİ (karar bunun) ---
+            boyut = dict(conn.execute(
+                "SELECT file_id, count(*) FROM core_chunks "
+                "WHERE file_id = ANY(%s) GROUP BY file_id;",
+                (sorted({i for c in aday for i in c}),),
+            ).fetchall())
+
+            def _pencereler(fid: int) -> list[str]:
+                rows = conn.execute(
+                    "SELECT chunk_text_norm FROM core_chunks "
+                    "WHERE file_id = %s AND length(chunk_text_norm) >= %s "
+                    "ORDER BY chunk_index;",
+                    (fid, PENCERE * 2),
+                ).fetchall()
+                if not rows:
+                    return []
+                adim = max(1, len(rows) // ORNEK_SAYISI)
+                secim = rows[::adim][:ORNEK_SAYISI]
+                # Pencere chunk'ın ORTASINDAN alınır: baş/son sınıra yakın
+                # olduğu için karşı dosyada iki chunk'a bölünmüş olabilir.
+                return [r[0][len(r[0]) // 2 - PENCERE // 2:][:PENCERE] for r in secim]
+
+            pencere_cache: dict[int, list[str]] = {}
+            secili = []
+            for f1, f2 in sorted(aday):
+                kucuk, buyuk = (f1, f2) if boyut.get(f1, 0) <= boyut.get(f2, 0) else (f2, f1)
+                if kucuk not in pencere_cache:
+                    pencere_cache[kucuk] = _pencereler(kucuk)
+                pencereler = pencere_cache[kucuk]
+                if not pencereler:
+                    continue
+                isabet = 0
+                for p in pencereler:
+                    var = conn.execute(
+                        "SELECT 1 FROM core_chunks WHERE file_id = %s "
+                        "AND position(%s in chunk_text_norm) > 0 LIMIT 1;",
+                        (buyuk, p),
+                    ).fetchone()
+                    if var:
+                        isabet += 1
+                oran = isabet / len(pencereler)
                 if oran >= args.esik:
-                    secili.append((f1, f2, ortak, oran))
+                    secili.append((f1, f2, isabet, oran))
 
             if not secili:
-                print(f"eşik %{args.esik * 100:.0f} üzerinde mükerrer çift YOK.")
+                print(f"içerilme eşiği %{args.esik * 100:.0f} üzerinde mükerrer "
+                      f"çift YOK ({len(aday)} aday sınandı).")
                 return 0
 
             kumeler = _kumeler([(a, b) for a, b, _, _ in secili])
@@ -195,7 +289,10 @@ def main() -> int:
             en_dusuk_oran = min((r for (a, b), (_, r) in oranlar.items()
                                  if a in kume and b in kume), default=1.0)
             if en_dusuk_oran < args.esik + 0.10:
-                supheler.append(f"örtüşme eşiğe yakın (%{en_dusuk_oran * 100:.0f})")
+                supheler.append(f"içerilme eşiğe yakın (%{en_dusuk_oran * 100:.0f})")
+            if all((u["isaret"] or 0) == 0 for u in uyeler):
+                supheler.append("HİÇBİR üyede değişiklik işaretçisi yok — "
+                                "güncellik yalnız 'son yıl'a dayanıyor, zayıf")
             rapor.append({"uyeler": uyeler, "tut": en_iyi["file_name"],
                           "at": [u["file_name"] for u in uyeler[1:]],
                           "en_dusuk_ortusme": round(en_dusuk_oran, 3),
@@ -208,8 +305,10 @@ def main() -> int:
                               "kumeler": rapor}, ensure_ascii=False, indent=2))
             return 0
 
-        print(f"doc_scope={args.doc_scope}  esik=%{args.esik * 100:.0f}  "
-              f"min_chunk_uzunluk={args.min_uzunluk}")
+        print(f"doc_scope={args.doc_scope}  icerilme_esigi=%{args.esik * 100:.0f}  "
+              f"pencere={PENCERE}ch x{ORNEK_SAYISI}")
+        print(f"aday cift: {len(aday)}  (hash + golden alinti ortakligi)  ->  "
+              f"esigi gecen: {len(secili)}")
         print(f"mukerrer kume: {len(rapor)}   "
               f"toplam dosya: {sum(len(k['uyeler']) for k in rapor)}\n")
 
@@ -218,7 +317,7 @@ def main() -> int:
 
         def _yaz(kume: dict, n: int) -> None:
             print(f"\n--- kume {n}  ({len(kume['uyeler'])} dosya, "
-                  f"en dusuk ortusme %{kume['en_dusuk_ortusme'] * 100:.0f}) ---")
+                  f"en dusuk icerilme %{kume['en_dusuk_ortusme'] * 100:.0f}) ---")
             print(f"{'':2}{'dosya':<46}{'chunk':>6}{'sayfa':>6}{'skor':>7}"
                   f"{'isaret':>7}{'son_yil':>8}  golden")
             for i, u in enumerate(kume["uyeler"]):
