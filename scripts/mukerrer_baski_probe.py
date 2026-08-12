@@ -41,6 +41,25 @@ NEDEN HASH EŞİTLİĞİ YETMEDİ (2026-08-12 ölçüldü)
     golden   dosya v1 evidence'ında geçiyor mu (geçiyorsa elenmesi seti
              değiştirir → üreticiye `--dislanan` eklenmeli)
 
+NEDEN YÖN ÖNEMLİ (2026-08-12, küme 2 vakası)
+    İçerilme TEK YÖNLÜ ölçülünce 58 chunk'lık 5464 sayılı kanun ile 399 chunk'lık
+    `263_2.pdf` "mükerrer" göründü. Oysa küçük tarafın %100'ü büyüğün içinde
+    olması mükerrer BASKI değil KAPSAMA demek olabilir: derleme, kanunu içeriyor.
+    Bu durumda büyüğü silmek ilgisiz içeriği de siler. Artık iki yön de ölçülür:
+      simetrik (her iki yön yüksek)  -> aynı belgenin iki baskısı
+      asimetrik (biri yüksek biri düşük) -> kapsayan/kapsanan, baskı DEĞİL
+
+NEDEN KAPSAM MODU VAR
+    Küme 1'de tutulacak aday (`5411 sayılı Bankacılık Kanunu.pdf`, 117 sayfa)
+    eleyeceği dosyaların HEPSİNDEN az sayfalı (196-209). Chunk sayıları yakın
+    (269 vs 289-309) yani dizgi farkı olabilir — ama "olabilir" ile altı dosya
+    silinmez. `--kapsam` her elenecek dosyanın metnini tutulacak dosyada arar,
+    oranı verir ve BULUNAMAYAN pencereleri basar: eksik olan gerçek madde
+    gövdesi mi, yoksa yayıncı önsözü/dizini mi — göze bakılarak karar verilir.
+    Ayrıca golden alıntılarının tutulacak dosyada çözülüp çözülmediğini
+    doğrudan DB'de sınar (evidence JSON'undaki yokluk eşleşme kusuru da olabilir,
+    kanıt değil).
+
 KARARI KİM VERİR
     Bu probe ADAY gösterir, KARAR VERMEZ. Çıktının sonundaki `dosya_kaldir.py`
     komutları hazır ama koşulmaz — her satır insan onayından geçer.
@@ -50,6 +69,7 @@ KARARI KİM VERİR
 KULLANIM
     python scripts/mukerrer_baski_probe.py
     python scripts/mukerrer_baski_probe.py --esik 0.7 --golden eval/golden/v1.jsonl
+    python scripts/mukerrer_baski_probe.py --kapsam "5411 sayılı Bankacılık Kanunu.pdf"
 """
 
 from __future__ import annotations
@@ -64,7 +84,9 @@ VARSAYILAN_ESIK = 0.60
 VARSAYILAN_MIN_UZUNLUK = 200
 ADAY_ESIGI = 0.05          # hash örtüşmesi: aday olmaya yeter, karara yetmez
 ORNEK_SAYISI = 25          # içerilme testi için pencere sayısı
+KAPSAM_ORNEK = 60          # --kapsam modu daha hassas: daha çok pencere
 PENCERE = 160              # pencere uzunluğu (karakter)
+ASIMETRI_ORANI = 0.60      # ters yön bunun altındaysa "kapsama", baskı değil
 
 # Konsolide mevzuat metninde değişiklik işaretçileri.
 # Parantez ŞART DEĞİL: ilk koşumda 203 sayfalık Bankacılık Kanunu metninde
@@ -113,6 +135,14 @@ def main() -> int:
     ap.add_argument("--golden", type=Path, default=Path("eval/golden/v1.jsonl"),
                     help="evidence çakışması için golden JSONL (yoksa atlanır)")
     ap.add_argument("--doc-scope", default="default")
+    ap.add_argument("--kapsam", metavar="DOSYA",
+                    help="TUTULACAK dosya adı (parça eşleşme yeter): kümedeki "
+                         "her elenecek dosyanın bu dosyada ne kadar karşılandığı "
+                         "ölçülür, bulunamayan pencereler ve golden alıntı "
+                         "çözünürlüğü basılır")
+    ap.add_argument("--kayip-goster", type=int, default=4,
+                    help="--kapsam modunda dosya başına basılacak bulunamayan "
+                         "pencere sayısı (vars. 4)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
@@ -120,6 +150,7 @@ def main() -> int:
     from ragintel.database import Database
 
     golden_dosyalari: dict[str, list[str]] = {}
+    golden_alintilari: dict[str, list[tuple[str, str]]] = {}
     if args.golden.exists():
         for satir in args.golden.read_text(encoding="utf-8").splitlines():
             if not satir.strip():
@@ -127,6 +158,8 @@ def main() -> int:
             kayit = json.loads(satir)
             for ev in kayit.get("gold_evidence", []):
                 golden_dosyalari.setdefault(ev["file_name"], []).append(kayit["id"])
+                golden_alintilari.setdefault(ev["file_name"], []).append(
+                    (kayit["id"], ev["quote"]))
 
     db = Database(DbSettings()).open()
     try:
@@ -198,7 +231,7 @@ def main() -> int:
                 (sorted({i for c in aday for i in c}),),
             ).fetchall())
 
-            def _pencereler(fid: int) -> list[str]:
+            def _pencereler(fid: int, n: int = ORNEK_SAYISI) -> list[str]:
                 rows = conn.execute(
                     "SELECT chunk_text_norm FROM core_chunks "
                     "WHERE file_id = %s AND length(chunk_text_norm) >= %s "
@@ -207,41 +240,63 @@ def main() -> int:
                 ).fetchall()
                 if not rows:
                     return []
-                adim = max(1, len(rows) // ORNEK_SAYISI)
-                secim = rows[::adim][:ORNEK_SAYISI]
+                adim = max(1, len(rows) // n)
+                secim = rows[::adim][:n]
                 # Pencere chunk'ın ORTASINDAN alınır: baş/son sınıra yakın
                 # olduğu için karşı dosyada iki chunk'a bölünmüş olabilir.
                 return [r[0][len(r[0]) // 2 - PENCERE // 2:][:PENCERE] for r in secim]
+
+            def _var_mi(fid: int, parca: str) -> bool:
+                return conn.execute(
+                    "SELECT 1 FROM core_chunks WHERE file_id = %s "
+                    "AND position(%s in chunk_text_norm) > 0 LIMIT 1;",
+                    (fid, parca),
+                ).fetchone() is not None
+
+            def _kapsama(kaynak: int, hedef: int, n: int = ORNEK_SAYISI
+                         ) -> tuple[int, int, list[str]]:
+                """kaynak'ın pencerelerinden kaçı hedef'te bulunuyor + kayıplar."""
+                pencereler = _pencereler(kaynak, n)
+                bulunan, kayip = 0, []
+                for p in pencereler:
+                    if _var_mi(hedef, p):
+                        bulunan += 1
+                    else:
+                        kayip.append(p)
+                return bulunan, len(pencereler), kayip
 
             pencere_cache: dict[int, list[str]] = {}
             secili = []
             for f1, f2 in sorted(aday):
                 kucuk, buyuk = (f1, f2) if boyut.get(f1, 0) <= boyut.get(f2, 0) else (f2, f1)
-                if kucuk not in pencere_cache:
-                    pencere_cache[kucuk] = _pencereler(kucuk)
-                pencereler = pencere_cache[kucuk]
-                if not pencereler:
+                for fid in (kucuk, buyuk):
+                    if fid not in pencere_cache:
+                        pencere_cache[fid] = _pencereler(fid)
+                if not pencere_cache[kucuk]:
                     continue
-                isabet = 0
-                for p in pencereler:
-                    var = conn.execute(
-                        "SELECT 1 FROM core_chunks WHERE file_id = %s "
-                        "AND position(%s in chunk_text_norm) > 0 LIMIT 1;",
-                        (buyuk, p),
-                    ).fetchone()
-                    if var:
-                        isabet += 1
-                oran = isabet / len(pencereler)
-                if oran >= args.esik:
-                    secili.append((f1, f2, isabet, oran))
+                isabet = sum(1 for p in pencere_cache[kucuk] if _var_mi(buyuk, p))
+                oran = isabet / len(pencere_cache[kucuk])
+                if oran < args.esik:
+                    continue
+                # TERS YÖN: büyük dosyanın metni küçükte var mı? Simetri,
+                # "iki baskı" ile "kapsayan derleme"yi ayıran şeydir.
+                ters = 0.0
+                if pencere_cache[buyuk]:
+                    ters = sum(1 for p in pencere_cache[buyuk]
+                               if _var_mi(kucuk, p)) / len(pencere_cache[buyuk])
+                secili.append((f1, f2, isabet, oran, ters, kucuk, buyuk))
 
             if not secili:
                 print(f"içerilme eşiği %{args.esik * 100:.0f} üzerinde mükerrer "
                       f"çift YOK ({len(aday)} aday sınandı).")
                 return 0
 
-            kumeler = _kumeler([(a, b) for a, b, _, _ in secili])
-            oranlar = {(a, b): (o, r) for a, b, o, r in secili}
+            kumeler = _kumeler([(a, b) for a, b, *_ in secili])
+            oranlar = {(a, b): (o, r) for a, b, o, r, *_ in secili}
+            # Asimetrik çiftler: küçük büyüğün içinde ama tersi değil.
+            asimetrik = [(kucuk, buyuk, r, ters)
+                         for _, _, _, r, ters, kucuk, buyuk in secili
+                         if ters < r * ASIMETRI_ORANI]
 
             tum_id = sorted({i for k in kumeler for i in k})
             bilgi_rows = conn.execute(
@@ -257,6 +312,45 @@ def main() -> int:
                 """,
                 (tum_id,),
             ).fetchall()
+
+            # --- KAPSAM MODU: "tutulacak dosya gerçekten yetiyor mu?" ---
+            kapsam = None
+            if args.kapsam:
+                ad_of = {r[0]: r[1] for r in bilgi_rows}
+                esles = [fid for fid, ad in ad_of.items()
+                         if args.kapsam.lower() in ad.lower()]
+                if len(esles) != 1:
+                    print(f"--kapsam '{args.kapsam}' kumelerde "
+                          f"{len(esles)} dosyaya uyuyor; tek olmali.")
+                    for fid in esles:
+                        print(f"  {ad_of[fid]}")
+                    return 2
+                tut_id = esles[0]
+                kume = next((k for k in kumeler if tut_id in k), set())
+                kapsam = {"tut": ad_of[tut_id], "satirlar": [], "golden": []}
+                for fid in sorted(kume - {tut_id}, key=lambda i: ad_of[i]):
+                    bulunan, toplam, kayip = _kapsama(fid, tut_id, KAPSAM_ORNEK)
+                    geri, geri_n, _ = _kapsama(tut_id, fid, KAPSAM_ORNEK)
+                    kapsam["satirlar"].append({
+                        "ad": ad_of[fid], "bulunan": bulunan, "toplam": toplam,
+                        "oran": bulunan / toplam if toplam else 0.0,
+                        "geri_oran": geri / geri_n if geri_n else 0.0,
+                        "kayip": kayip[:args.kayip_goster],
+                    })
+                # Golden alıntıları: elenecek dosyalara bağlı olanlar
+                # TUTULACAK dosyada çözülüyor mu? Evidence JSON'undaki yokluk
+                # eşleşme kusuru olabilir; karar DB'den verilir.
+                gorulen: set[tuple[str, str]] = set()
+                for fid in kume:
+                    for kimlik, alinti in golden_alintilari.get(ad_of[fid], []):
+                        if (kimlik, alinti) in gorulen:
+                            continue
+                        gorulen.add((kimlik, alinti))
+                        kapsam["golden"].append({
+                            "id": kimlik, "alinti": alinti,
+                            "tutta_var": _var_mi(tut_id, alinti),
+                            "kaynak": ad_of[fid],
+                        })
 
         bilgi = {}
         for fid, ad, skor, chunk_n, sayfa_n, govde in bilgi_rows:
@@ -290,6 +384,13 @@ def main() -> int:
                                  if a in kume and b in kume), default=1.0)
             if en_dusuk_oran < args.esik + 0.10:
                 supheler.append(f"içerilme eşiğe yakın (%{en_dusuk_oran * 100:.0f})")
+            for kucuk, buyuk, ileri, geri in asimetrik:
+                if kucuk in kume and buyuk in kume:
+                    supheler.append(
+                        f"ASIMETRIK: '{bilgi[kucuk]['file_name'][:30]}' "
+                        f"'{bilgi[buyuk]['file_name'][:30]}' icinde "
+                        f"(%{ileri * 100:.0f}) ama tersi %{geri * 100:.0f} — "
+                        f"mukerrer BASKI degil KAPSAMA; buyugu SILME")
             if all((u["isaret"] or 0) == 0 for u in uyeler):
                 supheler.append("HİÇBİR üyede değişiklik işaretçisi yok — "
                                 "güncellik yalnız 'son yıl'a dayanıyor, zayıf")
@@ -302,8 +403,35 @@ def main() -> int:
 
         if args.json:
             print(json.dumps({"esik": args.esik, "kume_sayisi": len(rapor),
-                              "kumeler": rapor}, ensure_ascii=False, indent=2))
+                              "kumeler": rapor, "kapsam": kapsam},
+                             ensure_ascii=False, indent=2))
             return 0
+
+        if kapsam is not None:
+            print("=" * 78)
+            print(f"KAPSAM TESTI — tutulacak: {kapsam['tut']}")
+            print(f"pencere={PENCERE}ch x{KAPSAM_ORNEK}, "
+                  f"'kapsanan' = elenecek dosyanin metninin tutulanda bulunma orani")
+            print("=" * 78)
+            print(f"{'elenecek dosya':<46}{'kapsanan':>10}{'ters':>8}")
+            for s in kapsam["satirlar"]:
+                print(f"{s['ad'][:44]:<46}"
+                      f"{s['bulunan']}/{s['toplam']} %{s['oran'] * 100:.0f}".rjust(10)
+                      + f"%{s['geri_oran'] * 100:.0f}".rjust(8))
+            for s in kapsam["satirlar"]:
+                if not s["kayip"]:
+                    continue
+                print(f"\n  -- {s['ad']} : tutulanda BULUNAMAYAN ornekler --")
+                for p in s["kayip"]:
+                    print(f"     {p[:150]}")
+            if kapsam["golden"]:
+                eksik = [g for g in kapsam["golden"] if not g["tutta_var"]]
+                print(f"\nGOLDEN COZUNURLUGU (kumeye bagli {len(kapsam['golden'])} "
+                      f"alinti): tutulanda cozulmeyen {len(eksik)}")
+                for g in eksik:
+                    print(f"  [{g['id']}] {g['alinti'][:110]}")
+                    print(f"        kaynak: {g['kaynak']}")
+            print()
 
         print(f"doc_scope={args.doc_scope}  icerilme_esigi=%{args.esik * 100:.0f}  "
               f"pencere={PENCERE}ch x{ORNEK_SAYISI}")
