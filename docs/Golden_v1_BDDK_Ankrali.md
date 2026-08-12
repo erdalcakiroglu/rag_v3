@@ -202,19 +202,26 @@ python scripts/golden_alinti_probe.py --alinti-dosya docs/golden_v1_alintilar.tx
 ile süzer (`ragintel/eval/repository.py`). Scope yanlışsa aday kümesi **boş**
 döner, 94 evidence'ın 94'ü unmapped olur ve metrikler 0.000 çıkar — eski
 golden'ın arızasının birebir aynısı, üstelik "korpus kötü" gibi okunur.
-Varsayım yasak, ölçülür:
+Varsayım yasak, ölçülür. Tek dosyaya değil **korpus geneline** bakılır — scope'lar
+bölünmüşse tek dosya yanıltır:
 
 ```bash
-python scripts/golden_alinti_probe.py --dosya "5411 sayılı Bankacılık Kanunu.pdf" --dosya-limit 1
+python scripts/golden_aday_tarama_probe.py --limit-table 0 --limit-synth 0
 ```
 
-Başlıktaki `doc_scope` alanı ne diyorsa Adım 3'e o verilir.
+`--- korpustaki doc_scope dağılımı ---` başlığı altında her scope'u dosya ve chunk
+sayısıyla basar. Beklenen: **tek scope, ~1044+ dosya**. Birden fazla scope varsa
+BDDK dosyalarının hangisinde olduğu seçilir; gold evidence dosyaları o scope'ta
+değilse set o scope'la üretilemez.
 
 **Adım 3 — JSONL üretimi (DB'ye dokunmaz).**
 
 ```bash
-python scripts/golden_v1_jsonl_uret.py --doc-scope <ADIM-2'DEKİ DEĞER>
+python scripts/golden_v1_jsonl_uret.py --doc-scope default
 ```
+
+`default` yerine Adım 2'nin bastığı scope adı yazılır (kabuk `<…>` yer tutucusunu
+yönlendirme sanıp hata verir — değer doğrudan yazılmalı).
 
 30 kayıt / 94 evidence / 32 dosya yazar ve `load_golden_jsonl` şema+benzersizlik
 doğrulamasından geçirir. Soru-cevap metni bu belgeden, alıntılar probe
