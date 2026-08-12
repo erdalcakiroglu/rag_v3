@@ -214,6 +214,43 @@ Sonuçlar:
   fazla baskılarının elenmesi (§1'deki korpus kusuru kalemiyle aynı iş) tavanı
   kendiliğinden 1.0'a çıkarır.
 
+### 5b-DÜZELTME (2026-08-12) — tavan hesabı bedeli AZ GÖSTERDİ
+
+Yukarıdaki tavan tablosu aritmetik olarak doğru ama **yanlış mekanizmayı**
+ölçüyor, ve ona dayanarak §8'de yazdığım "düşüklüğün kaynağı mükerrer baskı
+DEĞİL" cümlesi **yanlıştı**. Tavan, "k kaç kanıt sığdırabilir" sorusunun cevabı;
+gerçek bedel ise baskıların **birbiriyle yarışması**.
+
+Teşhis probu ölçtü (`docs/synth2.txt`), `gs-bddk-e01`:
+
+| baskı | sıra |
+|---|---|
+| `Bankacilik_Kanunu_2.pdf` | **10** |
+| `BankacilikKanunu_11.baski-web_2.pdf` | 13 |
+| `5411 sayılı Bankacılık Kanunu.pdf` | 15 |
+| `5411_Guncel_2.pdf` | 21 |
+
+Aynı cümlenin dört kopyası top-21'in dördünü işgal ediyor. gold_n=7 olduğu için
+tavan k=10'da 1.000 — yani tavana göre "sorun yok". Oysa **ölçülen** recall@10
+= 1/7 = **0.143**. Sistem cevabı 10. sırada bulmuş; metrik onu, kalan beş
+kopyayı getirmediği için cezalandırıyor.
+
+İki ayrı sonuç:
+
+1. **Ölçüm çarpıtması.** `single_fact` için ayrı-alıntı bazında top-10 isabet
+   **%78.9**, karnedeki recall@10 ise **0.6786**. Fark, kullanıcı için hiçbir
+   şey ifade etmeyen "kaç kopya getirdin" sorusundan geliyor. Doğru semantik
+   *any-of*: mükerrer baskı grubu TEK gold kalem sayılmalı.
+2. **Üretim kusuru — ölçümden bağımsız.** Bu yarış canlıda da oluyor.
+   `default_top_k=10` ile kullanıcıya giden bağlamın dört slotu aynı metnin
+   kopyaları olabiliyor; context_token_budget bir kez ödenip dört kez
+   harcanıyor ve o slotlarda durabilecek başka kanıt dışarı itiliyor.
+   Yani baskı elemesi bir eval temizliği değil, **erişim kalitesi işi**.
+
+Metrik kodu yine değiştirilmedi (any-of varyantı yazmak, ölçütü kusurun
+üstüne örtmek olurdu). Doğru sıra: önce fazla baskıların korpustan elenmesi,
+sonra re-baseline.
+
 ## 5c. AÇIK EKSİK — `unanswerable` kolu yok
 
 v0'da 36 kaydın **5'i** `answerable=false` idi. Bu sette **0**. Taslakta da
@@ -328,7 +365,8 @@ karşılaştırılamaz (farklı korpus, farklı set) — bu satır sıfır nokta
 **Manşet bulgu: `synthesis` çöküyor.** single_fact recall@10 0.6786 iken
 synthesis 0.1011 — 6.7 kat fark. Bu setin ölçmek için var olduğu şey tam da bu.
 
-Üç aday açıklama var, henüz **ayırt edilmedi**:
+Üç aday açıklama vardı; **üçü de ölçüldü, §9'a bakınız.** Aşağıdaki liste
+hipotezlerin ilk hâlidir, hüküm değildir:
 
 1. **Yapısal ceza.** synthesis kayıtlarının gold'u iki AYRI dokümandan geliyor;
    tek sorgunun top-k'sında ikisinin de bulunması gerekiyor. `recall_at_k`
@@ -347,5 +385,66 @@ dosyalarının HİÇ görünüp görünmediğine bakmak. Görünüyor ama sıral
 (2); hiç görünmüyorsa sorgu terimleri chunk metniyle örtüşmüyor demektir.
 Bu ölçülmeden synthesis'e müdahale edilmez.
 
-`recall@5` 0.4093, §5b tavanı 0.946'nın çok altında — yani düşüklüğün kaynağı
-mükerrer baskı tavanı DEĞİL, gerçek erişim başarımı.
+> **Bu bölümde bir cümle YANLIŞTI.** "recall@5 0.4093, tavan 0.946'nın çok
+> altında → düşüklüğün kaynağı mükerrer baskı DEĞİL" diye yazmıştım. Tavan
+> testi bu soruyu cevaplayamaz; baskılar birbiriyle yarışıyor ve `single_fact`
+> tarafında bedeli büyük. Bkz. §5b-DÜZELTME.
+
+---
+
+## 9. TEŞHİS — synthesis çöküşünün sebebi ÖLÇÜLDÜ (2026-08-12)
+
+`scripts/synthesis_teshis_probe.py`, hybrid, derinlik 200, BULUNDU eşiği
+rank ≤ 10. Kontrol kolu (`single_fact`) aynı ölçümle koştu.
+
+**Ölçüm zemini önce denetlendi.** Servis `retrieval.max_top_k = 20` ile kırpıyor;
+ilk koşum `--derinlik 200` istendiği hâlde 20 döndürmüş, yani teşhis top-20'ye
+göreli kalacakmış. Store yolu üretim parametreleriyle sürülerek aşıldı.
+Tutarlılık denetimi: 4 kayıtta ilk 20 sıra ayrışıyor, **4'ünün de 4'ü** store
+aynı k ile koşulduğunda servisle birebir aynı → sapma yol farkı değil ANN aday
+havuzunun k'ya bağlılığı. Beklenen artefakt; sınıflar geçerli.
+
+**AYRI ALINTI başına (mükerrer baskı tekilleştirilmiş):**
+
+| kategori | alıntı | BULUNDU | GEC | YANLIS_CHUNK | DOSYA_YOK |
+|---|---|---|---|---|---|
+| `single_fact` | 19 | **%78.9** | %21.1 | %0.0 | %0.0 |
+| `synthesis` | 20 | **%20.0** | %40.0 | %30.0 | %10.0 |
+
+### Hüküm
+
+**(3) ÖLÇÜT KUSURU / terim uyuşmazlığı — ÇÜRÜDÜ.** `DOSYA_YOK` synthesis'te
+20 alıntının 2'si, single_fact'te 19'un 0'ı. Çıpa dosyaları top-200'e giriyor.
+Sorular korpusun diliyle örtüşüyor; ölçtüğümüz şey bu kez gerçekten sistem.
+[[rerank-ab-onveri]] turunun tuzağına düşülmedi.
+
+**(1) YAPISAL CEZA / sorgu tek dokümana kilitleniyor — ÇÜRÜDÜ.** Kilitlenme
+deseni "1 bulundu"nun baskın olmasını gerektirirdi. Ölçülen: 10 synthesis
+kaydının **7'si SIFIR** alıntı buluyor, 2'si bir, 1'i iki. Sert payda ikinci
+çıpayı cezalandırmadan önce birinci çıpa zaten bulunamıyor.
+
+**(2) SIRALAMA — DOĞRULANDI, tek ayakta kalan açıklama.** synthesis
+alıntılarının **%70'i** (GEC %40 + YANLIS_CHUNK %30) top-200 içinde ama
+top-10 dışında. Bilgi erişilebilir; yukarı çıkamıyor.
+
+### Türetilen iki ayrı bulgu
+
+- **Bu synthesis'e özgü bir hastalık değil, orada şiddetli.** `single_fact`'te
+  de %21.1 GEC var. Ortak kök sıralama.
+- **`YANLIS_CHUNK` asimetrisi:** synthesis %30, single_fact **%0**. Dosya
+  yüzeye çıkıyor ama alıntının durduğu chunk çıkmıyor. Bu chunk
+  granülerliğine/komşuluğa işaret ediyor, kelime dağarcığına değil —
+  `lookup_window` ve chunk sınırları ayrı bir inceleme kalemi.
+
+### Ne YAPILMADI ve neden
+
+Rerank'e geçilmedi. Ölçüm "doğru chunk havuzda ama sırası düşük" diyor; bu
+cross-encoder'ın tarif edildiği durum, **ama tarif eşleşmesi kanıt değildir**.
+Rerank'in bu havuzda sırayı düzeltip düzeltmediği ancak A/B ile bilinir.
+Değişen şey şu: [[rerank-ab-onveri]] kalemi "canlı talep ölçülemedi" diye
+askıya alınmıştı; artık talep tahmini değil **ölçülmüş bir darboğaz** var.
+Kalemi yeniden açma kararı kullanıcıya aittir.
+
+Sıra önerisi: önce mükerrer baskı elemesi (§5b-DÜZELTME — hem ölçümü hem
+canlı bağlamı düzeltir, ucuz), sonra re-baseline, sonra rerank A/B.
+Baskı yarışı sürerken rerank ölçülürse kazanç kopyalarla karışır.
