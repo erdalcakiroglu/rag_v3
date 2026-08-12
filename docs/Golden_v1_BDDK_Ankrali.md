@@ -16,7 +16,7 @@ golden'ın başına gelenin (quote eşleme 0/43, tüm metrikler 0.000) aynısı.
 |---|---|---|
 | Sermaye Yeterliliği Yönetmeliği | **YOK** | E03, M01, M04, M05, H01, H02, H06, H07, H09 |
 | Likidite Yeterliliği Yönetmeliği | **YOK** | E04, M05, H01, H06, H07 |
-| Kaldıraç Yönetmeliği | **YOK** | E09, M01, H01, H09 |
+| ~~Kaldıraç Yönetmeliği~~ | **VAR — bu satır ÇÜRÜDÜ**, aşağıya bkz. | E09, M01, H01, H09 |
 | Sermaye Tamponları Yönetmeliği | **YOK** | M04, H09 |
 | YP Net Genel Pozisyon Yönetmeliği | **YOK** | M09 |
 | Sistemik Önemli Bankalar Yönetmeliği | **YOK** (yalnız `mevzuat_1167` atıf yapar) | E10, M10 |
@@ -24,6 +24,47 @@ golden'ın başına gelenin (quote eşleme 0/43, tüm metrikler 0.000) aynısı.
 
 Korpusun gerçek bileşimi: **kanunlar** (5411 / 5464 / 6361) + **BDDK rehberleri**
 + **tebliğ/genelgeler** + **TBB yayınları**. Set bunun üzerine kuruldu.
+
+### 0b. DÜZELTME (2026-08-12) — "yönetmelik metni yok" hükmü fazla genişti
+
+`mevzuat_1340.pdf` başka bir sebeple incelenirken (M10'un atıf alıntısı oraya da
+düşüyordu) **kaldıraç yönetmeliğinin kaynak metni olduğu görüldü**:
+
+```
+chunk#8  s.3  bölüm: Sistemik önemli bankaların kaldıraç oranları
+         "MADDE 5 -(1) Kurul, … Sistemik Önemli Bankalar Hakkında Yönetmeliğin
+          3 üncü maddesinin birinci fıkrasının (o) bendi uyarınca sistemik önemli
+          banka olarak tanımlanan bankalar için 4 üncü maddenin üçüncü fıkrasında
+          belirtilen asgari oranlardan daha ihtiyatlı … kaldıraç oranı belirlemeye
+          yetkilidir."
+chunk#9  s.3  bölüm: Toplam risk tutarının hesaplanması        (MADDE 6)
+chunk#11 s.3  bölüm: Bilanço içi varlık risk tutarı            (MADDE 7)
+```
+
+Yani yukarıdaki tablonun "Kaldıraç Yönetmeliği → YOK" satırı **yanlış**.
+
+Kökü önemli, çünkü aynı hata başka satırlarda da olabilir: dosyalar
+`mevzuat_NNNN.pdf` diye adlandırılmış, kapak sayfası taşımıyor ve
+`golden_mevzuat_kimlik_probe` yönetmelikleri **ad/kapak deseniyle** arıyordu —
+madde gövdesiyle değil. `golden_v1_kaynak_probe`'un `sistemik önemli banka`
+desenini "ölü" ilan etmesi de aynı sebepten: tepe isabetler kısaltma tablolarıydı,
+gerçek düzenleme sıralamada altta kaldı.
+
+**Bunun kapsamı ölçülmedi.** Kalan 6 "YOK" satırı doğrulanmış sayılmamalı;
+teyit madde gövdesinden aranarak yapılır, ör.:
+
+```bash
+python scripts/golden_alinti_probe.py \
+  --alinti "asgari kaldıraç oranı" --alinti "sermaye koruma tamponu" \
+  --alinti "likidite karşılama oranı hesaplanmasında"
+```
+
+**Bu setin 30 sorusunu geçersiz kılmaz** — 31 alıntının 31'i korpustan kesilip
+doğrulandı, hiçbiri bu satırlara dayanmıyor. Etkisi iki yerde:
+- **Genişletme fırsatı:** kaldıraç konulu sorular (taslağın E09/M01/H01/H09'u)
+  artık `mevzuat_1340` üzerine yazılabilir.
+- **§5c'nin dayanağı çürük:** `unanswerable` kolu "bu yönetmelikler korpusta yok"
+  varsayımına oturacaktı; o varsayım artık tek tek ölçülmeden kullanılamaz.
 
 ## 1. Bilerek DIŞARIDA bırakılanlar
 
@@ -43,7 +84,16 @@ işlenmeli (yanlış baskının elenmesi veya sürüm etiketlenmesi).
 `likidite karşılama oranı` (tepe isabetler kısaltma tabloları),
 `iç sistemlere ilişkin` (tek isabet, yanlış kanun),
 `müşteri sırrı` (tepe isabet kaynakça sayfası),
-`sistemik önemli banka` (tepe isabet org şeması tablosu).
+`sistemik önemli banka` (tepe isabet org şeması tablosu — **ama bu "ölü" hükmü
+§0b ile çürüdü: desen sıralaması `mevzuat_1340`'ı kaçırdı, kaynak orada**).
+
+**M10'un ikinci isabeti DIŞLANDI.** Alıntı 20 (`…Yönetmeliğin 3 üncü maddesinin
+birinci fıkrasının`) `mevzuat_1167` yanında `mevzuat_1340` s.3'e de düşüyordu.
+Mükerrer-baskı kuralı burada geçerli değil: 1340, 1167'nin başka baskısı değil —
+kaldıraç düzenlemesi, aynı maddeye yalnız *hangi bankalar* sorusunu
+çözmek için atıf yapıyor. Gold bırakılsaydı, M10'a ("önlem planı rehberi hangi
+bankaları muhatap alır?") kaldıraç hükmü döndüren retriever **doğru** sayılırdı.
+Set `--dislanan mevzuat_1340.pdf` ile üretilir: 94 → **93 evidence**, 31 dosya.
 
 **Havuz bayat:** prob 72 dosyalık reprocess'ten ÖNCE koştu; 57 dosya "C0 artığı
 (reprocess bekliyor)" diye elenmişti. Reprocess bitti (0x02 korpustan silindi),
@@ -134,7 +184,8 @@ mükerrer-baskı kuralı), yoksa recall sahte olarak çöker.
 Alıntı çözümlemesi koştu (`--alinti-dosya`, 2026-08-11): **31 alıntının 31'i
 `ISABET >= 1`**, sıfır ıska. Çözümleme 32 dosyada **77 ayrı `(dosya, sayfa)`
 evidence girdisi** verdi; bunlar 30 kayda dağıtılınca (H katmanı çıpa paylaşır)
-toplam **94 evidence** oluyor. Ham çıktı `docs/golden_v1_evidence.json`.
+toplam 94 evidence oluyor; §1'deki `mevzuat_1340` dışlaması bir girdi düşürünce
+**93 evidence / 31 dosya**. Ham çıktı `docs/golden_v1_evidence.json`.
 
 ## 5b. Mükerrer baskının recall'e ÖLÇÜLEN bedeli
 
@@ -170,12 +221,19 @@ yoktu; yeni bir eksik değil ama devredilmemeli: M-17 honesty ölçütü
 (`honest = declined ∧ (kaynak=0 ∨ coverage=1.0)`) cevaplanamaz soru olmadan
 **hiç koşamaz**. Set bu hâliyle retrieval'i ölçer, dürüstlüğü ölçmez.
 
-Kolu kurmanın malzemesi hazır: §0'daki 7 yönetmelik kaynak metni korpusta yok,
-yani "asgari sermaye yeterliliği oranı yönetmelikte kaç?" tipi sorular tam da
-cevaplanamaz. **Ama önce yokluk doğrulanmalı** — korpustaki kitaplar (ör.
-`Kitap-Banka_Muhasebesi`) aynı oranı anlatıyor olabilir; gerçekte cevaplanabilir
-bir soruyu `unanswerable` yazmak dürüst sistemi yanlış saydırır. Yokluk
-`golden_alinti_probe --alinti` ile ölçülmeden bu kol yazılmaz.
+Kolu kurmanın planı §0'daki "şu 7 yönetmelik korpusta yok" listesine oturacaktı
+— "asgari sermaye yeterliliği oranı yönetmelikte kaç?" tipi sorular tam da
+cevaplanamaz olurdu. **§0b bu dayanağı çürüttü:** o listenin kaldıraç satırı
+yanlış çıktı, kalan 6 satır da aynı yöntemle (ad/kapak deseni) üretilmişti.
+
+Dolayısıyla yokluk **soru soru ölçülmeden** bu kol yazılmaz. İki ayrı risk var
+ve ikisi de dürüst sistemi yanlış saydırır:
+- yönetmelik metni aslında korpusta (kaldıraçta olduğu gibi),
+- yönetmelik yok ama korpustaki kitaplar aynı oranı anlatıyor
+  (ör. `Kitap-Banka_Muhasebesi`, `Finansal_Riskler_ve_Turev_Urunler_2`).
+
+Her aday `unanswerable` soru için `golden_alinti_probe --alinti` ile
+**ISABET: 0** görülmelidir; ancak o zaman cevaplanamazlık ölçülmüş olur.
 
 ## 6. Puanlama ve veri modeli
 
@@ -196,11 +254,16 @@ python scripts/golden_alinti_probe.py --alinti-dosya docs/golden_v1_alintilar.tx
 `gates.evidence_precondition`i çıkış 2'ye düşürür ve gate hiç koşmazdı.
 Çıktı `docs/golden_v1_evidence.json` olarak saklandı.
 
-**Adım 2 — `doc_scope` teyidi. BEKLİYOR, ZORUNLU.**
+**Adım 2 — `doc_scope` teyidi. KOŞTU, GEÇTİ (2026-08-12).**
+
+Sonuç: **tek scope `'default'`, 1118 dosya / 43962 chunk.** Bölünme yok, gold
+evidence dosyalarının tamamı bu scope'ta. Adım 3'e `--doc-scope default` verilir.
+
+Neden ölçüldü:
 
 `map_gold_chunks` adayları `f.file_name = … AND f.doc_scope = rec.doc_scope`
 ile süzer (`ragintel/eval/repository.py`). Scope yanlışsa aday kümesi **boş**
-döner, 94 evidence'ın 94'ü unmapped olur ve metrikler 0.000 çıkar — eski
+döner, 93 evidence'ın 93'ü unmapped olur ve metrikler 0.000 çıkar — eski
 golden'ın arızasının birebir aynısı, üstelik "korpus kötü" gibi okunur.
 Varsayım yasak, ölçülür. Tek dosyaya değil **korpus geneline** bakılır — scope'lar
 bölünmüşse tek dosya yanıltır:
@@ -209,21 +272,13 @@ bölünmüşse tek dosya yanıltır:
 python scripts/golden_aday_tarama_probe.py --limit-table 0 --limit-synth 0
 ```
 
-`--- korpustaki doc_scope dağılımı ---` başlığı altında her scope'u dosya ve chunk
-sayısıyla basar. Beklenen: **tek scope, ~1044+ dosya**. Birden fazla scope varsa
-BDDK dosyalarının hangisinde olduğu seçilir; gold evidence dosyaları o scope'ta
-değilse set o scope'la üretilemez.
-
 **Adım 3 — JSONL üretimi (DB'ye dokunmaz).**
 
 ```bash
-python scripts/golden_v1_jsonl_uret.py --doc-scope default
+python scripts/golden_v1_jsonl_uret.py --doc-scope default --dislanan mevzuat_1340.pdf
 ```
 
-`default` yerine Adım 2'nin bastığı scope adı yazılır (kabuk `<…>` yer tutucusunu
-yönlendirme sanıp hata verir — değer doğrudan yazılmalı).
-
-30 kayıt / 94 evidence / 32 dosya yazar ve `load_golden_jsonl` şema+benzersizlik
+`--dislanan` gerekçesi §1'de. 30 kayıt / 93 evidence / 31 dosya yazar ve `load_golden_jsonl` şema+benzersizlik
 doğrulamasından geçirir. Soru-cevap metni bu belgeden, alıntılar probe
 çıktısından okunur — script hiçbir metni kendi yazmaz.
 
@@ -234,7 +289,7 @@ python -m ragintel.eval retrieval --from-file eval/golden/v1.jsonl --variant hyb
 ```
 
 `--from-file` seti DB'ye yazmadan koşar. Bakılacak tek sayı önce metrikler
-değil **eşleme oranı**: `mapped_evidence` 94/94 olmalı. 94'ün altındaysa
+değil **eşleme oranı**: `mapped_evidence` 93/93 olmalı. 93'ün altındaysa
 `unmapped` listesi hangi `(dosya, sayfa, alıntı)` üçlüsünün düştüğünü söyler —
 neredeyse kesin `doc_scope` ya da sayfa kayması demektir, o hâlde yükleme yapılmaz.
 
