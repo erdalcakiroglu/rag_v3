@@ -124,6 +124,7 @@ def _kumeler(ciftler: list[tuple[int, int]]) -> list[set[int]]:
 
 
 def main() -> int:
+    global PENCERE
     _force_utf8()
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -140,14 +141,26 @@ def main() -> int:
                          "her elenecek dosyanın bu dosyada ne kadar karşılandığı "
                          "ölçülür, bulunamayan pencereler ve golden alıntı "
                          "çözünürlüğü basılır")
+    ap.add_argument("--pencere", type=int, default=PENCERE,
+                    help=f"içerilme penceresi uzunluğu (vars. {PENCERE}). "
+                         "Kısaltmak dipnot gürültüsünü ayırır: TBB baskıları "
+                         "madde gövdesine dipnot numarası serpiştiriyor, uzun "
+                         "pencere bu yüzden tutmaz. Ters yön kısa pencerede "
+                         "sıçrıyorsa fark İÇERİK değil DİZGİ demektir")
     ap.add_argument("--kayip-goster", type=int, default=4,
                     help="--kapsam modunda dosya başına basılacak bulunamayan "
                          "pencere sayısı (vars. 4)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
+    PENCERE = max(40, int(args.pencere))
 
     from ragintel.config.settings import DbSettings
     from ragintel.database import Database
+    # Golden alıntısı HAM metindir; `chunk_text_norm` NFKC+lowercase+ws-collapse
+    # ile üretilir. Ham alıntıyı norm sütununda aramak (ilk sürümün kusuru)
+    # büyük harfli her alıntıyı "bulunamadı" gösterir. Eşleme, eval'in
+    # kullandığı TEK doğruluk kaynağından geçirilir.
+    from ragintel.text.normalize import normalize_for_quote
 
     golden_dosyalari: dict[str, list[str]] = {}
     golden_alintilari: dict[str, list[tuple[str, str]]] = {}
@@ -346,10 +359,15 @@ def main() -> int:
                         if (kimlik, alinti) in gorulen:
                             continue
                         gorulen.add((kimlik, alinti))
+                        norm = normalize_for_quote(alinti)
+                        # Tutulanda yoksa hangi üye çözüyor: kaybın gerçek
+                        # boyutu bu (hiç kimse çözmüyorsa alıntı zaten ölü).
+                        cozen = [ad_of[o] for o in sorted(kume)
+                                 if norm and _var_mi(o, norm)]
                         kapsam["golden"].append({
                             "id": kimlik, "alinti": alinti,
-                            "tutta_var": _var_mi(tut_id, alinti),
-                            "kaynak": ad_of[fid],
+                            "tutta_var": ad_of[tut_id] in cozen,
+                            "cozen": cozen, "kaynak": ad_of[fid],
                         })
 
         bilgi = {}
@@ -430,7 +448,9 @@ def main() -> int:
                       f"alinti): tutulanda cozulmeyen {len(eksik)}")
                 for g in eksik:
                     print(f"  [{g['id']}] {g['alinti'][:110]}")
-                    print(f"        kaynak: {g['kaynak']}")
+                    coz = ", ".join(g["cozen"]) if g["cozen"] else \
+                        "HICBIR KUME UYESI — alinti kume disinda cozulmeli"
+                    print(f"        cozen: {coz}")
             print()
 
         print(f"doc_scope={args.doc_scope}  icerilme_esigi=%{args.esik * 100:.0f}  "
