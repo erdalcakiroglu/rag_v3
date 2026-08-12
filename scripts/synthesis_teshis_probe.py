@@ -35,12 +35,24 @@ NASIL AYIRIR
     DOSYA_YOK oranı single_fact'inkiyle aynıysa sorun synthesis'e özgü değildir,
     setin geneline aittir — o hâlde teşhis de müdahale de başka yere gider.
 
+NEDEN `StoreRetriever`, NEDEN `ServiceRetriever` DEĞİL
+    `RetrievalService._effective_top_k` isteği `retrieval.max_top_k`'ya kırpar
+    ve üretimde bu değer **20**'dir: `--derinlik 200` verilse bile servis 20
+    döndürür (ilk koşumda `result_count: 20` diye görüldü). O hâlde DOSYA_YOK
+    hükmü top-20'ye göreli olurdu — yani (2) ile (3) tam da ayrılamaz kalırdı,
+    probe'un tek varlık sebebi buydu.
+    Config'i değiştirmek seçenek DEĞİL (üretim ayarına ölçüm için dokunulmaz),
+    bu yüzden sweep kolunun yolu kullanılır: `StoreRetriever` aynı store
+    metodlarını çağırır ama parametreleri AÇIK alır. Parametreler üretim
+    config'inden okunup birebir aktarılır — semantik aynı, yalnız kırpma yok.
+    Kendini denetler: `--tutarlilik` (vars. açık) ilk 20 sırayı
+    `ServiceRetriever` ile karşılaştırır. Ayrışma varsa GÜRÜLTÜYLE bildirir;
+    sessizce farklı bir şey ölçmektense ölçümü şüpheli ilan etmek yeğdir.
+
 GÜVENLİK / ZEMİN
     • Yalnız SELECT + retrieval araması. DB'ye, config'e, golden'a YAZMAZ.
     • Eşleme, benchmark'ın kullandığı ÜRETİM yolunun aynısı:
       `list_candidate_chunks` + `normalize_for_quote` (kopya mantık yazılmadı).
-    • Retriever de aynı: `ServiceRetriever` — probe kendi arama yolunu kurmaz,
-      yoksa ölçtüğü şey benchmark'ın ölçtüğü şey olmaz.
 
 KULLANIM
     python scripts/synthesis_teshis_probe.py --from-file eval/golden/v1.jsonl
@@ -121,6 +133,8 @@ def main() -> int:
     ap.add_argument("--kategori", action="append", default=[], metavar="AD",
                     help="yalnız bu kategoriler (yinelenebilir); "
                          "varsayılan synthesis + single_fact (kontrol kolu)")
+    ap.add_argument("--tutarlilik", action=argparse.BooleanOptionalAction, default=True,
+                    help="ilk 20 sırayı ServiceRetriever ile karşılaştır (vars. açık)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
@@ -130,7 +144,7 @@ def main() -> int:
     from ragintel.database.config_store import make_db_reader
     from ragintel.eval import repository as repo
     from ragintel.eval.retrieval_benchmark import (
-        ServiceRetriever, from_db_rows, from_golden_records,
+        ServiceRetriever, StoreRetriever, from_db_rows, from_golden_records,
     )
     from ragintel.retrieval import RetrievalService
     from ragintel.text import normalize_for_quote
@@ -159,11 +173,35 @@ def main() -> int:
             return 2
 
         cfg = load_config(db_reader=make_db_reader(db))
-        retriever = ServiceRetriever(RetrievalService(db=db, config=cfg), args.variant)
+        service = RetrievalService(db=db, config=cfg)
+        rc = service.retrieval_cfg
+
+        # Servis kırpması ölçümü sakatlardı (bkz. docstring): store yolu
+        # ÜRETİM parametreleriyle, kırpmasız sürülür.
+        embed_cache = {r.question: service._embed_query(r.question)[0] for r in kayitlar}
+        retriever = StoreRetriever(
+            service.store, embed_cache, name=f"{args.variant}-derin",
+            method=args.variant,
+            ef_search=int(rc.vector_ef_search),
+            iterative_scan=str(rc.hnsw_iterative_scan),
+            fusion=str(rc.hybrid_fusion), rrf_k=int(rc.hybrid_rrf_k),
+            dense_weight=float(rc.hybrid_dense_weight),
+            sparse_weight=float(rc.hybrid_sparse_weight),
+            sparse_variant=str(rc.hybrid_sparse_variant))
+
+        kontrol = ServiceRetriever(service, args.variant) if args.tutarlilik else None
+        sapma: list[dict] = []
 
         rapor: list[dict] = []
         for rec in kayitlar:
             siralama = retriever.rank(rec.question, rec.doc_scope, args.derinlik)
+            if kontrol is not None:
+                servis_k = int(rc.max_top_k)
+                bekleyen = kontrol.rank(rec.question, rec.doc_scope, servis_k)
+                if bekleyen != siralama[:len(bekleyen)]:
+                    ortak = len(set(bekleyen) & set(siralama[:len(bekleyen)]))
+                    sapma.append({"id": rec.id, "servis_n": len(bekleyen),
+                                  "ortak": ortak})
             yer = {cid: i + 1 for i, cid in enumerate(siralama)}
             with db.connection() as conn:
                 cid_dosya = _chunk_dosyalari(conn, siralama)
@@ -209,6 +247,8 @@ def main() -> int:
 
         sonuc = {"kaynak": kaynak_ad, "variant": args.variant,
                  "derinlik": args.derinlik, "esik": args.esik,
+                 "servis_max_top_k": int(rc.max_top_k),
+                 "tutarlilik_sapmasi": sapma,
                  "ozet": ozet, "kayitlar": rapor}
 
         if args.json:
@@ -216,7 +256,19 @@ def main() -> int:
             return 0
 
         print(f"kaynak={kaynak_ad}  variant={args.variant}  "
-              f"derinlik={args.derinlik}  BULUNDU esigi=rank<={args.esik}\n")
+              f"derinlik={args.derinlik}  BULUNDU esigi=rank<={args.esik}")
+        print(f"servis max_top_k={int(rc.max_top_k)} (store yolu bu kirpmayi "
+              "asar; parametreler uretim config'inden)")
+        if kontrol is not None:
+            if sapma:
+                print(f"\n!! TUTARLILIK SAPMASI: {len(sapma)} kayitta store ve servis "
+                      f"ilk {int(rc.max_top_k)} sirasi AYNI DEGIL —")
+                print("   asagidaki siniflar suphelidir, once bu aciklanmali.")
+                for s in sapma[:10]:
+                    print(f"   {s['id']}: ortak {s['ortak']}/{s['servis_n']}")
+            else:
+                print("tutarlilik: store ilk 20 == servis 20 (TUM kayitlarda)")
+        print()
 
         print("=== ÇIPA SINIF DAĞILIMI (kategori bazında) ===")
         basliklar = "  ".join(f"{s:>13}" for s in sinif_sirasi)
