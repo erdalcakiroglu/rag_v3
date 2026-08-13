@@ -75,6 +75,10 @@ def main() -> int:
                          "(birden çok kez verilebilir)")
     ap.add_argument("--golden", type=Path, default=Path("eval/golden/v1.jsonl"))
     ap.add_argument("--doc-scope", default="default")
+    ap.add_argument("--chunk", type=int, action="append", default=[],
+                    help="tutulacak dosyanın bu chunk_index'ini basar. Alıntı "
+                         "izi KISMI dediğinde yürürlükteki lafız buradan okunur "
+                         "(golden'ı güncel metne yeniden bağlamak için)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
@@ -145,9 +149,20 @@ def main() -> int:
                         gorulen.add(norm)
                         izler.append(_iz_sur(conn, kayit["id"], norm, tut_ad, tut_id))
 
+            govdeler = []
+            for ci in args.chunk:
+                row = conn.execute(
+                    "SELECT chunk_index, page_number, chunk_text_norm "
+                    "FROM core_chunks WHERE file_id = %s AND chunk_index = %s;",
+                    (tut_id, ci),
+                ).fetchone()
+                if row:
+                    govdeler.append({"chunk_index": row[0], "sayfa": row[1],
+                                     "metin": row[2] or ""})
+
         if args.json:
-            print(json.dumps({"tut": tut_ad, "kapsam": satirlar, "izler": izler},
-                             ensure_ascii=False, indent=2))
+            print(json.dumps({"tut": tut_ad, "kapsam": satirlar, "izler": izler,
+                              "govdeler": govdeler}, ensure_ascii=False, indent=2))
             return 0
 
         print("=" * 78)
@@ -190,6 +205,13 @@ def main() -> int:
                          if iz["on_ek"] >= LADDER_MIN else ""))
                 print(f"   en uzun son ek: {iz['son_ek']} karakter")
                 print(f"   HUKUM: {iz['hukum']}")
+
+        for g in govdeler:
+            print("\n" + "=" * 78)
+            print(f"CHUNK {g['chunk_index']}  (sayfa {g['sayfa']})  "
+                  f"{len(g['metin'])} karakter")
+            print("=" * 78)
+            print(g["metin"])
         return 0
     finally:
         db.close()
