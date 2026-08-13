@@ -63,19 +63,19 @@ services:
       # Auth'suz uçta Bearer GÖNDERİLMEZ (embedder: anahtar yoksa header yok).
       RAGINTEL_OLLAMA_API_KEY: ""
 
-      # --- TEI rerank: KAPALI (bilinçli) ---
-      # DB-otoriter `retrieval.rerank_backend = "passthrough"` → TEI HİÇ ÇAĞRILMIYOR.
-      # URL'i yine de vermek zararsız DEĞİL: kod, URL doluysa health check atar
-      # (runtime.health), TEI ayakta olmadığı için "tei" düşer ve sistem hiçbir
-      # işlev kaybı olmadan sürekli "degraded" görünür — yanlış alarm. URL boşken
-      # health "disabled" der ve degrade ETMEZ (M-4: yapılandırılmamış opsiyonel
-      # bileşen, arızalı bileşen değildir).
+      # --- TEI rerank: AÇIK (GPU, ölçümle gerekçeli) ---
+      # `tei-rerank` servisi aşağıda tanımlı; host ağında 8085'ten yanıt verir.
+      # URL ile DB-otoriter `retrieval.rerank_backend` BİRLİKTE değişir: yalnız
+      # backend'i 'tei' yapıp URL'i kapalı bırakırsanız `require_rerank_url()`
+      # AÇIK hata verir (sessiz bozulma yok); yalnız URL'i açıp backend'i
+      # 'passthrough' bırakırsanız TEI health'e girer ama sorgu yolunda çağrılmaz.
       #
-      # TEI'ye geçilecekse: TEI'yi ayağa kaldırın, aşağıdaki satırı açın ve
-      # `retrieval.rerank_backend`'i DB'den 'tei' yapın (mimari karar — ikisi
-      # birlikte değişir). Yalnızca backend'i 'tei' yapıp URL'i açmazsanız
-      # `require_rerank_url()` AÇIK hata verir; sessiz bozulma yok.
-      # RAGINTEL_TEI_RERANK_URL: http://localhost:8085
+      # NEDEN AÇILDI (v1-bddk, n=30): havuz 200 + cross-encoder ile recall@10
+      # 0.486 → 0.682, single_fact 0.667 → 0.947. Maliyet 200 aday için ~0.16 sn
+      # (H200/float16). CPU'da aynı iş 215 sn sürüyordu — `rerank_timeout_sec=5.0`
+      # ile rerank orada ZATEN çalışamazdı, her istek sessizce passthrough'a
+      # düşerdi. Yani bu satırı GPU'dan önce açmak yanıltıcı olurdu.
+      RAGINTEL_TEI_RERANK_URL: http://localhost:8085
 
       # --- DB: BURADA DEĞİL ---
       # RAGINTEL_DB_HOST/PORT/NAME/SCHEMA/USER/PASSWORD tamamı `.env.h200`'dedir.
@@ -141,3 +141,56 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+  # ---------------------------------------------------------------------------
+  # TEI cross-encoder rerank (GPU). ÖNCEDEN COMPOSE'DA YOKTU: elle `docker run`
+  # ile ayakta duruyordu ve restart politikası `no` idi — docker daemon bir kez
+  # yeniden başlatılınca konteyner geri GELMEDİ ve kimse fark etmedi. Buraya
+  # alınmasının sebebi bu; sürüm/port/model artık repoda kayıtlı.
+  # ---------------------------------------------------------------------------
+  tei-rerank:
+    # hopper-1.6 = H200 (Hopper) çekirdekleri. CPU imajıyla AYNI modeli float16
+    # koşar; kalite denkliği ölçüldü: GPU sonucu CPU float32 sonucunu ondalığına
+    # kadar tekrarladı (v1-bddk p100, kayıt tablosu birebir). Hız farkı ~1300×
+    # (0.9 → ~1290 chunk/sn).
+    image: ghcr.io/huggingface/text-embeddings-inference:hopper-1.6
+    container_name: tei-rerank
+    restart: unless-stopped
+
+    # Ollama ile AYNI GPU'yu paylaşır (tek H200 NVL). TEI ~1.8 GiB tutar; bellek
+    # sıkışması beklenmiyor, ancak SM çekişmesinin LLM gecikmesine etkisi HENÜZ
+    # ÖLÇÜLMEDİ — canlı log birikince bakılmalı.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    # Bridge + LOOPBACK map: host-network'teki ragintel-api localhost:8085'ten
+    # erişir, dışarıya açılmaz. (host-network kullanılsaydı TEI 80'e binerdi.)
+    ports:
+      - "127.0.0.1:8085:80"
+
+    # Model önbelleği. `external: true` → elle indirilmiş mevcut hacim yeniden
+    # kullanılır; yoksa compose yeni ad türetir ve model BAŞTAN indirilir.
+    volumes:
+      - tei-data:/data
+
+    command:
+      - --model-id
+      - BAAI/bge-reranker-v2-m3
+      # Sunucu sınırı ile istemci partisi (`retrieval.rerank_client_batch`) AYNI
+      # sayı olmalı. Sunucu tarafı küçük kalırsa istemci 413 alır ve 413 fail-open
+      # DEĞİLDİR — arama komple hata verir. Burada açıkça yazılı ki imaj varsayılanı
+      # değişse bile ikisi ayrışmasın.
+      - --max-client-batch-size
+      - "32"
+
+    # Healthcheck YOK: imajda curl/wget bulunmuyor. TEI'nin durumu uygulamanın
+    # kendi /api/health'inde zaten raporlanıyor (runtime.health → "tei").
+
+volumes:
+  tei-data:
+    external: true

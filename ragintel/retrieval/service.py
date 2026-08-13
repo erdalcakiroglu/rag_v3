@@ -230,6 +230,40 @@ class RetrievalService:
     def _passthrough_rerank(chunk_ids: list[int]) -> list[RerankResult]:
         return [{"chunk_id": cid, "rerank_score": 0.0} for cid in chunk_ids]
 
+    def _tei_score_batched(self, query: str, texts: list[str]) -> list[float]:
+        """Havuzu parti parti skorlar; index'ler HAVUZ tabanına geri çevrilir.
+
+        TEI `--max-client-batch-size` (vars. 32) üstünde 413 döner ve 413 fail-open
+        listesinde DEĞİL — yani over-fetch tek istekle gönderilirse rerank çöker.
+        Cross-encoder her (sorgu, metin) çiftini bağımsız skorladığı için partilemek
+        sıralamayı DEĞİŞTİRMEZ; yalnız istek sayısını artırır.
+
+        TUZAK: TEI'nin döndürdüğü `index` GÖNDERİLEN PARTİYE görelidir. `bas` ofseti
+        eklenmezse sonraki partiler öncekilerin skorunu sessizce üzerine yazar — 413
+        gibi gürültülü değil, hatasız BOZUK sıralama üretir. `-inf` başlangıcı ve
+        eksiksizlik denetimi o sessiz hâli imkânsız kılmak içindir.
+        """
+        parti = max(1, int(self.retrieval_cfg.rerank_client_batch))
+        url = f"{self.tei_settings.rerank_url.rstrip('/')}/rerank"
+        skorlar: list[float] = [float("-inf")] * len(texts)
+        for bas in range(0, len(texts), parti):
+            resp = self.rerank_client.post(
+                url, json={"query": query, "texts": texts[bas:bas + parti]}
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            results = payload if isinstance(payload, list) else payload.get("results")
+            if not isinstance(results, list):
+                raise ValueError("TEI rerank yanıtı geçersiz")
+            for item in results:
+                idx = int(item["index"])
+                if idx < 0 or bas + idx >= len(texts):
+                    raise ValueError("TEI rerank index değeri geçersiz")
+                skorlar[bas + idx] = float(item["score"])
+        if any(s == float("-inf") for s in skorlar):
+            raise ValueError("TEI rerank sonuç sayısı eksik")
+        return skorlar
+
     def _tei_rerank(self, query: str, chunk_ids: list[int], allowed: list[str]) -> list[RerankResult]:
         rows = self.store.rerank_texts(chunk_ids=chunk_ids, allowed_doc_scopes=allowed)
         if len(rows) != len(chunk_ids):
@@ -238,24 +272,11 @@ class RetrievalService:
         texts = [str(row["text"]) for row in rows]
         for attempt in range(int(self.retrieval_cfg.rerank_retries) + 1):
             try:
-                resp = self.rerank_client.post(
-                    f"{self.tei_settings.rerank_url.rstrip('/')}/rerank",
-                    json={"query": query, "texts": texts},
-                )
-                resp.raise_for_status()
-                payload = resp.json()
-                results = payload if isinstance(payload, list) else payload.get("results")
-                if not isinstance(results, list):
-                    raise ValueError("TEI rerank yanıtı geçersiz")
-                scored = []
-                for item in results:
-                    idx = int(item["index"])
-                    score = float(item["score"])
-                    if idx < 0 or idx >= len(chunk_ids):
-                        raise ValueError("TEI rerank index değeri geçersiz")
-                    scored.append({"chunk_id": chunk_ids[idx], "rerank_score": score})
-                if len(scored) != len(chunk_ids):
-                    raise ValueError("TEI rerank sonuç sayısı eksik")
+                skorlar = self._tei_score_batched(query, texts)
+                scored = [
+                    {"chunk_id": cid, "rerank_score": skor}
+                    for cid, skor in zip(chunk_ids, skorlar)
+                ]
                 scored.sort(key=lambda item: item["rerank_score"], reverse=True)
                 return scored
             except Exception as exc:
@@ -285,6 +306,16 @@ class RetrievalService:
     ) -> list[RetrievedChunk]:
         top_k = self._effective_top_k(top_k)
         allowed = self._allowed_scopes(user_ctx)
+        # OVER-FETCH: rerank açıkken DB'den top_k değil `rerank_pool` aday çekilir,
+        # cross-encoder sıralar, sonra top_k'ya kırpılır. Kazanç buradan gelir —
+        # yalnız top_k çekilip sıralanırsa cross-encoder ilk 10'u kendi arasında
+        # karıştırmaktan ibaret kalır ve altın chunk 11-200 aralığındaysa hiç
+        # görülmez. v1-bddk: recall@10 0.486 → 0.682 (havuz 200).
+        # Bu, ajanın isteğine BIRAKILAMAZ: `_effective_top_k` çağıranı max_top_k=20'ye
+        # kırptığı için ajanın eline 200 aday hiçbir zaman geçmez.
+        havuz = top_k
+        if str(self.retrieval_cfg.rerank_backend) != "passthrough":
+            havuz = max(top_k, int(self.retrieval_cfg.rerank_pool))
         query_norm = normalize_for_search(query)
         fusion_strategy = str(self.retrieval_cfg.hybrid_fusion)
         sparse_variant = str(self.retrieval_cfg.hybrid_sparse_variant)
@@ -301,6 +332,7 @@ class RetrievalService:
             fusion_strategy=fusion_strategy,
             sparse_variant=sparse_variant,
             hybrid_rrf_k=rrf_k,
+            rerank_pool=havuz,
         ):
             if not allowed:
                 set_span_attributes(result_count=0, fail_closed=True)
@@ -312,7 +344,7 @@ class RetrievalService:
                 query_vector=qv,
                 normalized_query=query_norm,
                 allowed_doc_scopes=allowed,
-                top_k=top_k,
+                top_k=havuz,
                 ef_search=int(self.retrieval_cfg.vector_ef_search),
                 iterative_scan=str(self.retrieval_cfg.hnsw_iterative_scan),
                 filters=filters,
@@ -323,6 +355,8 @@ class RetrievalService:
                 sparse_variant=sparse_variant,
             )
             db_ms = int((time.perf_counter() - t0) * 1000)
+            if havuz > top_k and chunks:
+                chunks = self._rerank_and_trim(query, chunks, top_k, user_ctx=user_ctx)
             set_span_attributes(
                 retrieval_method="hybrid",
                 query_embed_ms=embed_ms,
@@ -336,6 +370,27 @@ class RetrievalService:
                 db_ms=db_ms, result_count=len(chunks),
             )
             return chunks
+
+    def _rerank_and_trim(
+        self,
+        query: str,
+        chunks: list[RetrievedChunk],
+        top_k: int,
+        *,
+        user_ctx: UserContext,
+    ) -> list[RetrievedChunk]:
+        """Havuzu cross-encoder sırasına sokup top_k'ya kırpar.
+
+        `rerank()` yalnız chunk_id sırası döner; gövdeler burada o sıraya dizilir.
+        Rerank'in dönmediği chunk (fail-open passthrough kısaltması gibi) SESSİZCE
+        DÜŞMEZ — hibrit sırasındaki yerini koruyarak kuyruğa eklenir; aksi hâlde
+        rerank servisi bozulduğunda arama sonuç sayısı sebepsiz azalırdı.
+        """
+        sira = self.rerank(query, [int(c["chunk_id"]) for c in chunks], user_ctx=user_ctx)
+        by_id = {int(c["chunk_id"]): c for c in chunks}
+        sirali = [by_id.pop(int(r["chunk_id"])) for r in sira if int(r["chunk_id"]) in by_id]
+        sirali.extend(c for c in chunks if int(c["chunk_id"]) in by_id)
+        return sirali[:top_k]
 
     def search_vector(
         self,

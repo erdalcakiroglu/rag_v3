@@ -825,9 +825,27 @@ class RetrievalConfig(BaseModel):
                     "(isabeti artırır, gecikme ekler). 'tei' seçilirse RAGINTEL_TEI_RERANK_URL "
                     "(.env) tanımlı olmalıdır, aksi hâlde arama hata verir.",
     )
+    rerank_pool: int = Field(
+        default=200, ge=1, le=1000,
+        description="rerank_backend='tei' iken hibrit aramanın cross-encoder'a vereceği ADAY "
+                    "sayısı (over-fetch). Kullanıcıya yine top_k sonuç döner — havuz yalnız "
+                    "yeniden sıralanacak adayların derinliğidir. v1-bddk ölçümü: recall@10 "
+                    "havuz 100'de 0.598, 200'de 0.682, 500'de 0.648 — 500'de DÜŞÜYOR, çünkü "
+                    "derin havuz doğru adayı bulma şansıyla birlikte yanlış adayı öne alma "
+                    "şansını da büyütür. 200 ölçülen tepe. passthrough'ta kullanılmaz.",
+    )
+    rerank_client_batch: int = Field(
+        default=32, ge=1, le=512,
+        description="Tek TEI isteğine konacak azami metin. TEI'nin --max-client-batch-size "
+                    "değerini AŞMAMALI (varsayılan 32), aşılırsa 413 döner ve rerank çöker. "
+                    "Cross-encoder her (sorgu, metin) çiftini bağımsız skorladığı için "
+                    "partilemek SIRALAMAYI DEĞİŞTİRMEZ — yalnız istek sayısını etkiler.",
+    )
     rerank_timeout_sec: float = Field(
         default=5.0, ge=0.0, le=120.0,
-        description="Rerank servisi çağrısının zaman aşımı (saniye). Aşılırsa hibrit sıra kullanılır.",
+        description="Rerank servisi çağrısının zaman aşımı (saniye). Aşılırsa hibrit sıra kullanılır. "
+                    "H200 GPU ölçümü: 200 aday ≈ 0.16 sn (CPU'da 215 sn idi — CPU'da rerank bu "
+                    "zaman aşımına takılıp SESSİZCE passthrough'a düşerdi).",
     )
     rerank_retries: int = Field(
         default=1, ge=0, le=10,
@@ -856,6 +874,15 @@ class RetrievalConfig(BaseModel):
             raise ValueError(
                 f"max_top_k ({self.max_top_k}) < default_top_k ({self.default_top_k}) olamaz — "
                 "üst sınır varsayılanın altına inerse her istek sessizce kırpılır."
+            )
+        # Havuz üst sınırın altına inerse over-fetch daralma olur: max_top_k isteyen
+        # çağıran, rerank açıkken KAPALIYA GÖRE DAHA AZ sonuç alır ve bunu hiçbir hata
+        # bildirmez. (rerank_pool yalnız 'tei' iken kullanılıyor ama kural her zaman
+        # denetlenir — backend flip'i tek başına yapılınca kusur ortaya çıkmasın.)
+        if self.rerank_pool < self.max_top_k:
+            raise ValueError(
+                f"rerank_pool ({self.rerank_pool}) < max_top_k ({self.max_top_k}) olamaz — "
+                "aday havuzu üst sınırın altındaysa rerank sonuç SAYISINI sessizce düşürür."
             )
         # 'weighted' seçiliyken iki ağırlığın da 0 olması aramayı tamamen sıfırlar.
         if self.hybrid_fusion == "weighted" and self.hybrid_dense_weight == 0 and self.hybrid_sparse_weight == 0:

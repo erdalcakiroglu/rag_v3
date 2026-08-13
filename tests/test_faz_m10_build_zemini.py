@@ -153,30 +153,51 @@ def test_compose_ORTAMA_BAGLI_DB_degeri_TASIMAZ():
         )
 
 
-def test_TEI_urli_rerank_backend_ile_BIRLIKTE_gider():
-    """`rerank_backend=passthrough` iken TEI URL'i vermek zararsız DEĞİL.
+def test_TEI_urli_SERVISLE_ve_PORTUYLA_birlikte_gider():
+    """TEI URL'i, onu karşılayan servis tanımıyla aynı dosyada ve aynı portta olmalı.
 
-    Kod, URL doluysa health check atar (runtime.health). TEI ayakta değilse "tei"
-    düşer ve sistem — rerank zaten çağrılmadığı için HİÇBİR işlev kaybı olmadan —
-    sürekli `degraded` görünür. URL boşken health "disabled" der ve degrade etmez
-    (M-4: yapılandırılmamış opsiyonel bileşen, arızalı bileşen değildir).
-    `deploy.sh` yalnızca `unhealthy`'de durduğu için bu yanlış alarm fark edilmeden
-    yaşardı. İkisi BİRLİKTE değişmeli.
+    ESKİ HÂLİ NEDEN DEĞİŞTİ: bu test "rerank çağrılıyor mu"yu `RetrievalConfig()`
+    varsayılanından okuyordu. O değer canlıda DB'den (`app_config.retrieval`) gelir;
+    pydantic varsayılanı yalnızca TEI'siz taze kurulumun güvenli tabanıdır ve
+    dağıtımın gerçek durumu hakkında hiçbir şey söylemez. Dayanak vekildi, düştü.
+
+    Yerine repodan GERÇEKTEN doğrulanabilen eşleşme konuyor:
+      • URL var ama servis yok  → health'te "tei" sürekli düşer (eski testin
+        korktuğu yanlış alarmın ta kendisi; sebebi backend değil, karşılıksız URL).
+      • Servis var ama URL yok  → GPU'da model yüklü konteyner boşuna döner,
+        `rerank_backend='tei'` yapıldığı an `require_rerank_url()` açık hata verir.
+      • İkisi var ama PORT ayrı → sessiz kusur: hiçbir şey hata vermez, rerank
+        ConnectError'da fail-open ile passthrough'a düşer ve "rerank açık" sanılır.
+        Bu tam olarak yaşandı (GPU konteyneri 8086'da, config 8085'te).
     """
-    from ragintel.config.settings import RetrievalConfig
+    metin = (KOK / "docker-compose.h200.yml").read_text(encoding="utf-8")
+    satirlar = [s.strip() for s in metin.splitlines()]
+    url_satiri = next(
+        (s for s in satirlar if s.startswith("RAGINTEL_TEI_RERANK_URL")), None
+    )
+    servis_var = any(s.startswith("tei-rerank:") for s in satirlar)
 
-    if RetrievalConfig().rerank_backend != "passthrough":
-        pytest.skip("kod varsayılanı artık passthrough değil — bu testin zemini değişti")
-
-    for satir in (KOK / "docker-compose.h200.yml").read_text(encoding="utf-8").splitlines():
-        s = satir.strip()
-        if not s or s.startswith("#"):
-            continue
-        assert not s.startswith("RAGINTEL_TEI_RERANK_URL"), (
-            "compose TEI URL'i veriyor ama rerank_backend passthrough → TEI hiç "
-            "çağrılmaz, yalnızca health'i boşuna degraded yapar. TEI'ye geçiliyorsa "
-            "`retrieval.rerank_backend`'i DB'den 'tei' yapın (ikisi birlikte)."
+    if url_satiri is None:
+        assert not servis_var, (
+            "compose'da tei-rerank servisi var ama RAGINTEL_TEI_RERANK_URL yok — "
+            "konteyner boşuna koşar, rerank'e geçilince require_rerank_url() patlar."
         )
+        return
+
+    assert servis_var, (
+        "compose TEI URL'i veriyor ama tei-rerank servisi tanımlı değil — TEI "
+        "ayakta olmayınca health sürekli 'degraded' görünür (yanlış alarm)."
+    )
+
+    url_port = re.search(r":(\d+)\s*$", url_satiri)
+    assert url_port, f"TEI URL'inde port okunamadı: {url_satiri!r}"
+    # Host kısmı VARSA iki nokta ile biter. `[\d.]*:?` yazılırsa host'suz
+    # `"8085:80"` biçiminde `[\d.]*` "808"i yutar ve port "5" okunur.
+    yayin = re.findall(r'"(?:[\d.]+:)?(\d+):\d+"', metin)
+    assert url_port.group(1) in yayin, (
+        f"TEI URL'i {url_port.group(1)} portunu gösteriyor ama compose o portu "
+        f"yayınlamıyor (yayınlananlar: {yayin}). Rerank sessizce passthrough'a düşer."
+    )
 
 
 def test_deploy_zorunlu_sirlar_KODLA_ESLESIR():
