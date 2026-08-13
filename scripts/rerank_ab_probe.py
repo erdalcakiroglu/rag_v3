@@ -156,6 +156,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--golden", default="v0", help="DB set_version (varsayılan v0)")
     ap.add_argument("--tei-url", default="http://localhost:8085", help="TEI rerank kök URL")
     ap.add_argument("--pool", type=int, default=20, help="Rerank aday havuzu (varsayılan 20)")
+    ap.add_argument("--ef-search", type=int, default=0,
+                    help="HNSW ef_search override (0 = ÜRETİM değeri). Havuz üretim "
+                         "ef_search'ünü (80) aşarsa dense kolun kuyruğu zayıflar.")
     ap.add_argument("--tei-batch", type=int, default=32,
                     help="Tek TEI isteğine konacak azami metin (TEI "
                          "--max-client-batch-size; aşılırsa 413). Skoru DEĞİŞTİRMEZ.")
@@ -211,9 +214,23 @@ def main(argv: list[str] | None = None) -> int:
                 embed_cache[rec.question] = service._embed_query(rec.question)[0]
 
         # 4) üretim hybrid parametreleri — baseline'ı KARNE zeminine hizala
+        #
+        # ef_search İSTİSNASI: üretim değeri 80. Havuz 80'i aştığında HNSW'nin arama
+        # listesi istenen aday sayısından KÜÇÜK kalır — pgvector yine `pool` satır
+        # döndürür ama kuyruğu zayıf adaydır. Yani derin havuz ölçümü, ölçtüğümüz
+        # şeyin bir kısmını gürültüyle doldurur ve kazancı OLDUĞUNDAN KÜÇÜK gösterir.
+        # `--ef-search` bunu açıkça oynatmak içindir; VERİLMEZSE üretim değeri kalır
+        # (varsayılan sızmasın, karne zemini bozulmasın).
+        ef = int(args.ef_search) if args.ef_search else int(rc.vector_ef_search)
+        if ef != int(rc.vector_ef_search):
+            print(f"UYARI: ef_search {rc.vector_ef_search} → {ef} (ÜRETİM DEĞİL); "
+                  f"bu koşum karne zeminiyle kıyaslanamaz.")
+        elif args.pool > ef:
+            print(f"UYARI: havuz {args.pool} > ef_search {ef} — dense kolun kuyruğu "
+                  f"zayıf aday; kazanç OLDUĞUNDAN KÜÇÜK ölçülür.")
         common = dict(
             method="hybrid",
-            ef_search=int(rc.vector_ef_search),
+            ef_search=ef,
             iterative_scan=str(rc.hnsw_iterative_scan),
             fusion=str(rc.hybrid_fusion),
             rrf_k=int(rc.hybrid_rrf_k),
