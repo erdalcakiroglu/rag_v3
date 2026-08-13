@@ -533,3 +533,61 @@ Hash değiştiği için `replace_set` devreye girer, sürüm adı `v1-bddk` kal�
 
 Baseline (§8) bu elemeden SONRA yeniden ölçülür. §8 sayıları kopya yarışı
 içeren korpusa aittir; yeni sayılarla aynı tabloda karşılaştırılamaz.
+
+### Eleme KOŞTU — sonuç beklentimin tersi (2026-08-13)
+
+Silme temiz: 6 dosya, cascade artığı 0, ham PDF'ler diskte. Üretici tahmini
+birebir tutturdu: **52 evidence / 25 dosya** (düşen 42 = tahmin edilen 41 +
+`mevzuat_1340`). Kuru koşum eşleme **52/52 = 1.0**, `gold_n=0` olan kayıt yok.
+Yükleme `inserted: 30, skipped: 0`.
+
+**Karne yükselmedi, düştü.** Bir önceki turda "single_fact belirgin yükselir"
+diye yazmıştım; **yanlıştı.**
+
+| | recall@5 | recall@10 | recall@20 | nDCG@10 | MRR | n |
+|---|---|---|---|---|---|---|
+| **genel** | 0.4244 | **0.4856** | 0.5739 | 0.3680 | 0.3724 | 30 |
+| `single_fact` | 0.5965 | 0.6667 | 0.7193 | 0.5011 | 0.4992 | 19 |
+| `synthesis` | 0.0400 | 0.0900 | 0.2550 | 0.0520 | 0.0686 | 10 |
+| `citation_sensitive` | 1.0 | 1.0 | 1.0 | 1.0 | 1.0 | 1 |
+
+Önceki: genel 0.4968 / single_fact 0.6786 / synthesis 0.1011.
+
+**Kontrol kolu farkı elemeye bağladı.** `scripts/karne_fark.py`, paydası
+değişmeyen 20 kaydı kontrol kolu olarak ayırdı: ortalama **0.4950 -> 0.4950,
+tam olarak 0.0000 oynama**. Koşum gürültüsü ve ANN payı sıfır; −0.0112'nin
+tamamı elemeden geliyor. Paydası değişen 10 kayıt: 0.5004 -> 0.4667.
+
+| kayıt | önce | sonra | fark | gold_n |
+|---|---|---|---|---|
+| `gs-bddk-e01` | 0.143 | **0.000** | −0.143 | 7 → 1 |
+| `gs-bddk-h01` | 0.111 | **0.000** | −0.111 | 9 → 4 |
+| `gs-bddk-e03` | 0.750 | 0.667 | −0.083 | 8 → 3 |
+| e02, e04, e05, e10 | 1.000 | 1.000 | 0 | 6/4/5/2 → 1 |
+| h02, h03, m01 | 0.000 | 0.000 | 0 | → 2/2/1 |
+
+### Hüküm: tuttuğumuz dosya hukuken doğru, erişimde zayıf
+
+`e01`'de eleme öncesi kopyalardan biri **10. sıradaydı** (§9 teşhisi:
+10/13/15/21). Altı rakip kalktıktan sonra bile elde kalan chunk top-10'a
+giremiyor. Demek ki 10. sıradaki kopya **sildiğimiz** baskılardandı ve
+konsolide metnin aynı içerikli chunk'ı ondan belirgin biçimde geride.
+
+Dosya topyekûn kötü DEĞİL: e02/e04/e05/e10 1.000'de kaldı, o maddelerde
+konsolide metnin chunk'ı zaten top-10'da. Zayıflık **chunk bazında**. En
+olası sebep satır arası `(Değişik: …)` şerhleri — madde gövdesine karışıp
+embedding'i seyreltiyorlar. Bu bir hipotez; sıraların nereye düştüğü
+ölçülmeden hüküm değil.
+
+**Kopyalar geri getirilmeyecek.** Eski 0.4968 "kanunun HERHANGİ bir baskısı
+yüzeye çıktı" diyordu; yeni 0.4856 "YÜRÜRLÜKTEKİ konsolide metin yüzeye çıktı"
+diyor. İkincisi daha düşük ama daha doğru bir iddia. Bankacılık korpusunda
+2013 baskısının yüzeye çıkmasını başarı saymak zaten istemediğimiz şeydi.
+Eleme ayrıca ölçümden bağımsız iki şey kazandırdı: payda artık kopya saymıyor
+ve `default_top_k=10` bağlamının slotları aynı metinle dolmuyor — karne
+bunların hiçbirini ölçmez.
+
+**Kök §9'daki ile aynı: SIRALAMA.** Şimdi daha keskin — e01'de doğru chunk
+korpusta var, erişilebilir, ama top-10 dışında. Bu tam olarak cross-encoder'ın
+tarif edildiği durum. Sonraki ölçüm: elde kalan çıpaların yeni sıraları
+(`synthesis_teshis_probe`), ardından rerank A/B.
