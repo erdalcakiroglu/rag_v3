@@ -27,6 +27,14 @@ TEI-CPU notu: bge-reranker-v2-m3 batch>4 desteklemez → 20 aday = 5 seri batch,
 CPU'da tek sorgu birkaç saniye sürebilir. `--rerank-timeout` (vars. 120s) bunun
 için cömert; config'in ~5s'lik rerank_timeout_sec'i ölçümü zamanaşımına uğratırdı.
 
+İSTEMCİ PARTİLEMESİ (`--tei-batch`, vars. 32): TEI'nin `--max-client-batch-size`
+sınırı aşılırsa endpoint **413 Payload Too Large** döner — `--pool 50` ve
+`--pool 100` ilk koşumda tam bu yüzden çöktü. Havuz parti parti skorlanır.
+Bu bir yaklaşıklama DEĞİLDİR: cross-encoder skoru (query, text) çifti başına
+bağımsız hesaplanır, aynı çift hangi partide olursa olsun aynı skoru alır →
+parçalayıp skora göre birleştirmek tek-istekle BİREBİR aynı sıralamayı verir.
+Değişen tek şey HTTP çağrısı sayısı (gecikme), ölçülen kalite değil.
+
 Konteynerde koşulur (DB + bge-m3 embedder + TEI hepsi host-network):
   docker exec <ragintel-api> python /app/scripts/rerank_ab_probe.py
 """
@@ -111,6 +119,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--golden", default="v0", help="DB set_version (varsayılan v0)")
     ap.add_argument("--tei-url", default="http://localhost:8085", help="TEI rerank kök URL")
     ap.add_argument("--pool", type=int, default=20, help="Rerank aday havuzu (varsayılan 20)")
+    ap.add_argument("--tei-batch", type=int, default=32,
+                    help="Tek TEI isteğine konacak azami metin (TEI "
+                         "--max-client-batch-size; aşılırsa 413). Skoru DEĞİŞTİRMEZ.")
     ap.add_argument("--rerank-timeout", type=float, default=120.0,
                     help="TEI rerank HTTP timeout sn (CPU'da 20 aday yavaş; vars. 120)")
     ap.add_argument("--json", action="store_true", help="Ham A/B JSON de bas")
@@ -182,19 +193,40 @@ def main(argv: list[str] | None = None) -> int:
         rerank_client = httpx.Client(timeout=args.rerank_timeout)
         rerank_url = f"{args.tei_url.rstrip('/')}/rerank"
 
+        def _skorla(question: str, texts: list[str]) -> list[float]:
+            """Havuzu parti parti skorlar; index'ler HAVUZ tabanına geri çevrilir.
+
+            TEI her yanıtta index'i O PARTİ içinde verir; `bas` eklenmezse ikinci
+            partinin skorları birincinin üstüne yazılır ve sıralama sessizce
+            bozulurdu (413 gibi gürültülü değil — bu yüzden burada açıkça yazılı).
+            """
+            skorlar = [float("-inf")] * len(texts)
+            for bas in range(0, len(texts), max(1, args.tei_batch)):
+                parca = texts[bas:bas + max(1, args.tei_batch)]
+                resp = rerank_client.post(rerank_url,
+                                          json={"query": question, "texts": parca})
+                resp.raise_for_status()  # her hata → ÇÖK (sessiz passthrough YOK)
+                payload = resp.json()
+                sonuc = payload if isinstance(payload, list) else payload.get("results")
+                if not isinstance(sonuc, list) or len(sonuc) != len(parca):
+                    raise ValueError(f"TEI rerank yanıtı geçersiz: {payload!r}")
+                for it in sonuc:
+                    i = int(it["index"])
+                    if i < 0 or i >= len(parca):
+                        raise ValueError(f"TEI index geçersiz: {i} (parti={len(parca)})")
+                    skorlar[bas + i] = float(it["score"])
+            if any(s == float("-inf") for s in skorlar):
+                raise ValueError("TEI bazı adayları skorlamadı")
+            return skorlar
+
         def tei_fn(question: str, ids: list[int], doc_scope: str) -> list[int]:
             rows = service.store.rerank_texts(chunk_ids=ids, allowed_doc_scopes=[doc_scope])
             if len(rows) != len(ids):
                 raise ValueError(f"rerank metinleri eksik: {len(rows)} ≠ {len(ids)}")
-            texts = [str(r["text"]) for r in rows]
-            resp = rerank_client.post(rerank_url, json={"query": question, "texts": texts})
-            resp.raise_for_status()  # herhangi bir hata → ÇÖK (sessiz passthrough YOK)
-            payload = resp.json()
-            results = payload if isinstance(payload, list) else payload.get("results")
-            if not isinstance(results, list) or len(results) != len(ids):
-                raise ValueError(f"TEI rerank yanıtı geçersiz: {payload!r}")
-            ranked = sorted(results, key=lambda it: float(it["score"]), reverse=True)
-            return [ids[int(it["index"])] for it in ranked]
+            skorlar = _skorla(question, [str(r["text"]) for r in rows])
+            # `sorted` kararlı: eşit skorda hibrit sıra korunur (keyfi kayma yok).
+            sira = sorted(range(len(ids)), key=lambda i: skorlar[i], reverse=True)
+            return [ids[i] for i in sira]
 
         arm_a = StoreRetriever(service.store, embed_cache, name="passthrough",
                                rerank=False, **common)
