@@ -415,6 +415,10 @@ def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
             for rid in ck["scores"] if rid in ck["answers"]
         ]
         honesty_rows = [_honesty(r) for r in unans_rows]
+        # Payda İKİ TANE: ölçülen satır (`total`) ve ölçülmesi GEREKEN satır (`expected`).
+        # İkisi ayrılmazsa kayıp satır oranı yukarı çeker — "15/15" ile "15/18" arasındaki
+        # fark davranış değil, eksik ölçümdür ve karnede görünmelidir.
+        unans_plan = [key for rec, _, key in plan if not rec["answerable"]]
         honest_pass = sum(1 for h in honesty_rows if h["honest"])
         strict_pass = sum(1 for h in honesty_rows if h["honest_strict"])   # eski D0 — Δ için
         agg = _aggregate(scored)
@@ -426,8 +430,15 @@ def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
             k: {"target": v, "value": agg["overall"][k], "pass": agg["overall"][k] >= v}
             for k, v in _TARGETS.items()
         }
-        done_answers = len(ck["answers"]) + len(ck["errors"])
-        complete = paused is None and done_answers >= len(plan) and len(scored) == len(ans_rows)
+        # EKSİK SATIR = ölçüm zemini kaybı, ilerleme değil. Eskiden hatalar "yapıldı"
+        # sayılıyordu (done = answers + errors) ve karne 3 satırını KAYBETMİŞ olmasına
+        # rağmen status=complete + "15/15" basıyordu: payda sessizce 18'den 15'e
+        # düşüyor, oran bundan HABERSİZ okunuyordu. Ölçüldü (2026-08-13, v1-bddk):
+        # u12'nin üç tekrarı da 120 s LiteLLM timeout'una düştü, karne yine "complete".
+        # Hata kaydı bir satırı ÖLÇÜLMEMİŞ yapar; ölçülmemiş satır tam karne olamaz.
+        eksik = [key for _, _, key in plan if key not in ck["answers"]]
+        complete = paused is None and not eksik and len(scored) == len(ans_rows)
+        durum = "complete" if complete else ("paused" if paused else "partial")
         return {
             "judge": judge.label, "judge_model": judge.model, "agent_model": model,
             # M-9: sıcaklık MÜHÜR ZEMİNİDİR — zemini belirleyen parametre mühürde görünür,
@@ -435,7 +446,7 @@ def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
             "agent_temperature": float(cfg.group("agent").temperature),
             "golden": version, "mode": "report", "dev_mode": True, "runs": runs,
             "agent_runs": agent_runs, "limit": limit,
-            "status": "complete" if complete else "paused",
+            "status": durum,
             "paused_at": {"phase": paused[0], "id": paused[1]} if paused else None,
             "progress": {"answered": len(ck["answers"]), "scored": len(scored),
                          "queue": len(queue), "answerable": len(answerable)},
@@ -447,6 +458,8 @@ def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
             "ragas": {**agg, "per_question": scored},
             "honesty": {"pass": honest_pass, "total": len(honesty_rows),
                         "score": f"{honest_pass}/{len(honesty_rows)}",
+                        "expected": len(unans_plan),
+                        "missing": [k for k in unans_plan if k not in ck["answers"]],
                         # M-17 Δ: eski D0 (strict) vs yeni D4 — "tanımsal kayma, davranış değil"
                         "strict_pass": strict_pass, "definition": "D4",
                         "strict_score": f"{strict_pass}/{len(honesty_rows)}",
@@ -469,6 +482,11 @@ def format_report(result: dict) -> str:
         status_line += (f" (günlük kap — {pa.get('phase')}@{pa.get('id')}) · "
                         f"ilerleme: {pr.get('answered')}/{pr.get('queue')} yanıt, "
                         f"{pr.get('scored')}/{pr.get('answerable')} skor → tekrar koşunca devam eder")
+    elif st == "partial":
+        # HATA ≠ İLERLEME: satır ölçülemedi. Sayılar geçerli ama DAR paydadan.
+        status_line += (f" (satır kaybı — {len(result['dataset']['errors'])} hata) · "
+                        f"ilerleme: {pr.get('answered')}/{pr.get('queue')} yanıt "
+                        f"→ `--out` ile tekrar koşulursa kalanlar tamamlanır")
     L.append(status_line)
     L.append(f"golden={result['golden']} · agent={result['agent_model']} · judge={result['judge_model']} "
              f"· temp={result.get('agent_temperature', '?')} "
@@ -525,6 +543,10 @@ def format_report(result: dict) -> str:
     _dsuffix = (f"  (Δ tanım: eski-D0 {_delta} → yeni-{h.get('definition','D4')} {h['score']}; "
                 f"kayma DAVRANIŞTAN DEĞİL, ÖLÇÜTTEN)") if _delta and _delta != h["score"] else ""
     L.append(f"\n-- Unanswerable dürüstlük (RAGAS dışı, deterministik): {h['score']}{_dsuffix} --")
+    if h.get("missing"):
+        L.append(f"   EKSİK {len(h['missing'])}/{h['expected']} satır ÖLÇÜLEMEDİ "
+                 f"({', '.join(h['missing'])}) — oran {h['total']} satırlık DAR paydadan; "
+                 f"tam karne değildir")
     for r in h["per_question"]:
         flag = "✓" if r["honest"] else "✗"
         _cov = r.get("coverage")
