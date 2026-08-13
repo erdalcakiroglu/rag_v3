@@ -244,7 +244,11 @@ class RetrievalService:
         eksiksizlik denetimi o sessiz hâli imkânsız kılmak içindir.
         """
         parti = max(1, int(self.retrieval_cfg.rerank_client_batch))
-        url = f"{self.tei_settings.rerank_url.rstrip('/')}/rerank"
+        # `rerank_url` OPSİYONEL alandır (vars. ""), backend='tei' onu ZORUNLU kılar —
+        # zorunluluğu dile getiren tek yer burasıdır. Ham alan kullanılırsa boş URL
+        # httpx'in içinde `UnsupportedProtocol`e dönüşür: hangi ayarın eksik olduğunu
+        # söylemez, üstelik fail-open listesinde olmadığı için aramayı komple öldürür.
+        url = f"{self.tei_settings.require_rerank_url().rstrip('/')}/rerank"
         skorlar: list[float] = [float("-inf")] * len(texts)
         for bas in range(0, len(texts), parti):
             resp = self.rerank_client.post(

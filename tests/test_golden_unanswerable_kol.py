@@ -77,6 +77,27 @@ def test_bos_ideal_answer_sessizce_gecmez(tmp_path):
         mod._unanswerable(_yaz(tmp_path, [aday]), "default", "erdal")
 
 
+def test_terim_deseni_bas_cipali_son_cipasiz():
+    r"""Yokluk iddiasının tamamı bu desene dayanır; iki yönü de kilitli olmalı.
+
+    BAŞ çıpası olmazsa (ham ILIKE) 'EBA' kelime İÇİNDE eşleşir — "EgEBAnk",
+    "wEBArsiv" — ve şişmiş sayı sağlam adayı "korpusta var" diye öldürür.
+    SON çıpası KONULURSA Türkçe ek alan sözcükler kaçırılır ("kripto
+    varlıkların") ve bu kez SAHTE YOKLUK üretilir. İkisi zıt yönde bozar.
+
+    Not: motor Postgres regex'idir (`~*`), Python `re` değil; burada desenin
+    ŞEKLİ doğrulanır, eşleşme semantiği DB'nindir.
+    """
+    mod_yol = KOK / "scripts" / "unanswerable_aday_probe.py"
+    spec = importlib.util.spec_from_file_location("unanswerable_aday_probe", mod_yol)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    assert mod._desen("EBA") == r"\mEBA"
+    assert not mod._desen("kripto varlık").endswith(r"\M")
+    assert mod._desen("a.b(c)") == r"\ma\.b\(c\)", "regex metakarakteri kaçırılmadı"
+
+
 def test_aday_dosyasi_kontrol_kolu_tasir():
     """Gerçek aday dosyası: kontrol kaydı olmadan probe'un 'sıfır bulgu' çıktısı
     yokluk mu arıza mı ayırt edilemez."""

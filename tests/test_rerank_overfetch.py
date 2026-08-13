@@ -135,6 +135,25 @@ def test_passthrough_iken_over_fetch_yapilmaz():
     assert [c["chunk_id"] for c in out] == list(range(10))
 
 
+def test_backend_tei_ama_url_yokken_ACIK_config_hatasi_verir(monkeypatch):
+    """Yanlış yapılandırma httpx'in DERİNLİĞİNDE değil, KAPIDA ölmeli.
+
+    `rerank_url` opsiyonel alandır (vars. ""); zorunlu kılan tek şey
+    `rerank_backend='tei'`. Ham alan kullanılırsa istek "/rerank" adresine gider
+    ve httpx `UnsupportedProtocol: Request URL is missing an 'http://'...` der —
+    hangi ayarın eksik olduğunu SÖYLEMEZ. Üstelik bu hata fail-open listesinde
+    (Timeout/ConnectError) olmadığı için passthrough'a düşmez, aramayı komple
+    öldürür. Bu tam olarak yaşandı: TEI URL'i compose'da tanımlı olduğu hâlde
+    konteyner DIŞINDA (host venv) koşan bir probe bu izle çakıldı.
+    """
+    monkeypatch.delenv("RAGINTEL_TEI_RERANK_URL", raising=False)
+    svc = _svc(_Store(5), backend="tei", client=_tei_client([]))
+    svc.tei_settings.rerank_url = ""
+
+    with pytest.raises(RuntimeError, match="RAGINTEL_TEI_RERANK_URL"):
+        svc.rerank("q", [0, 1], user_ctx=_ctx())
+
+
 def test_havuz_ust_sinirin_altina_inemez():
     """Sessiz daralma kapısı: pool < max_top_k → sonuç SAYISI düşerdi."""
     with pytest.raises(ConfigError, match="rerank_pool"):

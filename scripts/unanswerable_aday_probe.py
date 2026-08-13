@@ -33,12 +33,18 @@ Golden'a yazma ayrı ve bilinçli adımdır (`golden_v1_jsonl_uret.py` + `eval l
 KULLANIM (H200, repo kökünde, venv açık)
     python scripts/unanswerable_aday_probe.py > docs/unans.txt 2>&1
     python scripts/unanswerable_aday_probe.py --aday U06 --top 20
+
+    B bölümü ÜRETİM yolunu (over-fetch + TEI rerank) koşar, dolayısıyla TEI'ye
+    erişim ister. Konteyner dışında compose'un env'i yoktur; `--tei-url`
+    varsayılanı bu yüzden açıkça verilir.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import sys
 from pathlib import Path
 
@@ -61,16 +67,32 @@ def _pencere(metin: str, terim: str, genislik: int = PENCERE) -> str:
     return ("…" if bas else "") + parca + ("…" if son < len(metin) else "")
 
 
+def _desen(terim: str) -> str:
+    r"""Terimi kelime BAŞI çıpalı regex'e çevirir (`\m`), SONU çıpasız bırakır.
+
+    BAŞ ÇIPASI ŞART: `ILIKE '%EBA%'` "EgEBAnk" ve "wEBArsiv" içinde eşleşir —
+    ilk koşumda 417 sözde isabet bundandı. Şişmiş sayı sağlam bir adayı
+    "korpusta var" diye öldürür.
+
+    SON ÇIPASI YASAK: Türkçe eklemeli bir dildir. `\Mkripto varlık\M`,
+    "kripto varlıkların" ifadesini KAÇIRIR ve bu sefer ters yöne, SAHTE YOKLUĞA
+    yol açar — yani kaçırmanın bedeli tam olarak probe'un önlemesi gereken şey.
+    Bu yüzden yalnız baş çıpalanır, ek serbest bırakılır.
+    """
+    kacis = re.sub(r"([\\.^$|()\[\]{}*+?])", r"\\\1", terim)
+    return r"\m" + kacis
+
+
 def _sozcuksel(conn, terim: str, doc_scope: str) -> tuple[int, list[tuple]]:
     """(kaç chunk içeriyor, ilk N örnek). Erişimden BAĞIMSIZ ham gövde taraması."""
-    kalip = f"%{terim}%"
+    desen = _desen(terim)
     adet = conn.execute(
         """
         SELECT count(*)
         FROM core_chunks c JOIN core_files f USING (file_id)
-        WHERE f.doc_scope = %s AND c.chunk_text ILIKE %s;
+        WHERE f.doc_scope = %s AND c.chunk_text ~* %s;
         """,
-        (doc_scope, kalip),
+        (doc_scope, desen),
     ).fetchone()[0]
     if not adet:
         return 0, []
@@ -78,11 +100,11 @@ def _sozcuksel(conn, terim: str, doc_scope: str) -> tuple[int, list[tuple]]:
         """
         SELECT f.file_name, c.page_number, c.chunk_text
         FROM core_chunks c JOIN core_files f USING (file_id)
-        WHERE f.doc_scope = %s AND c.chunk_text ILIKE %s
+        WHERE f.doc_scope = %s AND c.chunk_text ~* %s
         ORDER BY c.chunk_id
         LIMIT %s;
         """,
-        (doc_scope, kalip, ORNEK),
+        (doc_scope, desen, ORNEK),
     ).fetchall()
     return int(adet), ornekler
 
@@ -93,7 +115,14 @@ def main(argv=None) -> int:
     ap.add_argument("--aday", action="append", default=None, help="yalnız bu id (tekrarlanabilir)")
     ap.add_argument("--doc-scope", default="default", help="golden ile AYNI scope olmalı")
     ap.add_argument("--top", type=int, default=10, help="üretim erişiminden basılacak aday sayısı")
+    ap.add_argument("--tei-url", default="http://localhost:8085",
+                    help="TEI rerank adresi. Konteyner DIŞINDA koşarken compose'un "
+                         "RAGINTEL_TEI_RERANK_URL'i ortamda YOKTUR; verilmezse B bölümü "
+                         "boş URL'le çakılır (bkz. require_rerank_url).")
     args = ap.parse_args(argv)
+
+    # TeiSettings ENV'i init'te okur — service kurulmadan ÖNCE konmalı.
+    os.environ["RAGINTEL_TEI_RERANK_URL"] = args.tei_url
 
     veri = json.loads(Path(args.adaylar).read_text(encoding="utf-8"))
     adaylar = veri["adaylar"]
@@ -134,7 +163,7 @@ def main(argv=None) -> int:
         print("=" * 78)
         print(f"ZEMİN  doc_scope={args.doc_scope}  chunk={toplam[0]}  dosya={toplam[1]}")
         print(f"       rerank_backend={rc.rerank_backend}  rerank_pool={rc.rerank_pool}  "
-              f"ef_search={rc.vector_ef_search}")
+              f"ef_search={rc.vector_ef_search}  tei={args.tei_url}")
         if toplam[0] == 0:
             print("DURDU: bu scope'ta hiç chunk yok — 'yokluk' hükmü verilemez, scope yanlış.")
             return 2
