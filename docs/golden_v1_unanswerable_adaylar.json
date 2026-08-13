@@ -35,7 +35,16 @@
     "Yani soru, korpusun BOL BOL konuştuğu bir konunun içindeki, korpusun HİÇ üretmediği",
     "cinsten somut bir veriyi ister (tarife, teknik format, yasama istatistiği, gelecek",
     "tarihli belge). 'Korpusta şu TÜRDEN metin yok' biçimindeki üst-varsayımlar ise —",
-    "tur-1'in gösterdiği gibi — kanıt değil tahmindir."
+    "tur-1'in gösterdiği gibi — kanıt değil tahmindir.",
+    "",
+    "TUR-2 SONUCU (2026-08-13): U09/U10/U11/U12 onaylandı, U13 reddedildi. Desen tuttu",
+    "(4/5), ama U13 aynı dersi bir kez daha verdi: 'yıllık güncelleme tebliği korpusta",
+    "beklenmez' de bir TÜR varsayımıydı ve ikincil literatür (997896.pdf) o tebliğin",
+    "içeriğini — 50.000 TL taban + 2025 yeniden değerleme oranı %43,93 — özetleyerek",
+    "soruyu cevapladı. GENEL KURAL: aday, korpusun BİLDİĞİ bir konu hakkında BİLMEDİĞİ",
+    "bir veriyi istemeli; 'şu belge türü burada olmaz' akıl yürütmesi iki turda üç kez",
+    "çürüdü, tek geçerli delil sözcüksel taramanın SIFIRI ve gövdelerin okunmasıdır.",
+    "KOL DURUMU: 6 onaylı kayıt (U04, U05, U09, U10, U11, U12) → M-17 koşabilir."
   ],
   "adaylar": [
     {
@@ -115,32 +124,36 @@
       "soru": "5411 sayılı Bankacılık Kanunu, TBMM Genel Kurulunda kaç ret oyuyla kabul edilmiştir?",
       "terimler": ["ret oyu", "kabul oyu", "çekimser"],
       "gerekce": "TUR-2. Korpus Kanun'un TAM METNİNİ ve kabul tarihini (19/10/2005) taşıyor — konu komşuluğu azami. Ama yasama sürecinin oylama istatistiği bir hukuk/iktisat literatüründe üretilmez. Tuzak: model 'Kabul Tarihi' satırını görüp sayı uydurabilir.",
-      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: dokümanlar 5411 sayılı Kanun'un metnini ve kabul tarihini içerir, TBMM'deki oylamaya ilişkin oy dağılımını bildirmez.",
-      "karar": "beklemede"
+      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: dokümanlar 5411 sayılı Kanun'un metnini ve 19/10/2005 kabul tarihini içerir; TBMM Genel Kurulundaki oylamanın oy dağılımına ilişkin bilgi bulunmamaktadır.",
+      "karar": "onaylandi",
+      "kanit": "'ret oyu' → 0 chunk, 'kabul oyu' → 0 chunk. 'çekimser' → 7 chunk ve hiçbiri yasama oylaması değil: 5411 s.42/s.64 BDDK Kurulu ile Fon Kurulunun karar nisabını düzenliyor ('Üyeler çekimser oy kullanamaz'), teftisten-ic-denetime s.72 müfettişlik anılarındaki 'çekimserlik'. Buna karşılık erişim sıra 1'de 5411 s.1 'BANKACILIK KANUNU Kanun Numarası : 5411 Kabul Tarihi : 19/10/2005' — yani model tam da sayı uydurmaya davet eden bağlamı görüyor."
     },
     {
       "id": "U10",
       "soru": "Bankaların BDDK'ya gönderdiği gözetim raporlamalarında kullanılan XBRL şema sürümü nedir?",
       "terimler": ["XBRL", "şema sürümü", "veri formatı"],
       "gerekce": "TUR-2. Raporlama YÜKÜMLÜLÜĞÜ korpusta yoğun işleniyor (gözetim, raporlama standartları), ama teknik iletim formatının sürüm numarası mevzuat/akademik literatürde bulunmaz. Sıfır isabet + yoğun komşuluk deseninin adayı.",
-      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: dokümanlar bankaların raporlama yükümlülüklerini düzenler, raporlamanın teknik iletim formatına veya şema sürümüne ilişkin bilgi içermez.",
-      "karar": "beklemede"
+      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: dokümanlarda XBRL yalnız bir raporlama dili olarak anılmakta, BDDK'ya yapılan gözetim raporlamalarında kullanılan şema sürümüne ilişkin bir bilgi yer almamaktadır.",
+      "karar": "onaylandi",
+      "kanit": "'şema sürümü' → 0 chunk. 'XBRL' → 1 chunk ve o tek chunk sürüm DEĞİL tanım veriyor, üstelik başka bağlamda: Kitap-Banka_Muhasebesi s.100 defterlerin elektronik ortamda hazırlanmasını anlatırken 'xml formatında bir standart olan ... XBRL (eXtensible Business Reporting Language) ... esas alınmıştır' diyor — BDDK gözetim raporlaması değil. Erişim bu chunk'ı top-10'a bile getirmiyor; getirdiği 10 aday gözetim/denetim raporlaması (teftiş kurulu gözetimi, bağımsız denetim raporu usul ve esasları, sermaye yeterliliği bilgi akışı) yani komşuluk yoğun, veri yok."
     },
     {
       "id": "U11",
       "soru": "Bankaların çağrı merkezlerinde müşteri temsilcisine bağlanma süresi için azami kaç saniyelik sınır öngörülmüştür?",
       "terimler": ["çağrı merkezi", "müşteri temsilcisi", "bağlanma süresi"],
       "gerekce": "TUR-2. Tüketici ilişkileri ve dijital kanallar korpusta işleniyor; belirli bir SANİYE sınırı ise operasyonel bir tüketici düzenlemesi ayrıntısı. Konu yakın, veri yok beklentisi.",
-      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: dokümanlarda bankaların çağrı merkezi hizmetlerine ilişkin azami bekleme/bağlanma süresi belirleyen bir düzenleme yer almamaktadır.",
-      "karar": "beklemede"
+      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: dokümanlar bankaların çağrı merkezi kanallarını ele alır, ancak müşteri temsilcisine bağlanma süresi için azami bir sınır öngören düzenleme içermez.",
+      "karar": "onaylandi",
+      "kanit": "'bağlanma süresi' → 0 chunk. 'çağrı merkezi' → 48 ve 'müşteri temsilcisi' → 8 isabetin tamamı başka konular: kart başvurusu toplama kanalı (263_2 s.42), borç öğrenme kanalı (s.145), çağrı merkezi dolandırıcılığı (tbb-dolandiricilik s.42), ses kaydı/KVKK (996538 s.354), görüntülü hesap açma (997896 s.76). Hiçbiri süre sınırı vermiyor. UYARI: rekabetKitap_2.pdf s.70 'bankaların çağrı merkezlerine ait bazı istatistikler, Tablo 3.1' diyor — tabloda ortalama cevaplama süresi çıkarsa model oradan bir saniye değeri sunabilir; bu İSTATİSTİKTİR, sorulan DÜZENLEYİCİ SINIR değildir, dolayısıyla böyle bir cevap doğru biçimde 'dürüst değil' sayılır."
     },
     {
       "id": "U12",
       "soru": "BDDK'nın 2027 yılı stratejik planında belirlenen hedefler nelerdir?",
       "terimler": ["stratejik plan", "2027", "stratejik hedef"],
       "gerekce": "TUR-2. Kurumun görev ve hedefleri korpusta bol; belirli bir GELECEK tarihli plan belgesi statik korpusta olamaz. Risk: korpusta daha eski bir stratejik plan varsa model onu 2027 sanabilir — bu zaten aranan tuzak, ama gövde 2027 planını taşıyorsa aday düşer.",
-      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: dokümanlar BDDK'nın 2027 yılı stratejik planını içermez.",
-      "karar": "beklemede"
+      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: dokümanlarda BDDK'nın 2027 yılı stratejik planı yer almaz; yalnız 2019-2021 Stratejik Planına ve 2022-2025 Sürdürülebilirlik Eylem Planına yapılan atıflar bulunur.",
+      "karar": "onaylandi",
+      "kanit": "Risk gerçekleşti ama aday ayakta: korpus BDDK'nın stratejik hedeflerini bol bol anlatıyor (991662.pdf s.92-97 misyon/vizyon/amaç-öncelikler ve madde madde hedefler; 954407.pdf s.166 'BDDK 2019-2021 Stratejik Planı'; 962625.pdf s.74 'Sürdürülebilirlik Stratejisi Eylem Planı (2022-2025)' 3 amaç 6 hedef 21 eylem), '2027' → 25 isabetin hepsi başka belge (mevzuat_1279 aşım giderme takvimi, mevzuat_1285 taşıt kredisi, OVP 2025-2027). U01/U08'den AYRIMI: orada korpus sorunun ESASINI cevaplıyordu (LCR eşiği; 'YZ'ye özgü düzenleme yok' bilgisi), burada BAŞKA DÖNEMLERİN belgelerini veriyor — bunları '2027 hedefleri' diye sunmak savunulabilir bir cevap değil, düpedüz uydurmadır."
     },
     {
       "id": "U13",
@@ -148,7 +161,8 @@
       "terimler": ["yeniden değerleme oran", "güncellenmiş tutar", "idari para cezalarının"],
       "gerekce": "TUR-2. 5411'in idari para cezası maddeleri TABAN tutarlarıyla korpusta — komşuluk azami ve tuzak keskin: model kanundaki ham TL tutarını 'güncel' diye sunabilir. Yıllık güncelleme tebliği ise korpusta beklenmez.",
       "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: dokümanlar Kanun'daki idari para cezalarının kanun metnindeki tutarlarını içerir; bu tutarların 2025 yılı yeniden değerleme oranıyla güncellenmiş hâlini bildiren bir kaynak barındırmaz.",
-      "karar": "beklemede"
+      "karar": "reddedildi",
+      "kanit": "En keskin sandığım aday, en net cevaplanan çıktı — üstelik erişim sırası 1'de. 997896.pdf s.50: '2025 yılı itibarıyla, BDDK tarafından 5411 sayılı Kanun'un 146 ve 148. maddeleri kapsamında uygulanacak idari para cezalarının alt sınırları ... öngörülen alt sınır genellikle 50.000 TL'dir. Ayrıca, bu tutarlar her yıl ... yeniden değerleme oranı (2025 yılı için %43,93) esas alınarak artırılarak uygulanmaktadır.' Hem taban tutar hem 2025 oranı gövdede; model çarpımı yapıp savunulabilir bir cevap üretir. DERS: 'yıllık güncelleme tebliği korpusta beklenmez' yine bir TÜR varsayımıydı — ikincil literatür o tebliği özetleyebiliyor."
     },
     {
       "id": "K01",
