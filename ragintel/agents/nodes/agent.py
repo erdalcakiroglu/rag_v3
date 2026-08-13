@@ -13,13 +13,60 @@ import json
 import time
 
 from ...config.loader import EffectiveConfig, load_config
+from ...llm.gateway import is_retryable
+from ...observability.logging import get_logger
 from ...observability.tracing import set_span_attributes, start_span
 from ...retrieval.types import ContextBuildResult
 from ...text import normalize_for_quote
 from ..prompts import load_system_prompt
 from ..tools import SUBMIT_ANSWER, ToolRegistry, accumulated_chunks  # noqa: F401 (accumulated_chunks tools_node'da)
 
+_LOG = get_logger("agent.node")
 _FEEDBACK_HEADER = "VALIDATION_FAILED:"
+
+
+def _forced_final_complete(gateway, registry: ToolRegistry, messages: list[dict], budget: dict):
+    """Zorlanmış nihai tur — TEK ŞEMALI istek uçta kilitlenebilir; kaçış yolu ölçüldü.
+
+    ÖLÇÜLDÜ (2026-08-13/14, qwen3.5:35b + Ollama 0.17.4, `scripts/ollama_kilit_probe.py`)
+        Yakalanan GERÇEK istek (messages=8, prompt_chars=3130) doğrudan uca oynatıldı:
+            tools=1  (yalnız submit_answer)  → 90 s TIMEOUT, dört bağımsız denemede dördü
+            tools=2  (submit + search)       → OK, 10.5 s
+            tools=5  (tam liste)             → OK,  3.3 s
+            tools=0  (serbest metin)         → OK,  3.7 s
+            reasoning_effort kaldırıldı      → yine TIMEOUT (knob masum)
+        Yani istem de model de sağlam; kilidi doğuran, uca TAM OLARAK BİR şema
+        gönderilmesi. Mekanizma kısıtlı çözümleme (grammar): tek tool'da model
+        `submit_answer` JSON'una zorlanır, bu bağlamda düz-metin reddi yazmak ister
+        (tools=2 kolunda tam olarak bunu yaptı) ve gramerden çıkış bulamaz; runner
+        GPU %0'da bekler, Ollama journal'ına satır bile düşmez.
+
+    NİÇİN ÜRETİM KUSURU: bu tur canlı API'de de her sorunun sonunda koşar. Kilit
+    girdiğinde istek `request_timeout × (max_retries+1)` = 12 dakika asılı kalır ve
+    API tek kilit + Ollama seri olduğu için o süre boyunca SERVİS DURUR.
+
+    ÇÖZÜM İKİ PARÇA
+      1. Kilitte tekrar denemek anlamsız (aynı istem = aynı kilit; ölçüldü 4/4) →
+         `max_retries=0`, kayıp 12 dakika değil bir timeout.
+      2. Kaçış: aynı mesajlarla TAM listeyi gönder. Model ya submit eder ya düz metin
+         yazar; düz metin zaten `content_no_tool` yolundan validate'e gider.
+    BAŞARILI KOŞUM ETKİLENMEZ — kaçış yalnız taşıma hatasında ateşlenir, dolayısıyla
+    M-9 karne mührü yerinde kalır. Kaçış ateşlendiyse bütçeye işaretlenir: aynı istek
+    ikinci kez kilide sürülmez (doğrulama-retry turu tekrar zorlanmış tura düşer).
+    """
+    if budget.get("forced_final_escaped"):
+        return gateway.complete(messages=messages, tools=registry.llm_tool_schemas())
+    try:
+        return gateway.complete(messages=messages, tools=registry.final_only_schemas(),
+                                max_retries=0)
+    except Exception as exc:
+        if not is_retryable(exc):          # şema/yetki hatası → kaçış YOK, olduğu gibi yüksel
+            raise
+        budget["forced_final_escaped"] = True
+        _LOG.warning("forced_final_wedge_escape", error=type(exc).__name__,
+                     detail=str(exc)[:160])
+        set_span_attributes(forced_final_escaped=True)
+        return gateway.complete(messages=messages, tools=registry.llm_tool_schemas())
 
 
 def _normalize_citations(raw) -> list[dict]:
@@ -184,9 +231,10 @@ def agent_node(
             int(budget["iteration"]) >= int(budget["max_iterations"])
             or int(budget["tokens_used"]) >= int(budget["max_tokens"])
         )
-        tools = registry.final_only_schemas() if exhausted else registry.llm_tool_schemas()
-
-        resp = gateway.complete(messages=messages, tools=tools)
+        if exhausted:
+            resp = _forced_final_complete(gateway, registry, messages, budget)
+        else:
+            resp = gateway.complete(messages=messages, tools=registry.llm_tool_schemas())
         budget["iteration"] = int(budget["iteration"]) + 1
         budget["tokens_used"] = int(budget["tokens_used"]) + int(resp.total_tokens)
         set_span_attributes(

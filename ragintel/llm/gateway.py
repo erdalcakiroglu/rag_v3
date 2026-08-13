@@ -108,7 +108,8 @@ class LLMResponse:
 
 
 class LLMGateway(Protocol):
-    def complete(self, *, messages: list[dict], tools: list[dict]) -> LLMResponse: ...
+    def complete(self, *, messages: list[dict], tools: list[dict],
+                 max_retries: int | None = None) -> LLMResponse: ...
 
 
 class EmptyReasoningResponse(RuntimeError):
@@ -165,12 +166,17 @@ class LiteLLMGateway:
         # Ölçüldü: set edilmeyince uç 0.8'e düşüyor, fallback varyansının kök kaynağı buydu.
         self.temperature = temperature
 
-    def _completion(self, kwargs: dict):
+    def _completion(self, kwargs: dict, *, max_retries: int | None = None):
         """litellm.completion + rate-limit/geçici hata retry (backoff). PARSE hatası burada
-        RETRY EDİLMEZ — dış tool-call döngüsüne bırakılır (ayrı politika)."""
+        RETRY EDİLMEZ — dış tool-call döngüsüne bırakılır (ayrı politika).
+
+        `max_retries` çağrı-yerel override'dır (None → ayardaki değer). Çağıranın
+        "bu istek asılırsa TEKRAR DENEMEK ANLAMSIZ" bildiği yer için: zorlanmış nihai
+        tur kilidinde 5 tekrar 12 dakika asılı kalmak demektir (bkz. agent node)."""
         import litellm
 
-        for attempt in range(self.settings.max_retries + 1):
+        tekrar = self.settings.max_retries if max_retries is None else int(max_retries)
+        for attempt in range(tekrar + 1):
             # KİLİTLENEN ÇAĞRI İZ BIRAKMIYOR: `llm_call_timing` yalnız BAŞARIDA yazılır,
             # uçta asılı kalan istek hiçbir yerde görünmez. Ölçüldü (2026-08-13, M-17
             # koşumu): Ollama isteği kabul etti, GPU %0'da bekledi, kendi journal'ına da
@@ -189,7 +195,7 @@ class LiteLLMGateway:
                 resp = litellm.completion(**kwargs)
                 return resp, (time.perf_counter() - t0) * 1000.0
             except Exception as exc:
-                if (attempt < self.settings.max_retries and is_retryable(exc)
+                if (attempt < tekrar and is_retryable(exc)
                         and not is_toolcall_parse_error(exc)):
                     wait = retry_wait_seconds(exc, attempt)
                     _LOG.warning("llm_retry", attempt=attempt + 1, wait=round(wait, 1),
@@ -207,7 +213,8 @@ class LiteLLMGateway:
             out.append(ToolCall(id=tc.id, name=tc.function.name, arguments=args))
         return out
 
-    def complete(self, *, messages: list[dict], tools: list[dict]) -> LLMResponse:
+    def complete(self, *, messages: list[dict], tools: list[dict],
+                 max_retries: int | None = None) -> LLMResponse:
         kwargs: dict = {
             "model": f"{self.settings.provider}/{self.model}",
             "messages": messages,
@@ -243,7 +250,7 @@ class LiteLLMGateway:
         latency_ms = 0.0
         for tc_attempt in range(tc_retries + 1):
             try:
-                resp, latency_ms = self._completion(kwargs)
+                resp, latency_ms = self._completion(kwargs, max_retries=max_retries)
                 message = resp.choices[0].message
                 tool_calls = self._parse_tool_calls(message)
                 _assert_not_silently_empty(message, tool_calls, model=self.model)

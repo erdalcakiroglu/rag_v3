@@ -21,7 +21,7 @@ class GroundedMock:
     def __init__(self):
         self.calls: list[list[dict]] = []
 
-    def complete(self, *, messages, tools):
+    def complete(self, *, messages, tools, max_retries=None):
         self.calls.append(messages)
         tool_names = [t["function"]["name"] for t in tools]
         chunks = None
@@ -174,7 +174,7 @@ def test_scope_proof_envanter_xlsx_never_returned_for_default_user(live_db):
 
 class RaisingGateway:
     name = "raise"
-    def complete(self, *, messages, tools):
+    def complete(self, *, messages, tools, max_retries=None):
         raise RuntimeError("LLM erişilemez (simülasyon)")
 
 
