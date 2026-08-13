@@ -17,6 +17,12 @@ VERİ AKIŞI (üçü de makineden geldi, hiçbiri bilgiden yazılmadı)
     docs/golden_v1_evidence.json   `golden_alinti_probe --alinti-dosya` çıktısı
                                    (dosya+sayfa çözümlemesi; 77 girdi)
     docs/Golden_v1_BDDK_Ankrali.md soru + ideal_answer (insan tarafı)
+    docs/golden_v1_unanswerable_adaylar.json
+                                   unanswerable kolu; YALNIZ `karar=onaylandi`
+                                   olanlar yazılır. Onay, `unanswerable_aday_probe`
+                                   çıktısındaki madde GÖVDELERİ okunarak verilir —
+                                   dosya adı deseniyle verilen yokluk hükmü daha
+                                   önce çürüdü (mevzuat_1340).
 
     Bu script hiçbir metni KENDİ yazmaz; yalnız birleştirir. Soru/cevap
     düzeltmesi md'ye, alıntı düzeltmesi probe'a gider — tek kaynak korunur.
@@ -51,6 +57,7 @@ KOK = Path(__file__).resolve().parent.parent
 MD = KOK / "docs" / "Golden_v1_BDDK_Ankrali.md"
 ALINTILAR = KOK / "docs" / "golden_v1_alintilar.txt"
 EVIDENCE = KOK / "docs" / "golden_v1_evidence.json"
+UNANS = KOK / "docs" / "golden_v1_unanswerable_adaylar.json"
 CIKTI = KOK / "eval" / "golden" / "v1.jsonl"
 
 # Soru -> alıntı sıra no (docs/golden_v1_alintilar.txt, 1 tabanlı).
@@ -105,6 +112,43 @@ def _vurgu_sil(metin: str) -> str:
     metin = re.sub(r"\*\*(.+?)\*\*", r"\1", metin)
     metin = re.sub(r"(?<!\w)\*(.+?)\*(?!\w)", r"\1", metin)
     return re.sub(r"`(.+?)`", r"\1", metin).strip()
+
+
+def _unanswerable(yol: Path, doc_scope: str, created_by: str) -> list[dict]:
+    """Onaylanmış unanswerable adaylarını kayda çevirir.
+
+    KAPI: yalnız `karar == "onaylandi"` geçer. 'beklemede' bir aday, yokluğu
+    HENÜZ gövdeden kanıtlanmamış demektir; sete girerse dürüstlük kapısı
+    aslında cevaplanabilir bir soruyu "reddetmeliydi" diye puanlar — kapı
+    modeli ölçmek yerine kendi hatasını ölçer. 'kontrol' kayıtları da girmez;
+    onlar probe'un tarama yeteneğini sınamak içindir, ölçüm nesnesi değil.
+
+    `gold_evidence` BOŞ kalır: modeller.py `answerable=false` kaydın kanıt
+    taşımasını reddeder (taşısaydı zaten cevaplanabilir olurdu).
+    """
+    if not yol.exists():
+        return []
+    veri = json.loads(yol.read_text(encoding="utf-8"))
+    kayitlar = []
+    for aday in veri["adaylar"]:
+        if aday.get("karar") != "onaylandi":
+            continue
+        if not aday.get("ideal_answer"):
+            raise SystemExit(f"{aday['id']}: onaylandi ama ideal_answer bos")
+        kayitlar.append({
+            "id": f"gs-bddk-{aday['id'].lower()}",
+            "question": aday["soru"],
+            "ideal_answer": aday["ideal_answer"],
+            "category": "unanswerable",
+            "difficulty": 3,
+            "gold_evidence": [],
+            "doc_scope": doc_scope,
+            "answerable": False,
+            "created_by": created_by,
+            "notes": f"{aday['id']}; yokluk unanswerable_aday_probe ile GOVDEDEN "
+                     f"dogrulandi (ad deseniyle degil)",
+        })
+    return kayitlar
 
 
 def main() -> int:
@@ -176,6 +220,8 @@ def main() -> int:
                      f"({len({k['file_name'] for k in kanit})} dosya)",
         })
 
+    kayitlar.extend(_unanswerable(UNANS, args.doc_scope, args.created_by))
+
     args.cikti.parent.mkdir(parents=True, exist_ok=True)
     with args.cikti.open("w", encoding="utf-8", newline="\n") as fh:
         for k in kayitlar:
@@ -183,8 +229,13 @@ def main() -> int:
 
     toplam = sum(len(k["gold_evidence"]) for k in kayitlar)
     dosyalar = {e["file_name"] for k in kayitlar for e in k["gold_evidence"]}
+    n_unans = sum(1 for k in kayitlar if not k["answerable"])
     print(f"yazildi     : {args.cikti}")
-    print(f"kayit       : {len(kayitlar)}")
+    print(f"kayit       : {len(kayitlar)}   (answerable {len(kayitlar) - n_unans} / "
+          f"unanswerable {n_unans})")
+    if n_unans == 0:
+        print("UYARI      : unanswerable kol BOS — M-17 durustluk kapisi bu sette KOSAMAZ "
+              "(onaylanmis aday yok; unanswerable_aday_probe cikti bekliyor)")
     print(f"evidence    : {toplam}   ayri dosya: {len(dosyalar)}")
     print(f"doc_scope   : {args.doc_scope}")
     if dislanan:

@@ -1,0 +1,107 @@
+{
+  "_aciklama": [
+    "v1-bddk golden setinin UNANSWERABLE kolu için ADAY sorular. Bu dosya tek kaynaktır:",
+    "soru metni burada yaşar, `golden_v1_jsonl_uret.py` yalnız birleştirir (üretici hiçbir",
+    "metni kendi yazmaz kuralı).",
+    "",
+    "KARAR ALANI (`karar`) probe koşulmadan 'beklemede'dir. `unanswerable_aday_probe.py`",
+    "çıktısı okunup GÖVDEDEN hükmedildikten sonra 'onaylandi' / 'reddedildi' olur.",
+    "Üretici YALNIZCA 'onaylandi' kayıtları golden'a yazar.",
+    "",
+    "NEDEN AD DESENİ DEĞİL GÖVDE: daha önce '14 yönetmeliğin hiçbiri korpusta yok' hükmü",
+    "dosya adı deseniyle verilmiş ve ÇÜRÜMÜŞTÜ (mevzuat_1340 kaldıraç yönetmeliğinin",
+    "kaynak metniydi). Yokluk ancak madde gövdesinde aranıp bulunamayınca söylenebilir.",
+    "",
+    "İKİ YÖNLÜ TUZAK — probe ikisini de raporlar:",
+    "  (a) SAHTE YOKLUK: korpus aslında cevaplıyor, erişim ıskaladı. Kapı = `terimler`in",
+    "      korpus geneli sözcüksel taraması (erişimden bağımsız, SELECT).",
+    "  (b) FAZLA KOLAY: soru o kadar konu dışı ki model zaten reddeder, test hiçbir şey",
+    "      kanıtlamaz. Kapı = üretim erişiminin döndürdüğü ilk adayların KONUCA yakın",
+    "      olması. Dürüstlük testi, model ilgili GÖRÜNEN bağlam görürken anlamlıdır.",
+    "",
+    "KONTROL KOLU (`K*`): korpusta OLDUĞUNU bildiğimiz sorular. Probe bunları 'var' diye",
+    "işaretleyemiyorsa probe'un kendisi bozuktur — aday sonuçlarına güvenilmez."
+  ],
+  "adaylar": [
+    {
+      "id": "U01",
+      "soru": "Avrupa Bankacılık Otoritesi'nin (EBA) likidite karşılama oranı için öngördüğü asgari eşik yüzde kaçtır?",
+      "terimler": ["Avrupa Bankacılık Otoritesi", "EBA", "likidite karşılama oranı"],
+      "gerekce": "Korpus Türk mevzuatı; likidite karşılama oranı KAVRAMI var, yabancı otoritenin eşiği yok. Yakın-ıskalama: erişim ilgili Türk maddelerini getirecek.",
+      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: korpus Türk bankacılık mevzuatından oluşur ve Avrupa Bankacılık Otoritesi'nin belirlediği eşikleri içermez.",
+      "karar": "beklemede"
+    },
+    {
+      "id": "U02",
+      "soru": "Ziraat Bankası'nın 2024 yıl sonu toplam aktif büyüklüğü ne kadardır?",
+      "terimler": ["Ziraat Bankası", "toplam aktif büyüklüğü", "aktif büyüklüğü"],
+      "gerekce": "Korpus mevzuat metnidir, banka finansal tablosu değil. Kurum ADI geçebilir (TBB tarihçesi) ama 2024 değeri geçemez.",
+      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: korpus düzenleyici mevzuat metinlerinden oluşur, tekil bankaların finansal tablo verilerini içermez.",
+      "karar": "beklemede"
+    },
+    {
+      "id": "U03",
+      "soru": "Türk bankacılık sektörünün 2025 yılı toplam mevduat hacmi kaç trilyon TL'dir?",
+      "terimler": ["toplam mevduat hacmi", "mevduat hacmi", "trilyon"],
+      "gerekce": "Sektör istatistiği; mevzuat 'mevduat' kavramını tanımlar, hacim rakamı vermez.",
+      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: korpus mevzuat metnidir ve sektör büyüklüğüne ilişkin istatistik içermez.",
+      "karar": "beklemede"
+    },
+    {
+      "id": "U04",
+      "soru": "BDDK'nın hâlihazırdaki kurul başkanı kimdir?",
+      "terimler": ["Kurul Başkanı", "Başkan Yardımcısı"],
+      "gerekce": "Mevzuat Kurul Başkanı MAKAMINI tanımlar; makamı işgal eden KİŞİNİN adını vermez. Terim taraması bol isabet verecek — hüküm gövdeden okunmalı: makam tanımı ≠ kişi adı.",
+      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: mevzuat Kurul Başkanlığı makamını ve yetkilerini düzenler, görevdeki kişinin kimliğini bildirmez.",
+      "karar": "beklemede"
+    },
+    {
+      "id": "U05",
+      "soru": "Bir bankanın faaliyet izni başvurusu için BDDK'ya ödemesi gereken başvuru ücreti kaç TL'dir?",
+      "terimler": ["başvuru ücreti", "faaliyet izni", "ücret tarifesi"],
+      "gerekce": "Faaliyet izni ŞARTLARI mevzuatta; parasal başvuru ücreti tarifesi korpusta beklenmez.",
+      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: korpus faaliyet izninin koşullarını düzenler, başvuruya ilişkin ücret tarifesini içermez.",
+      "karar": "beklemede"
+    },
+    {
+      "id": "U06",
+      "soru": "Bankalar müşterileri adına kripto varlık saklama hizmeti verebilir mi?",
+      "terimler": ["kripto", "kripto varlık", "dijital varlık", "sanal varlık"],
+      "gerekce": "Konuca bankacılık faaliyet kapsamına bitişik; korpusun yaşına göre VAR da OLABİLİR. Kasten belirsiz bırakıldı — hükmü veri versin.",
+      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: korpustaki mevzuat metinlerinde kripto varlık saklama hizmetine ilişkin bir düzenleme yer almamaktadır.",
+      "karar": "beklemede"
+    },
+    {
+      "id": "U07",
+      "soru": "Türkiye'de uygulanan sermaye yeterliliği oranı hedefi, Amerika Birleşik Devletleri'ndeki uygulamadan hangi yönlerden ayrılır?",
+      "terimler": ["Amerika Birleşik Devletleri", "Federal Rezerv", "ABD'de"],
+      "gerekce": "Sorunun Türk ayağı korpusta güçlü; karşılaştırma ayağı yok. Model yarım cevabı tam sanmaya en yatkın burada.",
+      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: korpus yalnız Türk mevzuatını içerir, ABD uygulamasıyla karşılaştırma yapılmasını sağlayacak kaynak barındırmaz.",
+      "karar": "beklemede"
+    },
+    {
+      "id": "U08",
+      "soru": "Bankaların yapay zekâ tabanlı kredi skorlama modelleri için BDDK'nın öngördüğü model doğrulama gereklilikleri nelerdir?",
+      "terimler": ["yapay zeka", "yapay zekâ", "makine öğrenmesi", "kredi skorlama"],
+      "gerekce": "Kredi riski/derecelendirme mevzuatı komşu; 'yapay zekâ model doğrulama' rejimi beklenmiyor. Bitişiklik yüksek, sahte-cevap riski yüksek.",
+      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: korpustaki mevzuatta yapay zekâ tabanlı kredi skorlama modellerine özgü doğrulama gereklilikleri düzenlenmemiştir.",
+      "karar": "beklemede"
+    },
+    {
+      "id": "K01",
+      "soru": "Bir bankanın ortaklık paylarının devrinde Kurul izni hangi eşikte aranır?",
+      "terimler": ["pay devri", "yüzde on", "Kurul izni"],
+      "gerekce": "KONTROL — 5411 m.18 kapsamı, korpusta OLMALI. Probe bunu 'yok' derse probe bozuktur.",
+      "ideal_answer": "(kontrol kaydı; golden'a yazılmaz)",
+      "karar": "kontrol"
+    },
+    {
+      "id": "K02",
+      "soru": "Tasarruf mevduatı sigortasına tabi tutarın sınırı nasıl belirlenir?",
+      "terimler": ["tasarruf mevduatı sigortası", "sigortaya tabi"],
+      "gerekce": "KONTROL — 5411 Fon hükümleri, korpusta OLMALI.",
+      "ideal_answer": "(kontrol kaydı; golden'a yazılmaz)",
+      "karar": "kontrol"
+    }
+  ]
+}
