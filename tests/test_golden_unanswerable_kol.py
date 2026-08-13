@@ -98,6 +98,21 @@ def test_terim_deseni_bas_cipali_son_cipasiz():
     assert mod._desen("a.b(c)") == r"\ma\.b\(c\)", "regex metakarakteri kaçırılmadı"
 
 
+def test_hukum_verilen_her_aday_kanit_tasir():
+    """'onaylandi'/'reddedildi' bir OKUMA sonucudur, oy değil.
+
+    Gerekçe dosyaya yazılmazsa hüküm birkaç hafta sonra doğrulanamaz hâle gelir:
+    elenen bir soru bilmeden yeniden yazılır, onaylanan bir soru ise korpus
+    değiştiğinde sessizce yanlışa döner (aday cevaplanabilir olur, kapı hâlâ
+    'reddetmeliydi' diye puanlar). Tur-1'de sekiz adayın altısı, dosyada YAZILI
+    olmayan bir varsayım ('korpus BDDK mevzuatıdır') yüzünden çökmüştü.
+    """
+    veri = json.loads(ADAYLAR.read_text(encoding="utf-8"))
+    for aday in veri["adaylar"]:
+        if aday["karar"] in {"onaylandi", "reddedildi"}:
+            assert aday.get("kanit"), f"{aday['id']}: hüküm var, dayanağı yok"
+
+
 def test_aday_dosyasi_kontrol_kolu_tasir():
     """Gerçek aday dosyası: kontrol kaydı olmadan probe'un 'sıfır bulgu' çıktısı
     yokluk mu arıza mı ayırt edilemez."""

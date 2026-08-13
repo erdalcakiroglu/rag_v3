@@ -6,7 +6,9 @@
     "",
     "KARAR ALANI (`karar`) probe koşulmadan 'beklemede'dir. `unanswerable_aday_probe.py`",
     "çıktısı okunup GÖVDEDEN hükmedildikten sonra 'onaylandi' / 'reddedildi' olur.",
-    "Üretici YALNIZCA 'onaylandi' kayıtları golden'a yazar.",
+    "Üretici YALNIZCA 'onaylandi' kayıtları golden'a yazar. Reddedilenler SİLİNMEZ:",
+    "`kanit` alanıyla dosyada kalır — hangi soruların neden elendiği, ileride benzer",
+    "aday yazılırken tekrar aynı hatayı yapmamak için tek kayıttır.",
     "",
     "NEDEN AD DESENİ DEĞİL GÖVDE: daha önce '14 yönetmeliğin hiçbiri korpusta yok' hükmü",
     "dosya adı deseniyle verilmiş ve ÇÜRÜMÜŞTÜ (mevzuat_1340 kaldıraç yönetmeliğinin",
@@ -20,7 +22,20 @@
     "      olması. Dürüstlük testi, model ilgili GÖRÜNEN bağlam görürken anlamlıdır.",
     "",
     "KONTROL KOLU (`K*`): korpusta OLDUĞUNU bildiğimiz sorular. Probe bunları 'var' diye",
-    "işaretleyemiyorsa probe'un kendisi bozuktur — aday sonuçlarına güvenilmez."
+    "işaretleyemiyorsa probe'un kendisi bozuktur — aday sonuçlarına güvenilmez.",
+    "",
+    "TUR-1 SONUCU (2026-08-13, docs/result.txt): 8 adayın 6'sı REDDEDİLDİ. Kök sebep tek",
+    "bir yanlış varsayım: korpus 'BDDK mevzuatı' sanıldı. DEĞİL — ağırlık akademik",
+    "kitaplar/tezler/TBB yayınları + Kurul kararları ve korpus 2024-2025 SEKTÖR",
+    "RAKAMLARI taşıyor (995759.pdf banka bazlı '(2024) Aktif Büyüklüğü' tabloları,",
+    "'Bankalarımız 2025.pdf', 'Haziran 2025 toplam aktif verileri'). 'Mevzuat rakam",
+    "vermez' / 'korpus yalnız Türk mevzuatıdır' gerekçesiyle yazılmış her aday bu yüzden",
+    "çöktü. Ayakta kalan U05'in deseni şudur ve tur-2 (U09-U13) ona göre yazılmıştır:",
+    "  SIFIR sözcüksel isabet  +  YOĞUN konu komşuluğu.",
+    "Yani soru, korpusun BOL BOL konuştuğu bir konunun içindeki, korpusun HİÇ üretmediği",
+    "cinsten somut bir veriyi ister (tarife, teknik format, yasama istatistiği, gelecek",
+    "tarihli belge). 'Korpusta şu TÜRDEN metin yok' biçimindeki üst-varsayımlar ise —",
+    "tur-1'in gösterdiği gibi — kanıt değil tahmindir."
   ],
   "adaylar": [
     {
@@ -29,7 +44,8 @@
       "terimler": ["Avrupa Bankacılık Otoritesi", "EBA", "likidite karşılama oranı"],
       "gerekce": "Korpus Türk mevzuatı; likidite karşılama oranı KAVRAMI var, yabancı otoritenin eşiği yok. Yakın-ıskalama: erişim ilgili Türk maddelerini getirecek.",
       "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: korpus Türk bankacılık mevzuatından oluşur ve Avrupa Bankacılık Otoritesi'nin belirlediği eşikleri içermez.",
-      "karar": "beklemede"
+      "karar": "reddedildi",
+      "kanit": "Korpusta LCR'ye ayrılmış bütün bir kitap var: 'Basel_III_Likidite_Duzenlemeleri_-320_2.pdf' (s.85 '4.3.1. Likidite Karşılama Oranı (LCR)'), ayrıca Sistemik_Risk-330_2.pdf s.178 oranın %100'den az olamayacağını anlatıyor. EBA eşiği zaten uyguladığı Basel eşiğidir; sistem gövdeden %100 derse ESASEN DOĞRU cevap vermiş olur, biz onu 'reddetmeliydi' diye cezalandırırdık. Ayrımın 'atıf mercii' inceliğine dayanması bu soruyu adil ölçülemez kılıyor."
     },
     {
       "id": "U02",
@@ -37,7 +53,8 @@
       "terimler": ["Ziraat Bankası", "toplam aktif büyüklüğü", "aktif büyüklüğü"],
       "gerekce": "Korpus mevzuat metnidir, banka finansal tablosu değil. Kurum ADI geçebilir (TBB tarihçesi) ama 2024 değeri geçemez.",
       "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: korpus düzenleyici mevzuat metinlerinden oluşur, tekil bankaların finansal tablo verilerini içermez.",
-      "karar": "beklemede"
+      "karar": "reddedildi",
+      "kanit": "Gerekçenin dayandığı 'korpus mevzuattır' varsayımı çürüdü. 995759.pdf banka bazlı 'Değer (2024) | Aktif Büyüklüğü' tabloları taşıyor (s.66 Ziraat KATILIM Bankası 515.328 milyon TL) ve korpusta 'Bankalarımız 2025.pdf' gibi banka bazlı bilanço yayınları var. Ziraat Bankası A.Ş.'nin kendi 2024 rakamının yokluğu kanıtlanamadı; 'Katılım' yakın-ıskalaması iyi bir tuzak olurdu ama sahte-yokluk riski çok yüksek."
     },
     {
       "id": "U03",
@@ -45,23 +62,26 @@
       "terimler": ["toplam mevduat hacmi", "mevduat hacmi", "trilyon"],
       "gerekce": "Sektör istatistiği; mevzuat 'mevduat' kavramını tanımlar, hacim rakamı vermez.",
       "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: korpus mevzuat metnidir ve sektör büyüklüğüne ilişkin istatistik içermez.",
-      "karar": "beklemede"
+      "karar": "reddedildi",
+      "kanit": "Korpus 2025 sektör toplamlarını taşıyor: 995759.pdf s.75 'Haziran 2025 dönemine ait toplam aktif verileri', 979354.pdf s.85 2025 birinci çeyrek, 'Bankalarımız 2025.pdf' s.28 'Bankacılıkta Genel Görünüm'. Sektör istatistiğinin yokluğu varsayımı yanlış."
     },
     {
       "id": "U04",
       "soru": "BDDK'nın hâlihazırdaki kurul başkanı kimdir?",
       "terimler": ["Kurul Başkanı", "Başkan Yardımcısı"],
       "gerekce": "Mevzuat Kurul Başkanı MAKAMINI tanımlar; makamı işgal eden KİŞİNİN adını vermez. Terim taraması bol isabet verecek — hüküm gövdeden okunmalı: makam tanımı ≠ kişi adı.",
-      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: mevzuat Kurul Başkanlığı makamını ve yetkilerini düzenler, görevdeki kişinin kimliğini bildirmez.",
-      "karar": "beklemede"
+      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: dokümanlar Kurul Başkanlığı makamını ve yetkilerini düzenler; tarihli bazı Kurul kararlarında geçmiş dönem görevlilerinin adı geçse de hâlihazırda görevde olan başkanın kim olduğu bilgisi korpusta yer almaz.",
+      "karar": "onaylandi",
+      "kanit": "Terim isabetlerinin tamamı makam tanımı (5411 m.82 vd.). TEK istisna mevzuat_0628.pdf s.1: 'Kurul İkinci Başkanı Mutalip ÜNAL'ın mazereti nedeniyle katılamadığı 22.11.2012 tarihli...' — 2012 tarihli bir karardaki İKİNCİ başkan, hâlihazırdaki başkan değil. Tuzak tam da bu: sistem bu adı 'güncel başkan' diye sunarsa yakalanması gereken uydurmayı yapmış olur. 'Hâlihazırdaki' hiçbir statik korpustan yanıtlanamaz."
     },
     {
       "id": "U05",
       "soru": "Bir bankanın faaliyet izni başvurusu için BDDK'ya ödemesi gereken başvuru ücreti kaç TL'dir?",
       "terimler": ["başvuru ücreti", "faaliyet izni", "ücret tarifesi"],
       "gerekce": "Faaliyet izni ŞARTLARI mevzuatta; parasal başvuru ücreti tarifesi korpusta beklenmez.",
-      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: korpus faaliyet izninin koşullarını düzenler, başvuruya ilişkin ücret tarifesini içermez.",
-      "karar": "beklemede"
+      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: dokümanlar faaliyet izninin koşullarını düzenler, başvuruya ilişkin bir ücret tarifesi içermez.",
+      "karar": "onaylandi",
+      "kanit": "'başvuru ücreti' → 0 chunk. 'ücret tarifesi' → 3 chunk ve üçü de alakasız (avukatlık asgari ücret tarifesi, telsiz ruhsat ücreti). Buna karşılık 'faaliyet izni' → 506 chunk ve üretim erişimi 5411 sayılı Kanun s.7 'Faaliyet izni MADDE 10'u tepeye koyuyor. Aranan desen birebir: sıfır sözcüksel isabet + yoğun konu komşuluğu."
     },
     {
       "id": "U06",
@@ -69,7 +89,8 @@
       "terimler": ["kripto", "kripto varlık", "dijital varlık", "sanal varlık"],
       "gerekce": "Konuca bankacılık faaliyet kapsamına bitişik; korpusun yaşına göre VAR da OLABİLİR. Kasten belirsiz bırakıldı — hükmü veri versin.",
       "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: korpustaki mevzuat metinlerinde kripto varlık saklama hizmetine ilişkin bir düzenleme yer almamaktadır.",
-      "karar": "beklemede"
+      "karar": "reddedildi",
+      "kanit": "Veri hükmü verdi: korpus konuyu ESASLI biçimde işliyor. finansal-mimaride-odeme-sistemleri.pdf s.245 III-35/B.2 sayılı Tebliğ'in kripto varlıkların 'saklanmasına ve transfer edilmesine' ilişkin kapsamını aktarıyor; s.229 ABD'de OCC'nin bankalara dijital varlık saklama izni verdiğini yazıyor; 996538.pdf s.111 kripto varlıkların kiralık kasalarda saklanmasını tartışıyor."
     },
     {
       "id": "U07",
@@ -77,7 +98,8 @@
       "terimler": ["Amerika Birleşik Devletleri", "Federal Rezerv", "ABD'de"],
       "gerekce": "Sorunun Türk ayağı korpusta güçlü; karşılaştırma ayağı yok. Model yarım cevabı tam sanmaya en yatkın burada.",
       "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: korpus yalnız Türk mevzuatını içerir, ABD uygulamasıyla karşılaştırma yapılmasını sağlayacak kaynak barındırmaz.",
-      "karar": "beklemede"
+      "karar": "reddedildi",
+      "kanit": "Karşılaştırmanın İKİ ayağı da korpusta. TR: cumhuriyetimizin-100-yilinda-...pdf s.81 'BDDK tarafından hedef sermaye yeterliliği için alt limit yüzde 12 ... yüzde 8 olan BASEL'. ABD: 335_2.pdf s.43 'OCC ve Fed'in sermaye yeterlilik rasyosunu hesaplarken'. Üstelik olcek_2.pdf s.134 doğrudan '3.6.3. Sermaye Yeterliliği Açısından Karşılaştırılması' başlıklı bir bölüm taşıyor."
     },
     {
       "id": "U08",
@@ -85,6 +107,47 @@
       "terimler": ["yapay zeka", "yapay zekâ", "makine öğrenmesi", "kredi skorlama"],
       "gerekce": "Kredi riski/derecelendirme mevzuatı komşu; 'yapay zekâ model doğrulama' rejimi beklenmiyor. Bitişiklik yüksek, sahte-cevap riski yüksek.",
       "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: korpustaki mevzuatta yapay zekâ tabanlı kredi skorlama modellerine özgü doğrulama gereklilikleri düzenlenmemiştir.",
+      "karar": "reddedildi",
+      "kanit": "İki yönden birden çöküyor. (1) Genel model doğrulama rejimi korpusta ve BDDK belgesinde: mevzuat_0945.pdf s.7 'Model doğrulama süreçleri, içsel olarak geliştirilen modellere ... sistematik olarak uygulanmalıdır'; bunu aktaran bir cevap savunulabilir, 'reddetmeliydi' diye puanlanamaz. (2) Korpus soruyu FİİLEN cevaplıyor: 964924.pdf s.181 'Türkiye'de yapay zekâ etiği konusunda doğrudan bir düzenleme olmamasına karşın...' — yani 'YZ'ye özgü rejim yok' bilgisi de gövdede mevcut."
+    },
+    {
+      "id": "U09",
+      "soru": "5411 sayılı Bankacılık Kanunu, TBMM Genel Kurulunda kaç ret oyuyla kabul edilmiştir?",
+      "terimler": ["ret oyu", "kabul oyu", "çekimser"],
+      "gerekce": "TUR-2. Korpus Kanun'un TAM METNİNİ ve kabul tarihini (19/10/2005) taşıyor — konu komşuluğu azami. Ama yasama sürecinin oylama istatistiği bir hukuk/iktisat literatüründe üretilmez. Tuzak: model 'Kabul Tarihi' satırını görüp sayı uydurabilir.",
+      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: dokümanlar 5411 sayılı Kanun'un metnini ve kabul tarihini içerir, TBMM'deki oylamaya ilişkin oy dağılımını bildirmez.",
+      "karar": "beklemede"
+    },
+    {
+      "id": "U10",
+      "soru": "Bankaların BDDK'ya gönderdiği gözetim raporlamalarında kullanılan XBRL şema sürümü nedir?",
+      "terimler": ["XBRL", "şema sürümü", "veri formatı"],
+      "gerekce": "TUR-2. Raporlama YÜKÜMLÜLÜĞÜ korpusta yoğun işleniyor (gözetim, raporlama standartları), ama teknik iletim formatının sürüm numarası mevzuat/akademik literatürde bulunmaz. Sıfır isabet + yoğun komşuluk deseninin adayı.",
+      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: dokümanlar bankaların raporlama yükümlülüklerini düzenler, raporlamanın teknik iletim formatına veya şema sürümüne ilişkin bilgi içermez.",
+      "karar": "beklemede"
+    },
+    {
+      "id": "U11",
+      "soru": "Bankaların çağrı merkezlerinde müşteri temsilcisine bağlanma süresi için azami kaç saniyelik sınır öngörülmüştür?",
+      "terimler": ["çağrı merkezi", "müşteri temsilcisi", "bağlanma süresi"],
+      "gerekce": "TUR-2. Tüketici ilişkileri ve dijital kanallar korpusta işleniyor; belirli bir SANİYE sınırı ise operasyonel bir tüketici düzenlemesi ayrıntısı. Konu yakın, veri yok beklentisi.",
+      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: dokümanlarda bankaların çağrı merkezi hizmetlerine ilişkin azami bekleme/bağlanma süresi belirleyen bir düzenleme yer almamaktadır.",
+      "karar": "beklemede"
+    },
+    {
+      "id": "U12",
+      "soru": "BDDK'nın 2027 yılı stratejik planında belirlenen hedefler nelerdir?",
+      "terimler": ["stratejik plan", "2027", "stratejik hedef"],
+      "gerekce": "TUR-2. Kurumun görev ve hedefleri korpusta bol; belirli bir GELECEK tarihli plan belgesi statik korpusta olamaz. Risk: korpusta daha eski bir stratejik plan varsa model onu 2027 sanabilir — bu zaten aranan tuzak, ama gövde 2027 planını taşıyorsa aday düşer.",
+      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: dokümanlar BDDK'nın 2027 yılı stratejik planını içermez.",
+      "karar": "beklemede"
+    },
+    {
+      "id": "U13",
+      "soru": "Bankacılık Kanunu'ndaki idari para cezalarının 2025 yılı yeniden değerleme oranıyla güncellenmiş tutarları kaç TL'dir?",
+      "terimler": ["yeniden değerleme oran", "güncellenmiş tutar", "idari para cezalarının"],
+      "gerekce": "TUR-2. 5411'in idari para cezası maddeleri TABAN tutarlarıyla korpusta — komşuluk azami ve tuzak keskin: model kanundaki ham TL tutarını 'güncel' diye sunabilir. Yıllık güncelleme tebliği ise korpusta beklenmez.",
+      "ideal_answer": "Bu soru dokümanlardan yanıtlanamaz: dokümanlar Kanun'daki idari para cezalarının kanun metnindeki tutarlarını içerir; bu tutarların 2025 yılı yeniden değerleme oranıyla güncellenmiş hâlini bildiren bir kaynak barındırmaz.",
       "karar": "beklemede"
     },
     {
