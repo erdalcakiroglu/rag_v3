@@ -113,6 +113,43 @@ def _delta_table(res_a: dict, res_b: dict) -> str:
     return "\n".join(L)
 
 
+def _kayit_tablosu(res_a: dict, res_b: dict) -> str:
+    """KAYIT bazında A→B; en çok BOZULAN üstte.
+
+    NEDEN TOPLAM YETMİYOR: pool 50'de GENEL recall@5 düştü (0.496→0.462) ama
+    recall@10 yükseldi. İki ayrı dünya bu ortalamayı verir — (a) birkaç kayıt
+    sert bozuldu, gerisi iyileşti; (b) bozulma tabana yayıldı. (a) ise bozulan
+    kayda bakılıp sebebi görülebilir ve rerank sevk edilebilir; (b) ise
+    cross-encoder bu korpusla uyuşmuyor demektir. Ortalama ikisini ayırmaz.
+    Ek hesap YOK: `per_record` iki kolda da zaten üretiliyor, yalnız basılmıyordu.
+    """
+    ka = {r["id"]: r for r in res_a["per_record"]}
+    kb = {r["id"]: r for r in res_b["per_record"]}
+    ortak = sorted(set(ka) & set(kb))
+    L = ["=== KAYIT BAZINDA A→B  (− = rerank BOZDU) ==="]
+
+    def _say(m: str) -> str:
+        iyi = sum(1 for i in ortak if kb[i][m] - ka[i][m] > 1e-9)
+        kot = sum(1 for i in ortak if kb[i][m] - ka[i][m] < -1e-9)
+        return f"{m}: iyilesen {iyi}  bozulan {kot}  ayni {len(ortak) - iyi - kot}"
+
+    for m in ("recall@5", "recall@10", "mrr"):
+        L.append("  " + _say(m))
+    L.append("")
+    L.append(f"{'kayit':<16}{'kategori':<20}{'gold_n':>7}"
+             f"{'r@5 A→B':>18}{'r@10 A→B':>18}{'Δr@10':>9}")
+    for i in sorted(ortak, key=lambda i: kb[i]["recall@10"] - ka[i]["recall@10"]):
+        d = kb[i]["recall@10"] - ka[i]["recall@10"]
+        if abs(d) <= 1e-9 and abs(kb[i]["recall@5"] - ka[i]["recall@5"]) <= 1e-9:
+            continue  # iki metrikte de kıpırdamayan kaydı basma (gürültü azalt)
+        L.append(f"{i:<16}{kb[i]['category']:<20}{kb[i]['gold_n']:>7}"
+                 f"{ka[i]['recall@5']:>9.3f}→{kb[i]['recall@5']:<8.3f}"
+                 f"{ka[i]['recall@10']:>9.3f}→{kb[i]['recall@10']:<8.3f}{d:>+9.3f}")
+    L.append("")
+    L.append("(iki metrikte de degismeyen kayitlar listelenmez; sayimlar TUM kayitlar uzerinden)")
+    return "\n".join(L)
+
+
 def main(argv: list[str] | None = None) -> int:
     _force_utf8()
     ap = argparse.ArgumentParser(prog="rerank_ab_probe")
@@ -242,6 +279,8 @@ def main(argv: list[str] | None = None) -> int:
         print(format_summary(res_b))
         print()
         print(_delta_table(res_a, res_b))
+        print()
+        print(_kayit_tablosu(res_a, res_b))
 
         if args.json:
             import json
