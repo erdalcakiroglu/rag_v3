@@ -448,3 +448,88 @@ Kalemi yeniden açma kararı kullanıcıya aittir.
 Sıra önerisi: önce mükerrer baskı elemesi (§5b-DÜZELTME — hem ölçümü hem
 canlı bağlamı düzeltir, ucuz), sonra re-baseline, sonra rerank A/B.
 Baskı yarışı sürerken rerank ölçülürse kazanç kopyalarla karışır.
+
+---
+
+## 10. MÜKERRER BASKI ELEMESİ — küme 1 kararı ÖLÇÜLDÜ (2026-08-13)
+
+§9'un sıra önerisindeki ilk kalem. `scripts/mukerrer_baski_probe.py` +
+`scripts/madde_kapsam_probe.py`, ikisi de salt-okuma.
+
+### Tespit yöntemi üç kez değişti — ikisi benim kusurumdu
+
+1. **Hash eşitliği YETMEDİ.** `md5(chunk_text_norm)` tam eşitlik ister; farklı
+   PDF'ler farklı chunk sınırı üretir. %60 eşikte tek çift buldu, oysa 5411
+   yedi dosyada duruyor. Hash ADAY üretimine indirildi, karar **içerilme**
+   testine geçti (küçük dosyadan pencere, büyük dosyada `position()`) — bu,
+   golden alıntı eşlemesinin ta kendisi, sınırdan bağımsız.
+2. **Tek yönlü içerilme "kapsayan derleme"yi mükerrer sandı.** 58 chunk'lık
+   5464 kanunu 399 chunk'lık `263_2.pdf` içinde %60 çıkınca küme oldu; heuristik
+   **büyük dosyayı** silmeyi önerdi. Ters yön %8. Çift yönlü ölçüm eklendi.
+3. **Golden çözünürlük testim HAM alıntıyı NORM sütununda aradı.** "10 alıntının
+   5'i tutulanda çözülmüyor" dedi ve 4'ünün kaynağı tutulacak dosyanın
+   kendisiydi — olacak şey değil. `chunk_text_norm` = NFKC+lowercase+ws-collapse;
+   `normalize_for_quote`'tan geçirilince çözülmeyen **1**'e indi.
+
+### Küme 1 — 7 dosya, aynı kanun
+
+| dosya | chunk | sayfa | işaret | son yıl | madde | geçici |
+|---|---|---|---|---|---|---|
+| **5411 sayılı Bankacılık Kanunu.pdf** (TUT) | 269 | 117 | **19** | **2025** | 171 | **35** |
+| Bankacilik_Kanunu_2.pdf | 289 | 209 | 0 | 2022 | 171 | 33 |
+| BankacilikKanunu_11.baski-web_2.pdf | 291 | 196 | 0 | 2017 | 171 | 31 |
+| Bankacilik_Kanunu_%2528Turkce%2529_2.pdf | 309 | 206 | 0 | 2015 | 171 | 31 |
+| BankacilikKanunu_8.baski-web_2.pdf | 298 | 203 | 0 | 2014 | 171 | 31 |
+| BankacilikKanunu_7.baski_2.pdf | 298 | 204 | 0 | 2013 | 171 | 31 |
+| 5411_Guncel_2.pdf | 235 | 92 | 0 | 2010 | **170** | **0** |
+
+**Sayfa farkı silmeye engel değil — ölçüldü.** Tutulacak aday eleyeceği her
+dosyadan az sayfalı (117 vs 196-209) ve bu haklı bir itirazdı. İki ölçüm çürüttü:
+
+- **Pencere boyu testi.** 160ch'de ters yön %40, 60ch'de **%72-77** ve simetri
+  kuruldu. Uzun pencere tutmuyordu çünkü TBB baskıları madde gövdesine dipnot
+  numarası serpiştiriyor (`"...durdurulması, 35 34 7222 sayılı kanun ile
+  değiştirilmiştir 63 b)..."`), virgül öncesi boşluk bırakıyor, 2015 baskısında
+  font bozulması var (`ඈnoඈsd\%ඈuru...`). Fark **dizgi**, içerik değil.
+- **Madde kapsamı.** Kanun metninde bütünlüğün doğal ölçüsü rastgele karakter
+  penceresi değil madde numarası kümesidir; dizgi/dipnot/OCR gürültüsü madde
+  başlıklarını topluca yok edemez. Yedi dosyanın hepsinde **171 madde**,
+  tutulanda **eksik 0**, geçici maddede tutulan **en yüksek** (35).
+
+Yan bulgu: `5411_Guncel_2.pdf` 170 madde ve **0 geçici madde** ile grubun en
+eksik dosyası. Adında "Guncel" geçmesine rağmen bayat olduğu üçüncü kez
+doğrulandı — [[korpus-degisti-golden-bayat]]'taki ad-deseni dersi.
+
+### Küme 2 — KAPANDI, silinecek dosya yok
+
+`5464 sayılı Banka Kartları...` (58 chunk) `263_2.pdf` (399 chunk) içinde %60,
+tersi **%8**. Bu mükerrer baskı değil, derlemenin kanunu içermesi. Tek yönlü
+ölçüm burada büyük dosyayı sildirecekti.
+
+### h01'in alıntısı — silmeye engel değil ama AYRI bir kalem
+
+`gs-bddk-h01`'in kanun alıntısı beş eski baskıda çözülüyor, tutulacak dosyada
+çözülmüyor. İz sürüldü: ön ek 53 karakter chunk 59'da tutuyor, **chunk sonuna
+1082 karakter var** — sınır kusuru değil. Baş ve son tutup ortası tutmuyor.
+İki açıklama açık: lafız değişti (m.53 karşılıklar hükmü değiştirildi) ya da
+konsolide metin ortaya `(Değişik: …)` şerhi ekledi. **Ayırt edilmeden "hüküm
+değişti" denemez**; chunk 59 okunacak. Her iki hâlde h01 dört kanıtla ayakta
+kalır, üretici patlamaz.
+
+### Karar ve beklenen sonuç
+
+Altı dosya elenir, konsolide metin tutulur (kullanıcı onayı 2026-08-13).
+`dosya_kaldir.py` yalnız `core_files` satırını siler, ham PDF diskte kalır —
+karar geri alınabilir.
+
+Golden'da beklenen: e01 −6, e02 −5, e03 −5, e04 −3, e05 −4, e10 −1, m01 −4,
+h01 −5, h02 −4, h03 −4 = **−41**, yani **93 → 52 evidence / 31 → 25 dosya**.
+Üretici başka bir sayı verirse durulur; tahmin ölçümün denetimidir.
+
+`load_golden_set` evidence'ı yükleme anında korpusta arar
+(`EvidenceValidationError`): dosyalar silindikten sonra ESKİ `v1.jsonl` ile
+`eval load` **patlar**. Sıra zorunludur: sil → üret → kuru koşum → yükle.
+Hash değiştiği için `replace_set` devreye girer, sürüm adı `v1-bddk` kalır.
+
+Baseline (§8) bu elemeden SONRA yeniden ölçülür. §8 sayıları kopya yarışı
+içeren korpusa aittir; yeni sayılarla aynı tabloda karşılaştırılamaz.
