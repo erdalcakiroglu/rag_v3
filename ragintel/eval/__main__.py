@@ -84,7 +84,8 @@ def _cmd_run(args) -> int:
     result = evaluate(version=args.golden, limit=args.limit, runs=args.runs,
                       agent_model=args.agent_model, judge_model=args.judge_model,
                       question_delay=args.question_delay, out_path=args.out,
-                      agent_runs=args.agent_runs)
+                      agent_runs=args.agent_runs,
+                      all_unanswerable=args.all_unanswerable)
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     else:
@@ -195,6 +196,12 @@ def main(argv: list[str] | None = None) -> int:
     rn.add_argument("--golden", default="v0", help="DB set_version (varsayılan v0)")
     rn.add_argument("--mode", default="report", choices=("report",), help="report (fail etmez, gösterge)")
     rn.add_argument("--limit", type=int, default=None, help="Dry-run: ilk N answerable (+2 unanswerable)")
+    rn.add_argument("--all-unanswerable", action="store_true",
+                    help="`--limit` unanswerable kolunu KIRPMASIN. Varsayılan yol kolu "
+                         "min(2, limit) ile keser; M-17 dürüstlük ölçümü kolun TAMAMINI "
+                         "ister, yoksa 6 kayıtlık kol sessizce 2'ye iner ve oran yanlış "
+                         "paydadan çıkar. `--limit 0 --all-unanswerable` = yalnız dürüstlük "
+                         "kolu (judge çağrısı yok).")
     rn.add_argument("--runs", type=int, default=3, help="Judge medyanı için koşu sayısı (varsayılan 3)")
     rn.add_argument("--agent-runs", type=int, default=1,
                     help="Soru başına AGENT tekrar sayısı. MÜHÜR KARNESİ ve kalite iddiası "
