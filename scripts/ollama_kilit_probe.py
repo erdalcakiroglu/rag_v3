@@ -22,17 +22,27 @@ NE YAPAR
     Adım-1  u12'yi ajandan geçirir, ilk `tools==1` çağrısında isteği YAKALAR ve
             çağrıyı YAPMADAN durur (kilit tetiklenmez). Tam tool listeli bir istek
             de kıyas için yakalanır.
-    Adım-2  Yakalanan isteği dört kolda oynatır (her kol `--timeout` saniyede kesilir):
+    Adım-2  Yakalanan isteği kollarda oynatır (her kol `--timeout` saniyede kesilir):
               A  aynen (2 kez)          → kilit TEKRARLANABİLİR mi?
               B  tools = tam liste (5)  → tek-tool mu kilitliyor?
               C  reasoning_effort YOK   → düşünme kısma knob'u mu?
               D  tools YOK (serbest)    → tool şeması mı?
+              E  tools = 2 (submit + search) → tetikleyici TAM OLARAK "1" mi?
+
+ÖLÇÜLDÜ (2026-08-13, ilk koşum): A1/A2 90 s TIMEOUT · B OK 3.3 s (tool_call üretti) ·
+    C 90 s TIMEOUT · D OK 3.7 s. Yani istem masum, `reasoning_effort` masum; kilidi
+    doğuran şey uca TEK tool şeması gönderilmesi. E kolu bunu keskinleştirir:
+    tetikleyici "tam olarak 1" ise düzeltme "zorlanmış tura asla tek şema gönderme",
+    değilse "nihai tur asılırsa tam listeyle bir kez tekrarla" (B o yolun çalıştığını
+    gösterdi). Tek-tool TEK BAŞINA yetmiyor: diğer 5 kaydın 15 tekrarı da aynı turdan
+    geçti ve geçti — kilit tek-tool grameri ile BU konuşmanın birleşiminde.
 
 SALT-OKUNUR: DB'ye, config'e, golden'a YAZMAZ. Yakalanan istek korpus metni taşır →
 varsayılan çıktı `var/` altına yazılır (repo dışı, hassas kabul edilen dizin).
 
 KULLANIM
     python -u scripts/ollama_kilit_probe.py --golden v1-bddk --kayit u12 --timeout 90
+    python -u scripts/ollama_kilit_probe.py --payload var/kilit_payload.json --kollar E,A
 """
 
 from __future__ import annotations
@@ -117,47 +127,80 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--cikti", default=os.path.join("var", "kilit_payload.json"),
                    help="Yakalanan istek buraya yazılır (korpus metni taşır — repoya GİRMEZ)")
     p.add_argument("--yalniz-yakala", action="store_true", help="Kolları koşma, yalnız isteği yakala")
+    p.add_argument("--payload", default=None,
+                   help="Kaydedilmiş isteği oynat (ajanı YENİDEN KOŞTURMAZ, DB'ye bağlanmaz)")
+    p.add_argument("--kollar", default="A,B,C,D,E",
+                   help="Koşulacak kollar (virgüllü, ör. 'E,A'). Sıra verilen sıradır.")
     args = p.parse_args(argv)
 
-    from ragintel.eval.harness import build_eval_app
+    tam = None
+    if args.payload:
+        # Tekrar-oynatma: yakalama adımı atlanır → tek kolu saniyeler içinde denersin.
+        with open(args.payload, encoding="utf-8") as fh:
+            hedef = json.load(fh)
+        model = hedef.get("model", "?")
+        print(f"model={model} · payload={args.payload} (yakalama ATLANDI)")
+    else:
+        from ragintel.eval.harness import build_eval_app
 
-    db, _cfg, model, app = build_eval_app()
-    try:
-        adaylar = [r for r in _kayitlar(db, args.golden) if args.kayit in str(r["id"])]
-        if not adaylar:
-            print(f"HATA: '{args.golden}' setinde '{args.kayit}' geçen kayıt yok.", file=sys.stderr)
-            return 2
-        rec = adaylar[0]
-        print(f"model={model} · kayit={rec['id']}\nsoru: {rec['question']}\n")
+        db, _cfg, model, app = build_eval_app()
+        try:
+            adaylar = [r for r in _kayitlar(db, args.golden) if args.kayit in str(r["id"])]
+            if not adaylar:
+                print(f"HATA: '{args.golden}' setinde '{args.kayit}' geçen kayıt yok.", file=sys.stderr)
+                return 2
+            rec = adaylar[0]
+            print(f"model={model} · kayit={rec['id']}\nsoru: {rec['question']}\n")
 
-        print("[1/2] kilitlenen istek yakalanıyor (çağrı YAPILMAZ)…")
-        hedef, tam = _yakala(app, rec)
-    finally:
-        db.close()
+            print("[1/2] kilitlenen istek yakalanıyor (çağrı YAPILMAZ)…")
+            hedef, tam = _yakala(app, rec)
+        finally:
+            db.close()
 
-    if hedef is None:
-        print("YAKALANAMADI: ajan `tools==1` turuna hiç gelmedi (bütçe bitmeden yanıtladı). "
-              "Kilit bu koşumda TETİKLENMEDİ — tekrar deneyin.", file=sys.stderr)
-        return 3
+        if hedef is None:
+            print("YAKALANAMADI: ajan `tools==1` turuna hiç gelmedi (bütçe bitmeden yanıtladı). "
+                  "Kilit bu koşumda TETİKLENMEDİ — tekrar deneyin.", file=sys.stderr)
+            return 3
 
-    os.makedirs(os.path.dirname(args.cikti) or ".", exist_ok=True)
-    with open(args.cikti, "w", encoding="utf-8") as fh:
-        json.dump(hedef, fh, ensure_ascii=False, indent=2)
-    print(f"  yakalandı → {args.cikti} · messages={len(hedef['messages'])} · "
-          f"prompt_chars={sum(len(str(m.get('content') or '')) for m in hedef['messages'])} · "
-          f"tools={len(hedef.get('tools') or [])} · extra_body={hedef.get('extra_body')}")
-    if args.yalniz_yakala:
-        return 0
+        os.makedirs(os.path.dirname(args.cikti) or ".", exist_ok=True)
+        with open(args.cikti, "w", encoding="utf-8") as fh:
+            json.dump(hedef, fh, ensure_ascii=False, indent=2)
+        print(f"  yakalandı → {args.cikti} · messages={len(hedef['messages'])} · "
+              f"prompt_chars={sum(len(str(m.get('content') or '')) for m in hedef['messages'])} · "
+              f"tools={len(hedef.get('tools') or [])} · extra_body={hedef.get('extra_body')}")
+        if args.yalniz_yakala:
+            return 0
 
-    kollar = [("A1  aynen", hedef), ("A2  aynen (tekrar)", hedef)]
-    if tam:
-        b = dict(hedef); b["tools"] = tam["tools"]
-        kollar.append((f"B   tools={len(tam['tools'])} (tam liste)", b))
+    # Tam tool listesi: yakalandıysa oradan, yoksa modül sabitlerinden (DB gerekmez).
+    if tam is None:
+        from ragintel.agents.tools import (LOOKUP_DOCUMENT_SCHEMA, RERANK_SCHEMA,
+                                           SEARCH_HYBRID_SCHEMA, SUBMIT_ANSWER_SCHEMA)
+        tam_tools = [SEARCH_HYBRID_SCHEMA, LOOKUP_DOCUMENT_SCHEMA, RERANK_SCHEMA,
+                     SUBMIT_ANSWER_SCHEMA]
+    else:
+        from ragintel.agents.tools import SEARCH_HYBRID_SCHEMA
+        tam_tools = tam["tools"]
+
+    tanim: dict = {}
+    tanim["A1"] = ("A1  aynen", hedef)
+    tanim["A2"] = ("A2  aynen (tekrar)", hedef)
+    tanim["A"] = tanim["A1"]
+    tanim["B"] = (f"B   tools={len(tam_tools)} (tam liste)", dict(hedef) | {"tools": tam_tools})
     if hedef.get("extra_body"):
-        c = {k: v for k, v in hedef.items() if k != "extra_body"}
-        kollar.append(("C   reasoning_effort YOK", c))
-    d = {k: v for k, v in hedef.items() if k != "tools"}
-    kollar.append(("D   tools YOK (serbest metin)", d))
+        tanim["C"] = ("C   reasoning_effort YOK", {k: v for k, v in hedef.items() if k != "extra_body"})
+    tanim["D"] = ("D   tools YOK (serbest metin)", {k: v for k, v in hedef.items() if k != "tools"})
+    # E: tetikleyici TAM OLARAK "1" mi, yoksa "az" mı? Düzeltmenin şeklini bu ayırır.
+    ikili = [*(hedef.get("tools") or []), SEARCH_HYBRID_SCHEMA]
+    tanim["E"] = ("E   tools=2 (submit + search)", dict(hedef) | {"tools": ikili})
+
+    istenen = [k.strip().upper() for k in args.kollar.split(",") if k.strip()]
+    if "A" in istenen:                       # 'A' = iki tekrar (kilit determinizmi)
+        istenen = [x for k in istenen for x in (("A1", "A2") if k == "A" else (k,))]
+    bilinmeyen = [k for k in istenen if k not in tanim]
+    if bilinmeyen:
+        print(f"HATA: bilinmeyen kol {bilinmeyen} (geçerli: {sorted(tanim)})", file=sys.stderr)
+        return 2
+    kollar = [tanim[k] for k in istenen]
 
     print(f"\n[2/2] {len(kollar)} kol · kol başına en fazla {args.timeout:.0f} s\n")
     sonuclar = []
@@ -170,7 +213,9 @@ def main(argv: list[str] | None = None) -> int:
 
     print("\n--- OKUMA ---")
     a = [r for r in sonuclar if r["kol"].startswith("A")]
-    if all(r["sonuc"] == "OK" for r in a):
+    if not a:
+        print("A kolu koşulmadı → kilit determinizmi hakkında bu koşum bir şey söylemez.")
+    elif all(r["sonuc"] == "OK" for r in a):
         print("A kolu GEÇTİ: kilit bu istekle TEKRARLANMIYOR → tetikleyici istem değil, "
               "uçun O ANKİ durumu (biriken slot/oturum). Sorunun adresi Ollama tarafıdır.")
     else:
