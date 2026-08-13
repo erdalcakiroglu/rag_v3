@@ -171,6 +171,19 @@ class LiteLLMGateway:
         import litellm
 
         for attempt in range(self.settings.max_retries + 1):
+            # KİLİTLENEN ÇAĞRI İZ BIRAKMIYOR: `llm_call_timing` yalnız BAŞARIDA yazılır,
+            # uçta asılı kalan istek hiçbir yerde görünmez. Ölçüldü (2026-08-13, M-17
+            # koşumu): Ollama isteği kabul etti, GPU %0'da bekledi, kendi journal'ına da
+            # yalnız istek BİTİNCE satır düştüğü için iki tarafta da iz yok — hangi
+            # çağrının hangi büyüklükte asıldığı BİLİNEMEDİ. Çağrı ÖNCESİ boyut damgası
+            # bu körlüğü kapatır. İÇERİK ASLA YAZILMAZ, yalnız sayım: istem gövdesi
+            # kullanıcı verisi taşır.
+            msgs = kwargs.get("messages") or []
+            _LOG.info("llm_call_start", model=self.model, attempt=attempt + 1,
+                      messages=len(msgs),
+                      prompt_chars=sum(len(str(m.get("content") or "")) for m in msgs),
+                      tools=len(kwargs.get("tools") or []),
+                      timeout=kwargs.get("timeout"))
             t0 = time.perf_counter()
             try:
                 resp = litellm.completion(**kwargs)
