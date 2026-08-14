@@ -57,6 +57,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--ust", type=int, default=20, help="Karneye giren derinlik")
     ap.add_argument("--tei-url", default="http://localhost:8085",
                     help="TEI rerank ucu (RAGINTEL_TEI_RERANK_URL)")
+    ap.add_argument("--neden", action="store_true",
+                    help="Havuz DIŞI kalan altın chunk'lar için teşhis: metin, uzunluk, "
+                         "terim örtüşmesi ve AYNI DOSYANIN havuzdaki en iyi chunk'ı")
     args = ap.parse_args(argv)
 
     os.environ.setdefault("RAGINTEL_TEI_RERANK_URL", args.tei_url)
@@ -196,6 +199,11 @@ def main(argv: list[str] | None = None) -> int:
             for dosya, hit in sisme:
                 print(f"    ⚠ ALINTI ŞİŞMESİ: {dosya[:44]} tek alıntı {len(hit)} chunk'a "
                       f"eşleşti — recall paydası şişiyor")
+
+            if args.neden and disarida:
+                with db.connection() as conn:
+                    _neden_raporu(conn, rec, disarida, havuz, h_sira, yerler,
+                                  normalize_for_search, toplam)
             print()
 
         # --- ÖZET + OKUMA ---------------------------------------------------------
@@ -208,6 +216,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"bitişik bölünme: {len(bitisik_kayit)} kayıt "
               f"({toplam['bitisik_chunk']} chunk) {bitisik_kayit}")
         print(f"alıntı şişmesi: {len(sisen_kayit)} kayıt {sisen_kayit}")
+        if args.neden:
+            print(f"havuz dışı kırılımı: belge bulunuyor-yanlış parça {toplam['belge_var']} "
+                  f"· belge hiç bulunamıyor {toplam['belge_yok']}")
 
         print("\n--- OKUMA ---")
         buyuk = max(toplam["havuz_disi"], toplam["geride"])
@@ -221,6 +232,17 @@ def main(argv: list[str] | None = None) -> int:
             print("BASKIN KUSUR: SIRALAMA (havuzda ama geride). Chunk aday havuzunda VAR,\n"
                   "  top-20'ye çıkamıyor. Rerank'in işi; synthesis'te kıpırdamıyorsa\n"
                   "  cross-encoder bu soru tipinde zayıf demektir.")
+        if args.neden and (toplam["belge_var"] or toplam["belge_yok"]):
+            if toplam["belge_var"] > toplam["belge_yok"]:
+                print("HAVUZ DIŞI KIRILIMI: baskın olan BELGE BULUNUYOR-YANLIŞ PARÇA.\n"
+                      "  Doğru dosya havuzda ama kanıt taşıyan chunk'ı değil. Bu bir\n"
+                      "  chunk SEÇİMİ sorunu: komşu-chunk genişletme ya da belge başına\n"
+                      "  birden çok chunk alma bunu doğrudan kurtarır.")
+            else:
+                print("HAVUZ DIŞI KIRILIMI: baskın olan BELGE HİÇ BULUNAMIYOR.\n"
+                      "  Dosyadan tek chunk bile havuza girmiyor ⇒ kusur chunk seçiminde\n"
+                      "  değil, sorgu-belge eşleşmesinde. Sparse varyantı/füzyon ağırlığı\n"
+                      "  ve sorgu genişletme aranmalı; komşu genişletmenin faydası olmaz.")
         if bitisik_kayit:
             print(f"AYRICA GRANÜLERLİK: {len(bitisik_kayit)} kayıtta tek cevap aynı dosyanın\n"
                   f"  ardışık chunk'larına bölünmüş. recall küme üzerinden hesaplandığı için\n"
@@ -233,6 +255,52 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     finally:
         db.close()
+
+
+def _neden_raporu(conn, rec, disarida, havuz, h_sira, yerler, normalize_for_search,
+                  toplam) -> None:
+    """Havuz DIŞI altın chunk: metni neye benziyor, DOSYASI bulunmuş mu?
+
+    Kritik ayrım — ikisi tamamen farklı çözüme gider, karıştırılırsa yanlış işe
+    girişilir:
+      · aynı dosyanın BAŞKA chunk'ı havuzda VAR  → belge bulunuyor, yanlış parçası
+        seçiliyor. Çare chunk seçimi/komşu genişletme tarafında.
+      · dosyadan hiçbir chunk havuzda YOK        → belge hiç bulunamıyor. Çare
+        terim/anlam uyuşması (sparse varyantı, füzyon ağırlığı, sorgu genişletme).
+    """
+    rows = conn.execute(
+        "SELECT c.chunk_id, f.file_name FROM core_chunks c JOIN core_files f "
+        "USING (file_id) WHERE c.chunk_id = ANY(%s);", (list(havuz),)).fetchall()
+    havuz_dosya: dict[str, list[int]] = defaultdict(list)
+    for cid, fad in rows:
+        havuz_dosya[str(fad)].append(int(cid))
+
+    q_terim = {t for t in normalize_for_search(rec.question).split() if len(t) > 2}
+    for cid in disarida:
+        r = conn.execute(
+            "SELECT chunk_text, chunk_text_norm, token_count FROM core_chunks "
+            "WHERE chunk_id = %s;", (cid,)).fetchone()
+        if r is None:
+            print(f"    · HAVUZ DIŞI chunk {cid}: DB'de YOK (silinmiş olabilir)")
+            continue
+        metin, norm, tok = str(r[0] or ""), str(r[1] or ""), r[2]
+        dosya, idx, _s = yerler.get(cid, ("?", -1, None))
+        kardes = havuz_dosya.get(dosya, [])
+        en_iyi = min((h_sira[c] for c in kardes if c in h_sira), default=None)
+        ortak = q_terim & set(norm.split())
+        if kardes:
+            toplam["belge_var"] += 1
+            tani = (f"aynı dosyadan havuzda {len(kardes)} chunk (en iyi sıra {en_iyi}) "
+                    f"→ BELGE BULUNUYOR, YANLIŞ PARÇA seçiliyor")
+        else:
+            toplam["belge_yok"] += 1
+            tani = "aynı dosyadan havuzda 0 chunk → BELGE HİÇ BULUNAMIYOR"
+        ozet = " ".join(metin.split())[:150]
+        print(f"    · HAVUZ DIŞI chunk {cid}  {dosya[:44]} #{idx}")
+        print(f"        {len(metin)} karakter / {tok} token · soru terimi örtüşmesi "
+              f"{len(ortak)}/{len(q_terim)} {sorted(ortak)[:6]}")
+        print(f"        {tani}")
+        print(f"        metin: {ozet!r}")
 
 
 def _chunk_yerleri(conn, chunk_ids: list[int]) -> dict[int, tuple[str, int, object]]:
