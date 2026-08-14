@@ -19,8 +19,13 @@ GEÇME ÖLÇÜTÜ (üçü birden)
     - `budget["forced_final_escaped"] is True` (kaçış ateşlendi)
     - 2. çağrı yanıt döndürdü (tool_call ya da metin) — yani ajan cevapsız kalmadı
 
-    Kilit bu koşumda oluşmazsa probe bunu AÇIKÇA söyler ve BAŞARI SAYMAZ: kaçış yolu
-    denenmemiş olur. Kilit bağlama duyarlıdır, yokluğu kanıt değildir.
+    Kilit bu koşumda oluşmazsa probe bunu AÇIKÇA söyler ve BAŞARI SAYMAZ (exit 3):
+    kaçış yolu denenmemiş olur. Kilit bağlama duyarlıdır, yokluğu kanıt değildir.
+
+    ÇIKIŞ KODLARI: 0 geçti · 1 kilit oluştu ama kurtarma tamamlanmadı · 2 yük dosyası yok
+    · 3 kilit oluşmadı (kaçış denenmedi) · 4 uca hiç çağrı gitmedi = PROBE ARIZASI.
+    3 ile 4'ü ayırmak şart: ölçüm aracının kendi arızası "kilit yok" diye okunursa
+    kanıt yokluğu yokluk kanıtına dönüşür (2026-08-14'te tam olarak bu oldu).
 
 MALİYET / GÜVENLİK
     DB'ye, config'e, golden'a YAZMAZ. Ama GERÇEK LLM çağrısı yapar ve kilidi bilerek
@@ -61,22 +66,29 @@ def _gateway_yukten(hedef: dict, timeout: float):
 
 def _izleyen(gateway, kayit: list[dict]):
     """gateway.complete'i sarmala: her çağrının şema sayısı/süresi/sonucu kaydedilsin.
-    Fonksiyonun KENDİSİ değişmez — yalnız gözlem eklenir."""
+    Fonksiyonun KENDİSİ değişmez — yalnız gözlem eklenir.
+
+    `**kw` ŞART, sabit imza DEĞİL: sarmalayıcı üretim imzasını taklit ediyor ve ondan
+    geri kalırsa çağrı uca HİÇ gitmeden `TypeError`'a düşer. Tam olarak bu oldu
+    (2026-08-14, 7a61239): üretime `timeout=` eklendi, buradaki imza güncellenmedi;
+    dört koşum boyunca tek bir istek çıkmadan probe "kilit oluşmadı" dedi. Yeni
+    parametre eklendiğinde bu sarmal artık sessizce kırılmaz, parametreyi kaydeder.
+    """
     orij = gateway.complete
 
-    def sarmal(*, messages, tools, max_retries=None):
+    def sarmal(*, messages, tools, **kw):
         t0 = time.perf_counter()
+        ortak = {"tools": len(tools or []), "max_retries": kw.get("max_retries"),
+                 "timeout": kw.get("timeout")}
         try:
-            resp = orij(messages=messages, tools=tools, max_retries=max_retries)
-            kayit.append({"tools": len(tools or []), "max_retries": max_retries,
-                          "sonuc": "OK", "sn": round(time.perf_counter() - t0, 1),
+            resp = orij(messages=messages, tools=tools, **kw)
+            kayit.append({**ortak, "sonuc": "OK", "sn": round(time.perf_counter() - t0, 1),
                           "tool_calls": len(getattr(resp, "tool_calls", None) or []),
                           "content_chars": len(getattr(resp, "content", None) or "")})
             return resp
         except Exception as exc:
-            kayit.append({"tools": len(tools or []), "max_retries": max_retries,
-                          "sonuc": type(exc).__name__, "sn": round(time.perf_counter() - t0, 1),
-                          "hata": str(exc)[:160]})
+            kayit.append({**ortak, "sonuc": type(exc).__name__,
+                          "sn": round(time.perf_counter() - t0, 1), "hata": str(exc)[:160]})
             raise
 
     gateway.complete = sarmal
@@ -136,7 +148,8 @@ def main(argv: list[str] | None = None) -> int:
     for i, c in enumerate(kayit, 1):
         ek = (f" tool_calls={c['tool_calls']} content={c['content_chars']} char"
               if c["sonuc"] == "OK" else f" — {c.get('hata', '')}")
-        print(f"  çağrı-{i}  tools={c['tools']} max_retries={c['max_retries']}  "
+        to = "ayar" if c["timeout"] is None else f"{c['timeout']:.0f}s"
+        print(f"  çağrı-{i}  tools={c['tools']} max_retries={c['max_retries']} timeout={to}  "
               f"{c['sonuc']:<20} {c['sn']:>6.1f} s{ek}")
     print(f"  toplam {toplam} s · forced_final_escaped={budget.get('forced_final_escaped', False)}")
 
@@ -145,6 +158,15 @@ def main(argv: list[str] | None = None) -> int:
     kurtardi = hata is None and resp is not None and len(kayit) > 1 and kayit[-1]["sonuc"] == "OK"
 
     print("\n--- OKUMA ---")
+    if not kayit:
+        # "Uca hiç çağrı gitmedi" ile "çağrı gitti, kilitlenmedi" AYNI ŞEY DEĞİL; ikisini
+        # tek dala koymak ölçüm aracının kendi arızasını olguya çevirir. ÖLÇÜLDÜ
+        # (2026-08-14): sarmalayıcı imzası üretimden geri kaldı, dört koşum tek istek
+        # çıkarmadan "KİLİT OLUŞMADI" dedi ve "kilit kayboldu" diye okundu.
+        print(f"PROBE ARIZASI: uca HİÇ çağrı gitmedi "
+              f"(hata={type(hata).__name__ if hata else None}: {str(hata)[:200]}). "
+              f"Bu koşum kilit hakkında HİÇBİR ŞEY söylemez — önce probe onarılmalı.")
+        return 4
     if not kilitlendi:
         print("KİLİT OLUŞMADI: tek şemalı çağrı bu koşumda GEÇTİ. Kaçış yolu DENENMEDİ — "
               "bu koşum kaçış hakkında hiçbir şey söylemez (kilit bağlama duyarlı, "
