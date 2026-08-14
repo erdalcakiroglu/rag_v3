@@ -910,6 +910,20 @@ class AgentConfig(BaseModel):
         description="Tek bir soru-cevap turunun azami süresi (saniye). Aşılırsa istek hata döner. "
                     "Büyük modeller ve çok turlu akıl yürütme daha uzun sürer.",
     )
+    # Zorlanmış nihai tur (bütçe bitti → yalnız `submit_answer` sunulur) uçta KİLİTLENEBİLİR:
+    # ölçüldü (2026-08-13/14) tam olarak BİR tool şeması gönderilince Ollama runner'ı asılıyor.
+    # Kaçış yolu var (tam listeyle bir kez tekrar) ama önce bu turun düşmesi beklenir ve o
+    # süre boyunca API tek `_lock` + Ollama seri olduğu için SERVİS DURUR. Genel
+    # `RAGINTEL_LLM_REQUEST_TIMEOUT` (90 s) bu tur için ~25× fazla: mutlu yolda tur H200'de
+    # 2-4 s sürüyor (63 tok/s). Ayrı knob = en kötü durumu kısaltır, mutlu yola dokunmaz.
+    forced_final_timeout_sec: float = Field(
+        default=45.0, ge=5.0, le=900.0,
+        description="Bütçe bitince koşan 'cevabı zorla' turunun azami süresi (saniye). Bu tur "
+                    "uçta kilitlenirse sistem tam araç listesiyle BİR kez daha dener; buradaki "
+                    "süre, kilitli beklemenin üst sınırıdır. Ölçüldü: tur normalde 2-4 s sürer. "
+                    "Düşürmek kilitte servisi daha çabuk kurtarır; fazla düşürmek yoğun GPU "
+                    "anlarında sağlıklı turu da keser (zararsız ama gereksiz ikinci çağrı).",
+    )
     validation_coverage_threshold: float = Field(
         default=0.70, ge=0.0, le=1.0,
         description="Cevabın kaynakla desteklenme oranı bu eşiğin altındaysa cevap doğrulamayı "

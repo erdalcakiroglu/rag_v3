@@ -88,7 +88,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--payload", default=os.path.join("var", "kilit_payload.json"),
                    help="ollama_kilit_probe.py'nin yakaladığı kilitlenen istek")
     p.add_argument("--timeout", type=float, default=90.0,
-                   help="İstek başına saniye (gateway request_timeout)")
+                   help="Genel istek timeout'u (gateway request_timeout) — KAÇIŞ çağrısı bunu kullanır")
+    p.add_argument("--zorlanmis-timeout", type=float, default=None,
+                   help="Zorlanmış turun çağrı-yerel timeout'u (varsayılan: agent.forced_final_timeout_sec). "
+                        "Kilitli beklemenin üst sınırı budur.")
     args = p.parse_args(argv)
 
     if not os.path.exists(args.payload):
@@ -101,11 +104,17 @@ def main(argv: list[str] | None = None) -> int:
 
     from ragintel.agents.nodes.agent import _forced_final_complete
     from ragintel.agents.tools import ToolRegistry
+    from ragintel.config.settings import AgentConfig
 
+    # Zorlanmış turun timeout'u ÜRETİM VARSAYILANINDAN gelir (DB'siz: pydantic default).
+    # Probe kendi sayısını uydurursa üretimde geçerli olmayan bir süreyi ölçmüş olur.
+    zor_timeout = float(args.zorlanmis_timeout if args.zorlanmis_timeout is not None
+                        else AgentConfig().forced_final_timeout_sec)
     gateway, model, effort = _gateway_yukten(hedef, args.timeout)
     registry = ToolRegistry(None)          # şemalar statik; tool YÜRÜTÜLMEZ, service gerekmez
     mesajlar = hedef["messages"]
-    print(f"model={model} · reasoning_effort={effort} · timeout={gateway.settings.request_timeout:.0f} s\n"
+    print(f"model={model} · reasoning_effort={effort} · genel timeout={gateway.settings.request_timeout:.0f} s "
+          f"· zorlanmış tur timeout={zor_timeout:.0f} s\n"
           f"yük={args.payload} · messages={len(mesajlar)} · "
           f"prompt_chars={sum(len(str(m.get('content') or '')) for m in mesajlar)}\n"
           f"zorlanmış tur şeması={len(registry.final_only_schemas())} · "
@@ -119,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
     t0 = time.perf_counter()
     hata = None
     try:
-        resp = _forced_final_complete(gateway, registry, mesajlar, budget)
+        resp = _forced_final_complete(gateway, registry, mesajlar, budget, timeout=zor_timeout)
     except Exception as exc:                # kaçış da düştüyse: gerçek başarısızlık
         resp, hata = None, exc
     toplam = round(time.perf_counter() - t0, 1)
@@ -144,7 +153,8 @@ def main(argv: list[str] | None = None) -> int:
     if kacti and kurtardi:
         print(f"GEÇTİ: kilit {kayit[0]['sn']:.0f} s'de düştü, kaçış ateşlendi, tam listeyle "
               f"{kayit[-1]['sn']:.1f} s'de yanıt geldi. Üretimde bu satır, 12 dakikalık "
-              f"servis durmasının yerini {toplam:.0f} saniyeye indiriyor.")
+              f"servis durmasının yerini {toplam:.0f} saniyeye indiriyor "
+              f"(zorlanmış tur timeout={zor_timeout:.0f} s).")
         return 0
     print(f"DÜŞTÜ: kilit oluştu ama kurtarma tamamlanmadı "
           f"(escaped={kacti}, hata={type(hata).__name__ if hata else None}). "

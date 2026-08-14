@@ -25,7 +25,8 @@ _LOG = get_logger("agent.node")
 _FEEDBACK_HEADER = "VALIDATION_FAILED:"
 
 
-def _forced_final_complete(gateway, registry: ToolRegistry, messages: list[dict], budget: dict):
+def _forced_final_complete(gateway, registry: ToolRegistry, messages: list[dict], budget: dict,
+                           *, timeout: float | None = None):
     """Zorlanmış nihai tur — TEK ŞEMALI istek uçta kilitlenebilir; kaçış yolu ölçüldü.
 
     ÖLÇÜLDÜ (2026-08-13/14, qwen3.5:35b + Ollama 0.17.4, `scripts/ollama_kilit_probe.py`)
@@ -50,15 +51,23 @@ def _forced_final_complete(gateway, registry: ToolRegistry, messages: list[dict]
          `max_retries=0`, kayıp 12 dakika değil bir timeout.
       2. Kaçış: aynı mesajlarla TAM listeyi gönder. Model ya submit eder ya düz metin
          yazar; düz metin zaten `content_no_tool` yolundan validate'e gider.
+      3. `timeout` (agent.forced_final_timeout_sec, 45 s): kaçışın KENDİSİ ölçüldü —
+         canlıda kilit 92.7 s'de düştü, kurtarma 3.7 s sürdü, toplam 96.4 s
+         (`scripts/kilit_kacis_kanit_probe.py`, 2026-08-14). O 96 saniyenin
+         neredeyse tamamı GENEL `request_timeout`=90'dır ve boyunca servis durur.
+         Bu tur mutlu yolda 2-4 s sürüyor (63 tok/s) → ayrı, kısa knob en kötü
+         durumu yarıya indirir; sağlıklı tura dokunmaz (12× pay).
     BAŞARILI KOŞUM ETKİLENMEZ — kaçış yalnız taşıma hatasında ateşlenir, dolayısıyla
     M-9 karne mührü yerinde kalır. Kaçış ateşlendiyse bütçeye işaretlenir: aynı istek
     ikinci kez kilide sürülmez (doğrulama-retry turu tekrar zorlanmış tura düşer).
+    KAÇIŞ ÇAĞRISI kısa timeout'u KULLANMAZ: o yol ölçülü çalışıyor ve asıl cevabı o
+    üretiyor — onu kısmak kurtarmayı riske atar.
     """
     if budget.get("forced_final_escaped"):
         return gateway.complete(messages=messages, tools=registry.llm_tool_schemas())
     try:
         return gateway.complete(messages=messages, tools=registry.final_only_schemas(),
-                                max_retries=0)
+                                max_retries=0, timeout=timeout)
     except Exception as exc:
         if not is_retryable(exc):          # şema/yetki hatası → kaçış YOK, olduğu gibi yüksel
             raise
@@ -232,7 +241,8 @@ def agent_node(
             or int(budget["tokens_used"]) >= int(budget["max_tokens"])
         )
         if exhausted:
-            resp = _forced_final_complete(gateway, registry, messages, budget)
+            resp = _forced_final_complete(gateway, registry, messages, budget,
+                                          timeout=float(cfg.group("agent").forced_final_timeout_sec))
         else:
             resp = gateway.complete(messages=messages, tools=registry.llm_tool_schemas())
         budget["iteration"] = int(budget["iteration"]) + 1

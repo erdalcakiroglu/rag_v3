@@ -25,7 +25,7 @@ class ScriptedGateway:
         self.calls = []
         self.tokens = tokens
 
-    def complete(self, *, messages, tools, max_retries=None):
+    def complete(self, *, messages, tools, max_retries=None, timeout=None):
         self.calls.append({"messages": messages, "tools": tools})
         action = self.script.pop(0)
         pt, ct = self.tokens

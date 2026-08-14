@@ -196,7 +196,7 @@ def test_agent_node_ONCEKI_context_i_prior_olarak_gecirir():
         raw_message: dict = {}
 
     class _GW:
-        def complete(self, *, messages, tools, max_retries=None):
+        def complete(self, *, messages, tools, max_retries=None, timeout=None):
             return _Resp()
 
     class _Reg:

@@ -109,7 +109,8 @@ class LLMResponse:
 
 class LLMGateway(Protocol):
     def complete(self, *, messages: list[dict], tools: list[dict],
-                 max_retries: int | None = None) -> LLMResponse: ...
+                 max_retries: int | None = None,
+                 timeout: float | None = None) -> LLMResponse: ...
 
 
 class EmptyReasoningResponse(RuntimeError):
@@ -214,13 +215,19 @@ class LiteLLMGateway:
         return out
 
     def complete(self, *, messages: list[dict], tools: list[dict],
-                 max_retries: int | None = None) -> LLMResponse:
+                 max_retries: int | None = None, timeout: float | None = None) -> LLMResponse:
+        """`max_retries`/`timeout` çağrı-yerel override'dır (None → ayardaki değer).
+
+        Genel `request_timeout` TÜM çağrılar için tek bir sayıdır; oysa bazı turların
+        beklenen süresi ölçülüdür ve kilitte beklemenin bedeli o turda çok daha ağırdır
+        (zorlanmış nihai tur: API tek `_lock` + Ollama seri → servis DURUR). Çağıranın
+        "bu tur 2-4 s sürer, 90 s beklemek anlamsız" bildiği yer için."""
         kwargs: dict = {
             "model": f"{self.settings.provider}/{self.model}",
             "messages": messages,
             "tools": tools or None,
             "api_base": self.settings.api_base,
-            "timeout": self.settings.request_timeout,
+            "timeout": self.settings.request_timeout if timeout is None else float(timeout),
             # M-9: sıcaklık AÇIKÇA geçirilir — set edilmezse uç kendi varsayılanına (0.8)
             # düşer ve karne zemini sessizce kayar. Config yalan söylemez: davranışı
             # belirleyen parametre çağrıda görünür.

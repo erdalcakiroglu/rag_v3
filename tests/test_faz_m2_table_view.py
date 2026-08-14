@@ -27,7 +27,7 @@ class _StubGateway:
     """Graph kurulabilsin diye; M-2 uçları LLM çağırmaz."""
     name = "stub"
 
-    def complete(self, *, messages, tools, max_retries=None):
+    def complete(self, *, messages, tools, max_retries=None, timeout=None):
         args = {"answer": "bulunamadı", "citations": []}
         tc = ToolCall(id="c1", name="submit_answer", arguments=args)
         raw = {"role": "assistant", "content": None, "tool_calls": [

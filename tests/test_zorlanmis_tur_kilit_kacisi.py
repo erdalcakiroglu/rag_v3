@@ -33,8 +33,8 @@ class _SahteGateway:
         self.davranislar = davranislar
         self.cagrilar: list[dict] = []
 
-    def complete(self, *, messages, tools, max_retries=None):
-        self.cagrilar.append({"tools": len(tools), "max_retries": max_retries})
+    def complete(self, *, messages, tools, max_retries=None, timeout=None):
+        self.cagrilar.append({"tools": len(tools), "max_retries": max_retries, "timeout": timeout})
         b = self.davranislar[min(len(self.cagrilar) - 1, len(self.davranislar) - 1)]
         if isinstance(b, BaseException):
             raise b
@@ -71,6 +71,29 @@ def test_kilitte_tam_listeyle_kacar():
     assert [c["tools"] for c in gw.cagrilar] == [1, len(reg.llm_tool_schemas())]
     assert gw.cagrilar[1]["max_retries"] is None      # kaçış normal retry bütçesiyle koşar
     assert budget["forced_final_escaped"] is True
+
+
+def test_kisa_timeout_yalniz_kilitlenen_tura_uygulanir():
+    """CANLIDA ÖLÇÜLDÜ (2026-08-14): kilit 92.7 s + kurtarma 3.7 s = 96.4 s ve o süre
+    boyunca servis DURUR (tek `_lock` + seri Ollama). O 96 saniyenin neredeyse tamamı
+    genel `request_timeout`=90'dır; tur mutlu yolda 2-4 s sürer. Kısa timeout ZORLANMIŞ
+    tura uygulanır, KAÇIŞ çağrısına UYGULANMAZ: kurtarma yolu asıl cevabı üretiyor,
+    onu kısmak kilidi çözerken cevabı kaybetmek olurdu."""
+    gw, reg, msgs, budget = _kur([_kilit(), "KACIS-YANITI"])
+
+    _forced_final_complete(gw, reg, msgs, budget, timeout=45.0)
+
+    assert [c["timeout"] for c in gw.cagrilar] == [45.0, None]
+
+
+def test_timeout_verilmezse_ayardaki_deger_gecerli():
+    """Override yokken davranış DEĞİŞMEZ (None → gateway kendi request_timeout'unu kullanır).
+    Eski çağıranlar ve testler zeminden kaymaz."""
+    gw, reg, msgs, budget = _kur(["YANIT"])
+
+    _forced_final_complete(gw, reg, msgs, budget)
+
+    assert gw.cagrilar[0]["timeout"] is None
 
 
 def test_kacis_bir_kez_ateslenir():

@@ -114,6 +114,20 @@ def test_her_tekrar_ayri_damgalanir(monkeypatch):
     assert [d["attempt"] for d in damgalar] == [1, 2]
 
 
+def test_cagri_yerel_timeout_uca_gider(monkeypatch):
+    """Bazı turların beklenen süresi ÖLÇÜLÜDÜR ve kilitte beklemenin bedeli o turda çok
+    daha ağırdır (zorlanmış nihai tur: API tek `_lock` + seri Ollama → servis DURUR).
+    Genel `request_timeout` tek sayıdır; çağrı-yerel override o turu kısar. Damga
+    çağrıya giden kwargs'tan okunur, dolayısıyla uca giden değeri gösterir."""
+    gw_obj, rec, _ = _kur(monkeypatch, [_resp()])
+
+    gw_obj.complete(messages=[{"role": "user", "content": "q"}], tools=[], timeout=45.0)
+
+    (_, kw), = [e for e in rec.events if e[0] == "llm_call_start"]
+    assert kw["timeout"] == 45.0
+    assert gw_obj.settings.request_timeout != 45.0     # ayardan değil, override'dan geldi
+
+
 def test_asili_cagri_damgasi_kalir(monkeypatch):
     """Çağrı hiç dönmezse bile damga elde kalır — teşhisin dayandığı tek satır budur."""
     class _Asili(Exception):
