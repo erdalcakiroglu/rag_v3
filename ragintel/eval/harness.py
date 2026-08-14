@@ -365,15 +365,28 @@ def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
         plan = [(rec, i, rec["id"] if agent_runs == 1 else f"{rec['id']}#{i}")
                 for rec in queue for i in range(agent_runs)]
         for idx, (rec, tekrar, key) in enumerate(plan):
-            if key in ck["answers"] or key in ck["errors"]:
+            # ATLAMA ÖLÇÜTÜ = YANITLANMIŞ OLMAK, "denenmiş olmak" DEĞİL. Eskiden hata kaydı
+            # da atlatıyordu (`or key in ck["errors"]`) — yani bir satır bir kez hataya
+            # düştüğünde AYNI checkpoint'le bir daha ASLA denenmiyordu. Karne (bkz. `eksik`)
+            # o satırı doğru biçimde "missing" ilan ediyor ama koşum onu kuyruğa geri
+            # koymuyordu: kısmi bir karne tekrar koşularak KAPATILAMIYORDU. Ölçüldü
+            # (2026-08-14, v1-bddk M-17): kaçış düzeltmesi kurulduktan sonra koşum
+            # `elapsed_sec: 0.0`, sıfır `llm_call_start` ile bitti ve u12'nin üç satırı
+            # yine "missing" kaldı — tek LLM çağrısı bile yapılmadı.
+            # Hata KALICI bir hüküm değil, o denemenin sonucudur; kalıcılığı yeniden
+            # koşum kanıtlar, checkpoint varsayamaz.
+            if key in ck["answers"]:
                 continue
+            yeniden = key in ck["errors"]
             try:
                 row = run_question(app, rec, ctx_cap=int(cfg.group("eval").ctx_cap))
                 row["rec_id"], row["repeat"] = rec["id"], tekrar
                 ck["answers"][key] = row
+                ck["errors"].pop(key, None)   # başarı eski hatayı geçersizler; karne bayat hata basmaz
                 _save_ck(out_path, ck)
                 _LOG.info("eval_answered", id=key, iterations=row["iterations"],
-                          confidence=row["confidence"], answerable=rec["answerable"])
+                          confidence=row["confidence"], answerable=rec["answerable"],
+                          retry=yeniden)
             except Exception as exc:
                 if _rate_limited(exc):
                     paused = ("answer", key)
@@ -381,7 +394,7 @@ def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
                     break
                 ck["errors"][key] = str(exc)[:200]
                 _save_ck(out_path, ck)
-                _LOG.warning("eval_answer_failed", id=key, error=str(exc)[:160])
+                _LOG.warning("eval_answer_failed", id=key, error=str(exc)[:160], retry=yeniden)
             if question_delay and idx < len(plan) - 1:
                 time.sleep(question_delay)  # TPM yumuşatma (gateway backoff'a ek throttle)
 
@@ -392,6 +405,7 @@ def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
                     continue
                 try:
                     ck["scores"][rid] = _score_answerable(judge, embedder, row, runs)
+                    ck["errors"].pop(rid, None)   # skor kolu zaten yeniden deniyordu; hata kaydı bayatlamasın
                     _save_ck(out_path, ck)
                     _LOG.info("eval_scored", id=rid, **ck["scores"][rid])
                 except Exception as exc:
