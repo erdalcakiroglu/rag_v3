@@ -126,6 +126,7 @@ def main() -> int:
         # Bütçe süpürmesi: canlı değer HER ZAMAN listede (karşılaştırma zemini),
         # ∞ (128000) tavanı verir. Her bütçe için ayrı builder; token sayacı ORTAK
         # (tokenizer yüklemesi pahalı) ve builder durumsuzdur.
+        service = RetrievalService(db=db, config=cfg)
         butceler = sorted({butce, *args.butce} - {_SINIRSIZ})
         builder = ContextBuilder(db=db, config=cfg)
         counter = builder.token_counter
