@@ -837,15 +837,22 @@ class RetrievalConfig(BaseModel):
     rerank_neighbor_window: int = Field(
         default=0, ge=0, le=5,
         description="Havuzun tepesindeki chunk'ların KOMŞU chunk'ları da (öncesi+sonrası "
-                    "bu kadar) rerank havuzuna eklenir. 0 = kapalı. Ölçülen gerekçe "
-                    "(v1-bddk synthesis): altın chunk'ların %40'ı havuza hiç girmiyor ve "
-                    "bunların 9/10'unda doğru DOSYA zaten havuzda — yani belge bulunuyor, "
-                    "kanıtı taşıyan parça seçilemiyor. Havuz dışı chunk'ların ±1'de %50'si, "
-                    "±2'de %60'ı, ±5'te %70'i erişilebilir hâle gelir; kazancın çoğu ±1'de, "
-                    "genişletmenin getirisi yok. DİKKAT: bu havuza GİRME oranıdır, karne "
-                    "puanı değil — komşu sonra rerank'i de kazanmak zorundadır. Yalnız "
-                    "rerank açıkken çalışır; kaynak panelindeki bağlam penceresi AYRI "
-                    "ayardır (lookup_window).",
+                    "bu kadar) rerank havuzuna eklenir. 0 = kapalı. "
+                    "AÇMAYIN — ÖLÇÜLDÜ VE ÖLÜ ÇIKTI (2026-08-14, v1-bddk, n=30, "
+                    "scripts/komsu_tavan_probe.py). Gerekçe sağlamdı: pencere synthesis "
+                    "altın chunk'larının %24.5'ini havuza SOKUYOR (tavan 0.555→0.800, "
+                    "T=20/W=3) ve bu artışın tamamı synthesis'ten geliyor — diğer "
+                    "kategorilerin tavanı zaten 1.000. AMA karne DEĞİŞMİYOR: r@10 0.145 "
+                    "on ızgara hücresinin onunda da aynı. Sebep ölçüldü: cross-encoder "
+                    "komşu chunk'ları DİBE atıyor (pencerenin getirdiği 3 altın chunk "
+                    "200. sıranın ALTINA düştü) — komşu, sorunun terimlerini taşımayan "
+                    "bir devam metnidir. Geniş hücrelerde ZARARLI bile: T=50/W=3'te "
+                    "GENEL 0.682→0.648, single_fact 0.947→0.895 (komşu, top-10'daki "
+                    "altını dışarı itiyor). Asıl kırılım burada değil `k` kesmesinde: "
+                    "synthesis altınlarının medyan sırası 24 (≈260 aday içinde ilk %9) "
+                    "ve 5'i tam 11-20 bandında ⇒ r@20 = 0.310, r@10'un iki katı. "
+                    "Kod ölçüm kaydı olarak duruyor; kaynak panelindeki bağlam penceresi "
+                    "AYRI ayardır (lookup_window).",
     )
     rerank_neighbor_top: int = Field(
         default=20, ge=1, le=200,
