@@ -113,6 +113,79 @@ def _komsu_havuzu(conn, konumlar: list[tuple[int, int]], scopes: list[str],
     return {(int(r[1]), int(r[2])): int(r[0]) for r in rows}
 
 
+def _tani(args, durum, kategoriler, service, genislet, recall_at_k,
+          tepe: int, pencere: int) -> None:
+    """synthesis'in kökü SIRALAYICI mı yoksa ÇIPA SAYISI mı — ayırt eder.
+
+    recall@10 bir KÜME recall'üdür: paydası kaydın altın chunk sayısıdır. Altı
+    çıpalı bir soruda 10 slotun dördünü altınla doldurmak, tek çıpalı soruda
+    birini doldurmaktan yapısal olarak çok daha zordur. Yani düşük synthesis
+    recall'ü "sıralayıcı kör" demeden ÖNCE iki şey ölçülmeli:
+
+      • ÇIPA SAYISI — kategori başına |gold| dağılımı. Büyükse ceza yapısaldır.
+      • ALTIN CHUNK'IN GERÇEK SIRASI — havuzdaki altın chunk kaçıncı sırada?
+        11-20 bandındaysa bu k=10 kesme etkisidir (kıl payı kaçırma);
+        150. sıradaysa sıralayıcı onu gerçekten göremiyordur. İkisi TAMAMEN
+        farklı müdahale gerektirir ve recall@10 ikisini de aynı sayıya ezer.
+
+    Bu ayrımın bir geçmişi var: aynı imza bir kez "retriever synthesis'te zayıf"
+    diye okunmuş, kökü ölçü aracı çıkmıştı. Üçüncü kez tahmin edilmez, ölçülür.
+    """
+    from statistics import median
+
+    print("\n=== TANI: sıralayıcı mı, çıpa sayısı mı? ===")
+    kler = [k for k in _sayilar(args.k_listesi)]
+    for etiket, (t, w) in (("taban", (0, 0)), (f"T={tepe} W={pencere}", (tepe, pencere))):
+        toplu: dict[str, list[dict]] = {k: [] for k in kategoriler}
+        for _kid, d in durum.items():
+            gold = d["gold"]
+            genis = genislet(d, t, w)
+            uc = {"user_id": "tavan-probe", "tenant_id": "eval", "roles": ["eval"],
+                  "allowed_doc_scopes": [d["kayit"].doc_scope]}
+            sira = service.rerank(d["kayit"].question, genis, user_ctx=uc)
+            sirali = [int(s["chunk_id"]) for s in sira]
+            yer = {cid: i + 1 for i, cid in enumerate(sirali)}
+            toplu[d["kayit"].category].append({
+                "gold_n": len(gold),
+                "havuzda": len(gold & set(genis)),
+                "siralar": sorted(yer[c] for c in gold if c in yer),
+                "recall": {k: recall_at_k(gold, sirali, k) for k in kler},
+            })
+        print(f"\n  --- {etiket} ---")
+        bas = (f"  {'kategori':20s} {'n':>3} {'çıpa':>5} {'havuzda':>8} {'medyan':>7} |"
+               + "".join(f" {'r@'+str(k):>7}" for k in kler))
+        print(bas)
+        print("  " + "-" * (len(bas) - 2))
+        for kat in kategoriler:
+            rows = toplu[kat]
+            if not rows:
+                continue
+            cipa = sum(r["gold_n"] for r in rows) / len(rows)
+            havuzda = sum(r["havuzda"] for r in rows) / len(rows)
+            tum_sira = [s for r in rows for s in r["siralar"]]
+            med = median(tum_sira) if tum_sira else float("nan")
+            satir = (f"  {kat:20s} {len(rows):>3} {cipa:>5.1f} {havuzda:>8.1f} "
+                     f"{med:>7.0f} |")
+            for k in kler:
+                satir += f" {sum(r['recall'][k] for r in rows)/len(rows):>7.3f}"
+            print(satir)
+        # Bant dağılımı: kesme etkisi mi, körlük mü?
+        for kat in kategoriler:
+            rows = toplu[kat]
+            tum = [s for r in rows for s in r["siralar"]]
+            if not tum:
+                continue
+            bant = {"1-10": 0, "11-20": 0, "21-50": 0, "51-200": 0, "200+": 0}
+            for s in tum:
+                anahtar = ("1-10" if s <= 10 else "11-20" if s <= 20 else
+                           "21-50" if s <= 50 else "51-200" if s <= 200 else "200+")
+                bant[anahtar] += 1
+            kayip = sum(r["gold_n"] - r["havuzda"] for r in rows)
+            print(f"  {kat:20s} altın chunk sırası: "
+                  + " · ".join(f"{k}:{v}" for k, v in bant.items())
+                  + f" · havuza HİÇ girmeyen:{kayip}")
+
+
 def main() -> int:
     _force_utf8()
     ap = argparse.ArgumentParser(description="Komşu-pencere tavan/gerçekleşen ızgarası",
@@ -125,6 +198,11 @@ def main() -> int:
     ap.add_argument("--pencere", default="1,2,3",
                     help="window adayları (virgüllü, vars. 1,2,3)")
     ap.add_argument("--k", type=int, default=10, help="recall@k (vars. 10)")
+    ap.add_argument("--tani", action="store_true",
+                    help="çıpa sayısı + altın chunk'ın GERÇEK sırası + k süpürmesi. "
+                         "recall@10'un neyi gizlediğini açar.")
+    ap.add_argument("--k-listesi", default="5,10,20,50,200",
+                    help="--tani için recall@k derinlikleri (vars. 5,10,20,50,200)")
     ap.add_argument("--tavan-only", action="store_true",
                     help="rerank'i HİÇ çağırma; yalnız tavanı ölç (TEI maliyeti sıfır, "
                          "saniyeler sürer). Kategori kırılımını ucuza almak için.")
@@ -197,24 +275,28 @@ def main() -> int:
         ayni_sira = 0
         toplam_sira = 0
 
+        def _genislet(d: dict, tepe: int, pencere: int) -> list[int]:
+            havuz, konum, yerlesim = d["havuz"], d["konum"], d["yerlesim"]
+            genis = list(havuz)
+            if pencere > 0:
+                var = set(havuz)
+                for c in havuz[:tepe]:
+                    if c not in konum:
+                        continue
+                    fid, ix = konum[c]
+                    for delta in range(-pencere, pencere + 1):
+                        komsu = yerlesim.get((fid, ix + delta))
+                        if komsu is not None and komsu not in var:
+                            var.add(komsu)
+                            genis.append(komsu)
+            return genis
+
         def _hucre(tepe: int, pencere: int) -> dict:
             nonlocal ayni_sira, toplam_sira
             satirlar = []
             for kid, d in durum.items():
-                havuz, konum, yerlesim = d["havuz"], d["konum"], d["yerlesim"]
                 gold = d["gold"]
-                genis = list(havuz)
-                if pencere > 0:
-                    var = set(havuz)
-                    for c in havuz[:tepe]:
-                        if c not in konum:
-                            continue
-                        fid, ix = konum[c]
-                        for delta in range(-pencere, pencere + 1):
-                            komsu = yerlesim.get((fid, ix + delta))
-                            if komsu is not None and komsu not in var:
-                                var.add(komsu)
-                                genis.append(komsu)
+                genis = _genislet(d, tepe, pencere)
                 if args.tavan_only:
                     sirali = []
                 else:
@@ -288,6 +370,9 @@ def main() -> int:
             print(f"    {kat:20s} TAVAN taban {tv:.3f} → en iyi {en:.3f} ({en-tv:+.3f}){ek}")
         if args.tavan_only:
             print("  (REC ölçülmedi — hüküm için --tavan-only'siz koşum gerekir)")
+            if args.tani:
+                print("  ⚠ --tani ATLANDI: sıralayıcı tanısı rerank gerektirir, "
+                      "--tavan-only onu kapatıyor.")
             if args.json:
                 print(json.dumps(
                     [{"tepe": h["tepe"], "pencere": h["pencere"], "satirlar": h["satirlar"]}
@@ -307,6 +392,10 @@ def main() -> int:
         else:
             print(f"  ⇒ pencere hem tavanı hem karneyi taşıyor; kazancın "
                   f"{d_rec/d_tavan*100:.0f}%'i tavana yansıyor.")
+
+        if args.tani:
+            _tani(args, durum, kategoriler, service, _genislet, recall_at_k,
+                  en_iyi_tavan["tepe"], en_iyi_tavan["pencere"])
 
         oran = ayni_sira / toplam_sira if toplam_sira else 0.0
         if oran > 0.05:
