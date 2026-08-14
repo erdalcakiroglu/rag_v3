@@ -39,3 +39,15 @@ docs/Langfuse_Dokumani.md
 
 # Eval/karne koşum çıktıları (runtime artefaktı — repoya girmez)
 logs/
+
+# ÖLÇÜLDÜ (2026-08-13): `git add -A` dört çalışma dosyasını commit'e süpürdü
+# (5e94f57); biri (docs/result.txt, 51 KB) korpus metni taşıyordu. Takipten
+# çıkarmak (ae50a63) dosyayı GEÇMİŞTEN silmez — tek gerçek koruma, hiç girmemesidir.
+# Koşum çıktıları ve el notları burada kalır; kalıcı olması gereken bir rapor
+# çıkarsa AÇIK ADIYLA `git add <dosya>` ile eklenir (add -A ile değil).
+docs/result*.txt
+docs/*.ckpt
+docs/kaynak*.txt
+bankacilik_sorulari.md
+RagIntel_Turk_Bankacilik_Golden_Dataset_v1.md
+test01.py
