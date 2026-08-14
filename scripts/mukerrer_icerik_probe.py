@@ -24,6 +24,18 @@ NE ÖLÇER
     HÜKÜM DEĞİL, ADAY üretir. `A ⊂ B` demek "A'nın içeriği B'de var" demektir;
     silme kararı ayrıca madde kapsamına ve golden bağımlılığına bakmalı.
 
+KORPUS ŞEKLİ — `--min-shingle` NEDEN DÜŞÜK
+    BDDK korpusu aşırı çarpık (2026-08-14 ölçümü): 883 dosya tek sayfalık tebliğ
+    (1-2 chunk, 500-2k karakter) ve toplam chunk'ın yalnız %2.3'ünü tutuyor; 99
+    büyük dosya %92'sini tutuyor. İlk sürümdeki `--min-shingle 40` varsayılanı
+    korpusun %64'ünü sessizce kıyas dışı bıraktı ve probe yine de "4 çift bulundu"
+    dedi — bu projede altı kez yakalanan SESSİZ PAYDA ailesinin bir üyesi daha.
+    Varsayılan 6'ya indirildi ve dışarıda kalan oran %5'i aşarsa koşum uyarı basar.
+
+    Küçük dosyada doğruluk DÜŞMEZ, ARTAR: |A| ve |B| taslak boyutundan (k=256)
+    küçükse taslak dosyanın TÜM shingle kümesidir ve Jaccard kestirim değil kesin
+    hesaplanır. Alt sınırın tek sebebi çok kısa metinlerde tesadüfi %100 içerilme.
+
 GOLDEN KORUMASI
     --golden verilirse her aday dosya, golden kanıt dosyalarıyla karşılaştırılır ve
     golden'ın DAYANDIĞI dosyalar açıkça işaretlenir. 08-13'te eleme sonrası eşleme
@@ -60,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--adim", type=int, default=VARSAYILAN_ADIM, help="Shingle adımı")
     ap.add_argument("--dogrula", type=int, default=20,
                     help="En yüksek N çift için TAM (kestirimsiz) içerilme hesapla")
-    ap.add_argument("--min-shingle", type=int, default=40,
+    ap.add_argument("--min-shingle", type=int, default=6,
                     help="Bu kadar shingle üretmeyen dosya kıyasa girmez (çok kısa)")
     ap.add_argument("--kalabalik", type=int, default=20,
                     help="Bu kadar çok dosyada geçen shingle aday üretiminde atlanır (kalıp metin)")
@@ -98,6 +110,11 @@ def main(argv: list[str] | None = None) -> int:
         kucuk = toplam_dosya - len(taslaklar)
         print(f"  {len(taslaklar)} dosya kıyasa girdi · {kucuk} dosya "
               f"<{args.min_shingle} shingle olduğu için DIŞARIDA (çok kısa)")
+        if toplam_dosya and kucuk / toplam_dosya > 0.05:
+            print(f"  ⚠ PAYDA UYARISI: korpusun %{100*kucuk/toplam_dosya:.0f}'i kıyasa "
+                  f"GİRMEDİ. Aşağıdaki\n    sonuç 'korpusta şu kadar mükerrer var' "
+                  f"demek DEĞİLDİR — dışarıdaki dosyalarda\n    mükerrer varsa bu koşum "
+                  f"onu göremez. --min-shingle düşürün.")
 
         # --- 2) Aday çiftler ----------------------------------------------------
         print("[2/3] aday çiftler…")
