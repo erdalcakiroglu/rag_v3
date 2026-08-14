@@ -13,11 +13,16 @@ NEDEN VAR: `default_top_k` 10→20 önerisi retrieval recall'üne dayanıyor
      (`args.get("top_k", 10)`), `_effective_top_k` yalnız `None` gelince config'e bakar.
      Bu probe onu ölçmez, kodda okunur; buradaki ölçüm "bütçe izin verse ne olurdu"dur.
 
-Bu yüzden pahalı uçtan uca koşumdan ÖNCE üç sayı ölçülür:
+Bu yüzden pahalı uçtan uca koşumdan ÖNCE ölçülür:
   • r@k        : retriever'ın döndürdüğü altın chunk oranı (bilinen sayı)
   • ctx@k      : CANLI bütçeyle LLM bağlamına GİREN altın chunk oranı  ← asıl sayı
-  • ctx@k(∞)   : bütçe sınırsızken bağlama giren oran (tavan)
+  • ctx@k(B)   : `--butce` ile süpürülen her B değerinde aynı oran
+  • ctx@k(∞)   : kesme yokken bağlama giren oran (tavan)
 `ctx@10 == ctx@20` ise k çevirmesi sessiz bir no-op'tur ve asıl kaldıraç bütçedir.
+
+İLK KOŞUMUN BULGUSU (2026-08-14, v1-bddk): kayıp k=20'de DEĞİL, BUGÜN k=10'da:
+r@10 0.569 → ctx@10 0.451, 30 kaydın 27'sinde tahliye var (54 chunk). Kesmesiz
+token medyanı 4695 > canlı bütçe 4000. Bu yüzden probe artık bütçe SÜPÜRÜR.
 
 SALT OKUR: DB'ye/config'e/golden'a HİÇBİR ŞEY YAZMAZ. Sınırsız-bütçe kolu için
 config nesnesinin process-içi `model_copy`'si kullanılır (kalıcı değildir).
@@ -32,6 +37,9 @@ from __future__ import annotations
 
 import argparse
 import sys
+
+
+_SINIRSIZ = 128_000  # context_token_budget üst sınırı (settings.py le=128000) = "kesme yok" kolu
 
 
 def _force_utf8() -> None:
@@ -62,6 +70,9 @@ def main() -> int:
     ap.add_argument("--golden", default="v1-bddk", help="DB set_version (vars. v1-bddk)")
     ap.add_argument("--k", type=int, nargs="+", default=[10, 20],
                     help="Denenecek top_k değerleri (vars. 10 20)")
+    ap.add_argument("--butce", type=int, nargs="+", default=[6000, 8000, 12000],
+                    help="Süpürülecek context_token_budget değerleri (canlı değer + ∞ "
+                         "her zaman eklenir)")
     ap.add_argument("--limit", type=int, default=0, help="Yalnız ilk N kayıt (0=hepsi)")
     args = ap.parse_args()
 
@@ -112,12 +123,21 @@ def main() -> int:
             print("  ⚠ eşleme %100 değil — eksik evidence altın kümeye GİRMEZ, "
                   "sayılar bu paydaya göre okunur.")
 
-        service = RetrievalService(db=db, config=cfg)
+        # Bütçe süpürmesi: canlı değer HER ZAMAN listede (karşılaştırma zemini),
+        # ∞ (128000) tavanı verir. Her bütçe için ayrı builder; token sayacı ORTAK
+        # (tokenizer yüklemesi pahalı) ve builder durumsuzdur.
+        butceler = sorted({butce, *args.butce} - {_SINIRSIZ})
         builder = ContextBuilder(db=db, config=cfg)
         counter = builder.token_counter
-        # Sınırsız kol: aynı builder'ın config'inin process-içi kopyası (kalıcı DEĞİL).
-        sinirsiz = ContextBuilder(db=db, config=cfg, token_counter=counter)
-        sinirsiz.retrieval_cfg = rc.model_copy(update={"context_token_budget": 128000})
+        kurucular: dict[int, ContextBuilder] = {butce: builder}
+        for b in [*butceler, _SINIRSIZ]:
+            if b in kurucular:
+                continue
+            kb = ContextBuilder(db=db, config=cfg, token_counter=counter)
+            # Process-içi kopya — DB'ye/config'e YAZMAZ, kalıcı değildir.
+            kb.retrieval_cfg = rc.model_copy(update={"context_token_budget": b})
+            kurucular[b] = kb
+        kolonlar = [*butceler, _SINIRSIZ]
 
         print("\n=== 2) KAYIT KAYIT ===")
         satir_sonuc: list[dict] = []
@@ -129,74 +149,86 @@ def main() -> int:
             for k in args.k:
                 bulunan = service.search_hybrid(kayit.question, top_k=k, user_ctx=uc)
                 ids = [int(c["chunk_id"]) for c in bulunan]
-                ctx = builder.build(bulunan)
-                ctx_inf = sinirsiz.build(bulunan)
-                kapsanan = _kapsanan(ctx["blocks"])
-                kapsanan_inf = _kapsanan(ctx_inf["blocks"])
-                hucre[k] = {
-                    "donen": len(ids),
-                    "r": len(altin & set(ids)),
-                    "ctx": len(altin & kapsanan),
-                    "ctx_inf": len(altin & kapsanan_inf),
-                    "blok": len(ctx["blocks"]),
-                    "dusen": len(ctx["dropped_chunk_ids"]),
-                    "tok": int(_blok_tokenlari(counter, ctx["blocks"]) * marj),
-                    "tok_inf": int(_blok_tokenlari(counter, ctx_inf["blocks"]) * marj),
-                }
+                ctx_map: dict[int, dict] = {}
+                for b in kolonlar:
+                    ctx = kurucular[b].build(bulunan)
+                    ctx_map[b] = {
+                        "ctx": len(altin & _kapsanan(ctx["blocks"])),
+                        "blok": len(ctx["blocks"]),
+                        "dusen": len(ctx["dropped_chunk_ids"]),
+                        "tok": int(_blok_tokenlari(counter, ctx["blocks"]) * marj),
+                    }
+                hucre[k] = {"donen": len(ids), "r": len(altin & set(ids)), "b": ctx_map}
             satir_sonuc.append(hucre)
             parcalar = " | ".join(
-                f"k={k}: dönen {hucre[k]['donen']:2d} blok {hucre[k]['blok']:2d} "
-                f"düşen {hucre[k]['dusen']:2d} tok {hucre[k]['tok']:5d} "
-                f"altın r/ctx/∞ {hucre[k]['r']}/{hucre[k]['ctx']}/{hucre[k]['ctx_inf']}"
+                f"k={k}: dönen {hucre[k]['donen']:2d} r={hucre[k]['r']} "
+                f"ctx({butce})={hucre[k]['b'][butce]['ctx']} "
+                f"düşen={hucre[k]['b'][butce]['dusen']:2d} "
+                f"tok∞={hucre[k]['b'][_SINIRSIZ]['tok']:5d} "
+                f"ctx∞={hucre[k]['b'][_SINIRSIZ]['ctx']}"
                 for k in args.k
             )
             print(f"  {kayit.id:12s} {kayit.category:20s} altın={len(altin)}  {parcalar}")
 
-        print("\n=== 3) KATEGORİ KIRILIMI (altın chunk oranı) ===")
-        basliklar = "".join(f"  r@{k:<5d} ctx@{k:<5d} ∞@{k:<5d}" for k in args.k)
-        print(f"  {'kategori':22s} {'n':>3s}{basliklar}")
+        payda_hep = sum(h["altin"] for h in satir_sonuc)
         kategoriler = sorted({h["kategori"] for h in satir_sonuc}) + ["GENEL"]
-        for kat in kategoriler:
-            grup = satir_sonuc if kat == "GENEL" else [h for h in satir_sonuc if h["kategori"] == kat]
-            payda = sum(h["altin"] for h in grup)
-            hucreler = ""
-            for k in args.k:
-                hucreler += (f"  {_oran(sum(h[k]['r'] for h in grup), payda):<7.3f}"
-                             f" {_oran(sum(h[k]['ctx'] for h in grup), payda):<8.3f}"
-                             f" {_oran(sum(h[k]['ctx_inf'] for h in grup), payda):<7.3f}")
-            print(f"  {kat:22s} {len(grup):3d}{hucreler}")
 
-        print("\n=== 4) BÜTÇE ===")
+        def _grup(kat: str) -> list[dict]:
+            return satir_sonuc if kat == "GENEL" else [h for h in satir_sonuc if h["kategori"] == kat]
+
+        print("\n=== 3) KATEGORİ × BÜTÇE (bağlama GİREN altın chunk oranı) ===")
+        print("  NOT: bu oran havuzlanmış (mikro) — retrieval_benchmark kayıt-başına "
+              "ortalar (makro).\n  İki araç birebir karşılaştırılmaz; buradaki karşılaştırma "
+              "kolonlar ARASINDADIR.")
         for k in args.k:
-            toklar = sorted(h[k]["tok_inf"] for h in satir_sonuc)
+            basliklar = "".join(f"  b{b:<7d}" if b != _SINIRSIZ else "  ∞       " for b in kolonlar)
+            print(f"\n  top_k={k}\n  {'kategori':22s} {'n':>3s}  {'r@k':<7s}{basliklar}")
+            for kat in kategoriler:
+                grup = _grup(kat)
+                payda = sum(h["altin"] for h in grup)
+                satir = f"  {_oran(sum(h[k]['r'] for h in grup), payda):<7.3f}"
+                for b in kolonlar:
+                    satir += f"  {_oran(sum(h[k]['b'][b]['ctx'] for h in grup), payda):<7.3f}"
+                print(f"  {kat:22s} {len(grup):3d}{satir}")
+
+        print("\n=== 4) BÜTÇE İHTİYACI ===")
+        for k in args.k:
+            toklar = sorted(h[k]["b"][_SINIRSIZ]["tok"] for h in satir_sonuc)
             p95 = toklar[min(len(toklar) - 1, int(len(toklar) * 0.95))] if toklar else 0
-            dusen = sum(h[k]["dusen"] for h in satir_sonuc)
-            dusen_kayit = sum(1 for h in satir_sonuc if h[k]["dusen"] > 0)
-            print(f"  k={k:<3d} tahliye: {dusen:3d} chunk / {dusen_kayit:2d} kayıt · "
-                  f"kesmesiz token medyan {toklar[len(toklar) // 2] if toklar else 0} "
-                  f"p95 {p95} (canlı bütçe {butce})")
+            print(f"  k={k:<3d} kesmesiz token: medyan {toklar[len(toklar) // 2] if toklar else 0} "
+                  f"· p95 {p95} · azami {toklar[-1] if toklar else 0}")
+            for b in kolonlar:
+                dusen = sum(h[k]["b"][b]["dusen"] for h in satir_sonuc)
+                kayip_kayit = sum(1 for h in satir_sonuc if h[k]["b"][b]["dusen"] > 0)
+                altin_kayip = sum(h[k]["r"] - h[k]["b"][b]["ctx"] for h in satir_sonuc)
+                ad = "∞" if b == _SINIRSIZ else str(b)
+                isaret = "  ← canlı" if b == butce else ""
+                print(f"       bütçe {ad:>7s}: tahliye {dusen:4d} chunk / {kayip_kayit:2d} kayıt "
+                      f"· BAĞLAMA GİREMEYEN ALTIN {altin_kayip:3d}{isaret}")
 
         print("\n=== OKUMA ===")
+        for k in args.k:
+            r = _oran(sum(h[k]["r"] for h in satir_sonuc), payda_hep)
+            canli = _oran(sum(h[k]["b"][butce]["ctx"] for h in satir_sonuc), payda_hep)
+            tavan = _oran(sum(h[k]["b"][_SINIRSIZ]["ctx"] for h in satir_sonuc), payda_hep)
+            yeter = next((b for b in kolonlar
+                          if _oran(sum(h[k]["b"][b]["ctx"] for h in satir_sonuc), payda_hep)
+                          >= tavan - 1e-9), _SINIRSIZ)
+            yeter_ad = "∞ (denenen bütçelerin hiçbiri yetmedi)" if yeter == _SINIRSIZ else str(yeter)
+            print(f"  k={k:<3d} retrieval {r:.3f} → canlı bağlam {canli:.3f} "
+                  f"(KAYIP {r - canli:+.3f}) · tavan {tavan:.3f} · tavanı veren en küçük "
+                  f"bütçe: {yeter_ad}")
         ilk, son = args.k[0], args.k[-1]
-        payda = sum(h["altin"] for h in satir_sonuc)
-        r_fark = _oran(sum(h[son]["r"] for h in satir_sonuc), payda) - \
-            _oran(sum(h[ilk]["r"] for h in satir_sonuc), payda)
-        c_fark = _oran(sum(h[son]["ctx"] for h in satir_sonuc), payda) - \
-            _oran(sum(h[ilk]["ctx"] for h in satir_sonuc), payda)
-        i_fark = _oran(sum(h[son]["ctx_inf"] for h in satir_sonuc), payda) - \
-            _oran(sum(h[ilk]["ctx_inf"] for h in satir_sonuc), payda)
-        print(f"  k {ilk}→{son}:  retrieval {r_fark:+.3f}  ·  CANLI bağlam {c_fark:+.3f}  ·  "
-              f"sınırsız bağlam {i_fark:+.3f}")
-        if abs(c_fark) < 1e-9 and r_fark > 1e-9:
-            print("  ⇒ k çevirmesi SESSİZ NO-OP: retriever daha çok altın getiriyor ama "
-                  "bütçe hepsini\n    tahliye ediyor. Asıl kaldıraç context_token_budget "
-                  "(ya da chunk başına token).")
-        elif c_fark > 1e-9:
-            print("  ⇒ k çevirmesi bağlama GERÇEKTEN altın taşıyor; uçtan uca karne ölçümü "
-                  "anlamlı.\n    (retrieval kazancı ≠ cevap kalitesi — karne yine de "
-                  "`eval run --agent-runs 3` ile ölçülmeli.)")
-        else:
-            print("  ⇒ k artışı bağlamı ZENGİNLEŞTİRMİYOR; ölçüm zeminini gözden geçirin.")
+        if len(args.k) > 1:
+            c_fark = _oran(sum(h[son]["b"][butce]["ctx"] for h in satir_sonuc), payda_hep) - \
+                _oran(sum(h[ilk]["b"][butce]["ctx"] for h in satir_sonuc), payda_hep)
+            i_fark = _oran(sum(h[son]["b"][_SINIRSIZ]["ctx"] for h in satir_sonuc), payda_hep) - \
+                _oran(sum(h[ilk]["b"][_SINIRSIZ]["ctx"] for h in satir_sonuc), payda_hep)
+            print(f"\n  k {ilk}→{son}: canlı bütçede {c_fark:+.3f} · sınırsız bütçede {i_fark:+.3f}")
+            if c_fark <= 1e-9 < i_fark:
+                print("  ⇒ SIRALAMA NET: bütçe ÖNCE, k SONRA. Bütçe sabitken k çevirmek "
+                      "kazanç vermez\n    (hatta tahliye artar); bütçe açılınca k'nın "
+                      "kazancı ORTAYA ÇIKAR.")
         return 0
     finally:
         db.close()
