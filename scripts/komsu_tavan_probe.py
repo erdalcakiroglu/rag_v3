@@ -125,6 +125,9 @@ def main() -> int:
     ap.add_argument("--pencere", default="1,2,3",
                     help="window adayları (virgüllü, vars. 1,2,3)")
     ap.add_argument("--k", type=int, default=10, help="recall@k (vars. 10)")
+    ap.add_argument("--tavan-only", action="store_true",
+                    help="rerank'i HİÇ çağırma; yalnız tavanı ölç (TEI maliyeti sıfır, "
+                         "saniyeler sürer). Kategori kırılımını ucuza almak için.")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
@@ -212,13 +215,16 @@ def main() -> int:
                             if komsu is not None and komsu not in var:
                                 var.add(komsu)
                                 genis.append(komsu)
-                uc = {"user_id": "tavan-probe", "tenant_id": "eval", "roles": ["eval"],
-                      "allowed_doc_scopes": [d["kayit"].doc_scope]}
-                sira = service.rerank(d["kayit"].question, genis, user_ctx=uc)
-                sirali = [int(s["chunk_id"]) for s in sira]
-                toplam_sira += 1
-                if sirali == genis:
-                    ayni_sira += 1
+                if args.tavan_only:
+                    sirali = []
+                else:
+                    uc = {"user_id": "tavan-probe", "tenant_id": "eval", "roles": ["eval"],
+                          "allowed_doc_scopes": [d["kayit"].doc_scope]}
+                    sira = service.rerank(d["kayit"].question, genis, user_ctx=uc)
+                    sirali = [int(s["chunk_id"]) for s in sira]
+                    toplam_sira += 1
+                    if sirali == genis:
+                        ayni_sira += 1
                 satirlar.append({
                     "id": kid, "kategori": d["kayit"].category,
                     # TAVAN: altın chunk havuza GİRDİ mi (sıralamadan bağımsız)
@@ -238,33 +244,57 @@ def main() -> int:
                       if kategori is None or s["kategori"] == kategori]
             return sum(secili) / len(secili) if secili else 0.0
 
-        print(f"\n=== IZGARA (n={len(kayitlar)}, havuz={args.havuz}, k={args.k}) ===")
-        print("TAVAN = altın chunk havuza girdi mi · REC = TEI sıralamasından sonra recall@k")
-        bas = f"{'T':>4} {'W':>3} {'havuz':>6} | {'TAVAN':>6} {'REC':>6} |"
-        for kat in kategoriler:
-            bas += f" {kat[:12]:>13}"
-        print(bas)
-        print("-" * len(bas))
-        for h in hucreler:
-            s = h["satirlar"]
-            boy = sum(x["havuz_boy"] for x in s) / len(s)
-            etiket = "taban" if h["pencere"] == 0 else ""
-            satir = (f"{h['tepe']:>4} {h['pencere']:>3} {boy:>6.0f} | "
-                     f"{_ort(s,'tavan'):>6.3f} {_ort(s,'recall'):>6.3f} |")
+        def _tablo(alan: str, baslik: str) -> None:
+            print(f"\n=== {baslik} (n={len(kayitlar)}, havuz={args.havuz}, k={args.k}) ===")
+            bas = f"{'T':>4} {'W':>3} {'havuz':>6} | {'GENEL':>6} |"
             for kat in kategoriler:
-                satir += f" {_ort(s,'recall',kat):>13.3f}"
-            print(satir + ("  ← " + etiket if etiket else ""))
+                bas += f" {kat[:12]:>13}"
+            print(bas)
+            print("-" * len(bas))
+            for h in hucreler:
+                s = h["satirlar"]
+                boy = sum(x["havuz_boy"] for x in s) / len(s)
+                satir = (f"{h['tepe']:>4} {h['pencere']:>3} {boy:>6.0f} | "
+                         f"{_ort(s, alan):>6.3f} |")
+                for kat in kategoriler:
+                    satir += f" {_ort(s, alan, kat):>13.3f}"
+                print(satir + ("  ← taban" if h["pencere"] == 0 else ""))
+
+        # İKİ AYRI TABLO — kategori kırılımı ŞART: toplam tavan artışının hangi
+        # kategoriden geldiğini görmeden "kaldıraç sıralayıcı" hükmü kurulamaz.
+        # synthesis'in tavanı zaten yüksekse sorun getirmede DEĞİL sıralamadadır;
+        # düşükse pencere doğru yerde ama yetersizdir. Aynı sayı, iki zıt karar.
+        _tablo("tavan", "TAVAN — altın chunk havuza girdi mi (sıralamadan bağımsız)")
+        if not args.tavan_only:
+            _tablo("recall", f"REC — TEI sıralamasından sonra recall@{args.k}")
+        else:
+            print("\n(--tavan-only: rerank hiç çağrılmadı, REC tablosu YOK)")
 
         taban = hucreler[0]
         t_tavan, t_rec = _ort(taban["satirlar"], "tavan"), _ort(taban["satirlar"], "recall")
         print("\n=== OKUMA ===")
         en_iyi_tavan = max(hucreler, key=lambda h: _ort(h["satirlar"], "tavan"))
-        en_iyi_rec = max(hucreler, key=lambda h: _ort(h["satirlar"], "recall"))
         d_tavan = _ort(en_iyi_tavan["satirlar"], "tavan") - t_tavan
-        d_rec = _ort(en_iyi_rec["satirlar"], "recall") - t_rec
-        print(f"  taban (W=0): TAVAN {t_tavan:.3f} · REC {t_rec:.3f}")
+        print(f"  taban (W=0): TAVAN {t_tavan:.3f}"
+              + ("" if args.tavan_only else f" · REC {t_rec:.3f}"))
         print(f"  en iyi TAVAN: T={en_iyi_tavan['tepe']} W={en_iyi_tavan['pencere']} "
               f"→ {_ort(en_iyi_tavan['satirlar'],'tavan'):.3f} ({d_tavan:+.3f})")
+        # KATEGORİ BAŞINA TAVAN AÇIĞI: tavan yüksek + karne düşük = sıralayıcı sorunu;
+        # tavan da düşükse getirme sorunu. Toplam sayı bu ikisini gizler.
+        for kat in kategoriler:
+            tv = _ort(taban["satirlar"], "tavan", kat)
+            en = _ort(en_iyi_tavan["satirlar"], "tavan", kat)
+            ek = "" if args.tavan_only else f" · REC {_ort(taban['satirlar'],'recall',kat):.3f}"
+            print(f"    {kat:20s} TAVAN taban {tv:.3f} → en iyi {en:.3f} ({en-tv:+.3f}){ek}")
+        if args.tavan_only:
+            print("  (REC ölçülmedi — hüküm için --tavan-only'siz koşum gerekir)")
+            if args.json:
+                print(json.dumps(
+                    [{"tepe": h["tepe"], "pencere": h["pencere"], "satirlar": h["satirlar"]}
+                     for h in hucreler], ensure_ascii=False, indent=2))
+            return 0
+        en_iyi_rec = max(hucreler, key=lambda h: _ort(h["satirlar"], "recall"))
+        d_rec = _ort(en_iyi_rec["satirlar"], "recall") - t_rec
         print(f"  en iyi REC  : T={en_iyi_rec['tepe']} W={en_iyi_rec['pencere']} "
               f"→ {_ort(en_iyi_rec['satirlar'],'recall'):.3f} ({d_rec:+.3f})")
         if d_tavan <= 0.001:
