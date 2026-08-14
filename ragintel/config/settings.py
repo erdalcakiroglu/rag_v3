@@ -834,6 +834,27 @@ class RetrievalConfig(BaseModel):
                     "derin havuz doğru adayı bulma şansıyla birlikte yanlış adayı öne alma "
                     "şansını da büyütür. 200 ölçülen tepe. passthrough'ta kullanılmaz.",
     )
+    rerank_neighbor_window: int = Field(
+        default=0, ge=0, le=5,
+        description="Havuzun tepesindeki chunk'ların KOMŞU chunk'ları da (öncesi+sonrası "
+                    "bu kadar) rerank havuzuna eklenir. 0 = kapalı. Ölçülen gerekçe "
+                    "(v1-bddk synthesis): altın chunk'ların %40'ı havuza hiç girmiyor ve "
+                    "bunların 9/10'unda doğru DOSYA zaten havuzda — yani belge bulunuyor, "
+                    "kanıtı taşıyan parça seçilemiyor. Havuz dışı chunk'ların ±1'de %50'si, "
+                    "±2'de %60'ı, ±5'te %70'i erişilebilir hâle gelir; kazancın çoğu ±1'de, "
+                    "genişletmenin getirisi yok. DİKKAT: bu havuza GİRME oranıdır, karne "
+                    "puanı değil — komşu sonra rerank'i de kazanmak zorundadır. Yalnız "
+                    "rerank açıkken çalışır; kaynak panelindeki bağlam penceresi AYRI "
+                    "ayardır (lookup_window).",
+    )
+    rerank_neighbor_top: int = Field(
+        default=20, ge=1, le=200,
+        description="Komşu genişletmesinin uygulanacağı havuz derinliği: yalnız hibrit "
+                    "sıranın ilk bu kadar chunk'ının komşuları çekilir. Havuzun TAMAMINA "
+                    "uygulamak TEI'ye gönderilen metni katlar (200 aday ±1 ile 600'e "
+                    "çıkabilir) ve gecikmeyi üçe katlar. rerank_pool'dan büyük vermek "
+                    "zararsızdır, havuz kadarıyla sınırlanır.",
+    )
     rerank_client_batch: int = Field(
         default=32, ge=1, le=512,
         description="Tek TEI isteğine konacak azami metin. TEI'nin --max-client-batch-size "

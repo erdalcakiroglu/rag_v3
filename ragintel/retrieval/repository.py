@@ -366,6 +366,71 @@ def lookup_document(
     ]
 
 
+def fetch_neighbours(
+    conn: psycopg.Connection,
+    *,
+    allowed_doc_scopes: list[str],
+    chunk_ids: list[int],
+    window: int,
+    exclude_ids: list[int] | None = None,
+) -> list[RetrievedChunk]:
+    """`chunk_ids`'in ±window komşularını getirir — havuzda ZATEN olanlar hariç.
+
+    NEDEN VAR (2026-08-14 ölçümü, v1-bddk synthesis): altın chunk'ların %40'ı 200
+    adaylık havuza hiç giremiyor ve bunların 9/10'unda doğru DOSYA zaten havuzda.
+    Yani retriever belgeyi buluyor, kanıtı taşıyan PARÇAYI seçemiyor. Havuz dışı
+    10 chunk'ın 5'i ±1 komşu mesafesinde; ±2'de 6, ±5'te 7 — kazancın çoğu ±1'de,
+    genişletmenin getirisi yok.
+
+    Bu bir TAVAN ölçümüdür, karne kazancı değil: kurtarılan chunk sonra rerank'i de
+    kazanmak zorunda ve cross-encoder synthesis sorularında altın chunk'ları AŞAĞI
+    itebiliyor. Gerçekleşen kazanç ancak A/B ile bilinir.
+
+    GÜVENLİK: komşular da `doc_scope` süzgecinden geçer — pencere, kullanıcının
+    göremeyeceği bir chunk'ı yan kapıdan havuza sokamaz.
+    """
+    if not allowed_doc_scopes or not chunk_ids or window <= 0:
+        return []
+    haric = list(exclude_ids) if exclude_ids else list(chunk_ids)
+    rows = conn.execute(
+        """
+        WITH secili AS (
+            SELECT file_id, chunk_index FROM core_chunks WHERE chunk_id = ANY(%s)
+        )
+        SELECT DISTINCT ON (n.chunk_id)
+            n.chunk_id, n.chunk_text,
+            f.file_id, f.file_name, n.page_number, n.section_title, f.doc_version
+        FROM secili s
+        JOIN core_chunks n
+          ON n.file_id = s.file_id
+         AND n.chunk_index BETWEEN s.chunk_index - %s AND s.chunk_index + %s
+        JOIN core_files f ON f.file_id = n.file_id
+        WHERE f.doc_scope = ANY(%s)
+          AND NOT (n.chunk_id = ANY(%s))
+        ORDER BY n.chunk_id;
+        """,
+        (chunk_ids, int(window), int(window), allowed_doc_scopes, haric),
+    ).fetchall()
+    return [
+        {
+            "chunk_id": row[0],
+            "text": row[1],
+            # Skor 0.0: komşunun hibrit skoru YOKTUR. Havuzun KUYRUĞUNA eklenir ki
+            # rerank kapalıysa / fail-open'a düşerse top_k'yı hiç değiştirmesin.
+            "score": 0.0,
+            "source": {
+                "file_id": row[2],
+                "file_name": row[3],
+                "page": row[4],
+                "section": row[5],
+                "version": row[6],
+            },
+            "retrieval_method": "lookup",
+        }
+        for row in rows
+    ]
+
+
 def rerank_texts(
     conn: psycopg.Connection,
     *,

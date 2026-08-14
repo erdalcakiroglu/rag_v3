@@ -61,6 +61,15 @@ class RetrievalStore(Protocol):
         page: int | None = None,
     ) -> list[RetrievedChunk]: ...
 
+    def fetch_neighbours(
+        self,
+        *,
+        allowed_doc_scopes: list[str],
+        chunk_ids: list[int],
+        window: int,
+        exclude_ids: list[int] | None = None,
+    ) -> list[RetrievedChunk]: ...
+
     def rerank_texts(
         self,
         *,
@@ -145,6 +154,23 @@ class PgRetrievalStore:
                 window=window,
                 file_id=file_id,
                 page=page,
+            )
+
+    def fetch_neighbours(
+        self,
+        *,
+        allowed_doc_scopes: list[str],
+        chunk_ids: list[int],
+        window: int,
+        exclude_ids: list[int] | None = None,
+    ) -> list[RetrievedChunk]:
+        with self.db.connection() as conn:
+            return repo.fetch_neighbours(
+                conn,
+                allowed_doc_scopes=allowed_doc_scopes,
+                chunk_ids=chunk_ids,
+                window=window,
+                exclude_ids=exclude_ids,
             )
 
     def rerank_texts(
@@ -359,7 +385,9 @@ class RetrievalService:
                 sparse_variant=sparse_variant,
             )
             db_ms = int((time.perf_counter() - t0) * 1000)
+            komsu_ek = 0
             if havuz > top_k and chunks:
+                chunks, komsu_ek = self._komsu_genislet(chunks, allowed)
                 chunks = self._rerank_and_trim(query, chunks, top_k, user_ctx=user_ctx)
             set_span_attributes(
                 retrieval_method="hybrid",
@@ -368,12 +396,49 @@ class RetrievalService:
                 result_count=len(chunks),
                 fail_closed=False,
                 rank_detail=self._hybrid_rank_detail(chunks),
+                neighbor_added=komsu_ek,
             )
             self.log.info(
                 "retrieval_timing", method="hybrid", query_embed_ms=embed_ms,
-                db_ms=db_ms, result_count=len(chunks),
+                db_ms=db_ms, result_count=len(chunks), neighbor_added=komsu_ek,
             )
             return chunks
+
+    def _komsu_genislet(
+        self, chunks: list[RetrievedChunk], allowed: list[str]
+    ) -> tuple[list[RetrievedChunk], int]:
+        """Havuzun tepesindeki chunk'ların komşularını havuzun KUYRUĞUNA ekler.
+
+        Rerank'ten ÖNCE çağrılır — amaç cross-encoder'ın komşuyu da skorlayabilmesi.
+        Sonra eklenirse komşu hiç değerlendirilmez, sadece top_k'yı kirletirdi.
+
+        Kuyruğa eklenmesi kasıtlı: komşunun hibrit skoru yoktur ve rerank fail-open
+        ile passthrough'a düşerse hibrit sıra korunur, komşular top_k'nın dışında
+        kalır. Yani bu ayar AÇIKKEN BİLE rerank çökerse davranış değişmez.
+
+        Dönen ikinci değer eklenen komşu sayısıdır — log/span'de görünür. Sessiz
+        kalırsa "ayar açık mıydı, kaç chunk eklendi" sorusu ölçüm anında
+        cevaplanamaz ve A/B kolları birbirinden ayırt edilemez.
+        """
+        pencere = int(getattr(self.retrieval_cfg, "rerank_neighbor_window", 0) or 0)
+        if pencere <= 0:
+            return chunks, 0
+        tepe = int(getattr(self.retrieval_cfg, "rerank_neighbor_top", 20) or 20)
+        tohum = [int(c["chunk_id"]) for c in chunks[:tepe]]
+        mevcut = sorted({int(c["chunk_id"]) for c in chunks})
+        try:
+            ek = self.store.fetch_neighbours(
+                allowed_doc_scopes=allowed,
+                chunk_ids=tohum,
+                window=pencere,
+                exclude_ids=mevcut,
+            )
+        except Exception as exc:  # noqa: BLE001 — genişletme OPSİYONEL, aramayı düşürmez
+            self.log.warning("neighbor_expand_failed", error=str(exc))
+            return chunks, 0
+        if not ek:
+            return chunks, 0
+        return list(chunks) + list(ek), len(ek)
 
     def _rerank_and_trim(
         self,
