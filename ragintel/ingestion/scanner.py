@@ -156,10 +156,30 @@ class FolderScanner:
             mark_file_failed(conn, file_id, reason)
 
     # -- internals ------------------------------------------------------------
-    @staticmethod
-    def _iter_files(folder: str, recursive: bool):
+    def _iter_files(self, folder: str, recursive: bool):
+        """Taranacak dosyalar — DEPONUN KENDİ ARŞİVİ (`storage_root/raw`) HARİÇ.
+
+        Neden dışlanıyor: izlenen klasör depo köküyle aynı (ya da onu kapsıyor)
+        olabilir; `/datafile/ragintel/storage` canlıda tam olarak böyle. O durumda
+        `os.walk` `storage/raw/<sha>/…` altındaki KENDİ kopyalarımızı da dosya sanar.
+        Checksum dedup bunu normalde SKIP'ler, ama bir dosyanın `core_files` satırı
+        silinince checksum kaydı da gider: sonraki tarama dosyayı kendi arşivinden
+        DİRİLTİR. 2026-08-14'te tam bu oldu — 08-13'te elenen altı mükerrer Bankacılık
+        Kanunu baskısı geri geldi ve retrieval r@10'u 0.682'den 0.618'e düşürdü.
+        Arşiv bir GİRDİ kaynağı değil; silme kararı kalıcı olmalı.
+        """
+        kok = os.path.abspath(self.storage_root)
+        arsiv = os.path.join(kok, "raw")
         if recursive:
-            for root, _dirs, files in os.walk(folder):
+            for root, dirs, files in os.walk(folder):
+                if os.path.abspath(root) == kok:
+                    atlanan = [d for d in dirs if os.path.join(kok, d) == arsiv]
+                    if atlanan:
+                        dirs[:] = [d for d in dirs if os.path.join(kok, d) != arsiv]
+                        self.log.info("skip_storage_archive", folder=arsiv)
+                if os.path.abspath(root) == arsiv or os.path.abspath(root).startswith(
+                        arsiv + os.sep):
+                    continue
                 for name in sorted(files):
                     yield os.path.join(root, name)
         else:

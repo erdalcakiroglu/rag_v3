@@ -40,7 +40,8 @@ def _cmd_retrieval(args) -> int:
     from ..retrieval import RetrievalService
     from . import repository as repo
     from .retrieval_benchmark import (
-        ServiceRetriever, from_db_rows, from_golden_records, map_gold_chunks, run_benchmark, format_summary,
+        ServiceRetriever, corpus_fingerprint, from_db_rows, from_golden_records,
+        map_gold_chunks, run_benchmark, format_summary,
     )
 
     db = _open_db()
@@ -62,12 +63,15 @@ def _cmd_retrieval(args) -> int:
 
         with db.connection() as conn:
             mapping = map_gold_chunks(conn, records)
+            # Paydayı ilan et: hangi korpusta ölçtüğümüz karnenin üstünde yazsın.
+            corpus = corpus_fingerprint(conn, [r.doc_scope for r in records])
 
         cfg = load_config(db_reader=make_db_reader(db))
         service = RetrievalService(db=db, config=cfg)
         retriever = ServiceRetriever(service, args.variant)
         result = run_benchmark(records, mapping, retriever, top_k=args.top_k)
         result["source"] = src
+        result["corpus"] = corpus
 
         if args.json:
             print(json.dumps(result, ensure_ascii=False, indent=2, default=str))

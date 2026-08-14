@@ -100,6 +100,35 @@ def map_gold_chunks(conn, records: list[EvalRecord]) -> GoldMapping:
     return GoldMapping(gold_by_id=gold, total_evidence=total, mapped_evidence=mapped, unmapped=unmapped)
 
 
+# --- Korpus parmak izi --------------------------------------------------------
+def corpus_fingerprint(conn, doc_scopes: Sequence[str] | None = None) -> dict:
+    """Karnenin ölçüldüğü KORPUSU ilan eder: dosya/chunk sayısı + son değişiklik.
+
+    NEDEN VAR: 2026-08-14'te aynı golden, aynı config ve aynı uçla alınmış iki karne
+    (GENEL r@10 0.682 ve 0.618) yan yana kıyaslandı ve fark rerank'e yazıldı. Kök
+    başkaydı: iki koşum FARKLI korpusta olmuş — arada toplu bir tarama koşup 08-13'te
+    silinen altı mükerrer Bankacılık Kanunu baskısını geri getirmişti (1720 chunk,
+    korpusun %3.8'i). Karne yalnız quote eşleme oranını basıyordu; hangi korpusta
+    ölçtüğünü hiç söylemiyordu, bu yüzden kıyaslanamaz iki sayı kıyaslanabilir SANILDI.
+    Aynı kusur ailesi: karne kendi paydasını ilan etmeli.
+    """
+    dosya = conn.execute("SELECT count(*) FROM core_files;").fetchone()[0]
+    chunk = conn.execute("SELECT count(*) FROM core_chunks;").fetchone()[0]
+    son = conn.execute(
+        "SELECT max(greatest(created_at, updated_at)) FROM core_files;").fetchone()[0]
+    kapsam: dict[str, dict[str, int]] = {}
+    for sc in sorted({s for s in (doc_scopes or []) if s}):
+        d = conn.execute(
+            "SELECT count(*) FROM core_files WHERE doc_scope = %s;", (sc,)).fetchone()[0]
+        c = conn.execute(
+            "SELECT count(*) FROM core_chunks c JOIN core_files f USING (file_id) "
+            "WHERE f.doc_scope = %s;", (sc,)).fetchone()[0]
+        kapsam[sc] = {"files": int(d), "chunks": int(c)}
+    return {"files": int(dosya), "chunks": int(chunk),
+            "last_change": son.isoformat() if son is not None else None,
+            "by_scope": kapsam}
+
+
 # --- Retriever ----------------------------------------------------------------
 class Retriever(Protocol):
     name: str
@@ -227,6 +256,13 @@ def format_summary(result: dict) -> str:
     gm = result["gold_mapping"]
     L.append(f"Quote→chunk eşleme: {gm['mapped']}/{gm['total_evidence']} = %{gm['rate']*100:.1f}"
              + ("  ⚠ <%95 → İP-2.1 geri bildirim" if gm["rate"] < 0.95 else ""))
+    cf = result.get("corpus")
+    if cf:
+        kapsam = " · ".join(f"{s}: {v['files']}/{v['chunks']}"
+                            for s, v in (cf.get("by_scope") or {}).items())
+        L.append(f"KORPUS: {cf['files']} dosya · {cf['chunks']} chunk · son değişiklik "
+                 f"{cf['last_change']}" + (f" · kapsam(dosya/chunk) {kapsam}" if kapsam else ""))
+        L.append("  (bu satır farklı koşumlarda AYNI değilse karneler kıyaslanamaz)")
     cols = [f"recall@{k}" for k in ks] + ["mrr"] + [f"ndcg@{k}" for k in ks]
     header = "kategori".ljust(20) + "n   " + "  ".join(c.ljust(9) for c in cols)
     L.append(header)
