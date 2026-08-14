@@ -219,6 +219,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.neden:
             print(f"havuz dışı kırılımı: belge bulunuyor-yanlış parça {toplam['belge_var']} "
                   f"· belge hiç bulunamıyor {toplam['belge_yok']}")
+            hd = toplam["havuz_disi"] or 1
+            print("pencere genişletme KAZANIMI (havuz dışı chunk'lardan kaçı kurtulur): "
+                  + " · ".join(f"±{e} → {toplam[f'pencere_{e}']}/{toplam['havuz_disi']} "
+                               f"(%{toplam[f'pencere_{e}']/hd*100:.0f})" for e in (1, 2, 3, 5)))
 
         print("\n--- OKUMA ---")
         buyuk = max(toplam["havuz_disi"], toplam["geride"])
@@ -236,8 +240,17 @@ def main(argv: list[str] | None = None) -> int:
             if toplam["belge_var"] > toplam["belge_yok"]:
                 print("HAVUZ DIŞI KIRILIMI: baskın olan BELGE BULUNUYOR-YANLIŞ PARÇA.\n"
                       "  Doğru dosya havuzda ama kanıt taşıyan chunk'ı değil. Bu bir\n"
-                      "  chunk SEÇİMİ sorunu: komşu-chunk genişletme ya da belge başına\n"
-                      "  birden çok chunk alma bunu doğrudan kurtarır.")
+                      "  chunk SEÇİMİ sorunu.")
+                p2 = toplam["pencere_2"]
+                if p2 >= max(1, toplam["havuz_disi"] // 2):
+                    print(f"  ⇒ KOMŞU PENCERESİ İŞE YARAR: havuz dışı {toplam['havuz_disi']} "
+                          f"chunk'ın {p2}'i ±2 komşulukta. Küçük bir pencere kazancın "
+                          f"çoğunu alır.")
+                else:
+                    print(f"  ⇒ KOMŞU PENCERESİ YETMEZ: ±2 komşulukta yalnız {p2}/"
+                          f"{toplam['havuz_disi']} var. Kanıt chunk'ları havuzdaki "
+                          f"kardeşlerinden UZAK; pencere yerine belge başına daha çok "
+                          f"chunk alma (per-doc kota) düşünülmeli.")
             else:
                 print("HAVUZ DIŞI KIRILIMI: baskın olan BELGE HİÇ BULUNAMIYOR.\n"
                       "  Dosyadan tek chunk bile havuza girmiyor ⇒ kusur chunk seçiminde\n"
@@ -269,11 +282,14 @@ def _neden_raporu(conn, rec, disarida, havuz, h_sira, yerler, normalize_for_sear
         terim/anlam uyuşması (sparse varyantı, füzyon ağırlığı, sorgu genişletme).
     """
     rows = conn.execute(
-        "SELECT c.chunk_id, f.file_name FROM core_chunks c JOIN core_files f "
-        "USING (file_id) WHERE c.chunk_id = ANY(%s);", (list(havuz),)).fetchall()
+        "SELECT c.chunk_id, f.file_name, c.chunk_index FROM core_chunks c "
+        "JOIN core_files f USING (file_id) WHERE c.chunk_id = ANY(%s);",
+        (list(havuz),)).fetchall()
     havuz_dosya: dict[str, list[int]] = defaultdict(list)
-    for cid, fad in rows:
+    havuz_idx: dict[int, int] = {}
+    for cid, fad, cidx in rows:
         havuz_dosya[str(fad)].append(int(cid))
+        havuz_idx[int(cid)] = int(cidx)
 
     q_terim = {t for t in normalize_for_search(rec.question).split() if len(t) > 2}
     for cid in disarida:
@@ -300,6 +316,24 @@ def _neden_raporu(conn, rec, disarida, havuz, h_sira, yerler, normalize_for_sear
         print(f"        {len(metin)} karakter / {tok} token · soru terimi örtüşmesi "
               f"{len(ortak)}/{len(q_terim)} {sorted(ortak)[:6]}")
         print(f"        {tani}")
+
+        # KOMŞU MESAFESİ: pencere genişletmenin bu chunk'ı kurtarıp kurtarmayacağını
+        # kod yazmadan söyleyen tek sayı. Mesafe 1-2 ise ±k pencere işe yarar;
+        # 20 ise yaramaz ve o yolu hiç açmamak gerekir.
+        komsu_idx = sorted({havuz_idx[c] for c in kardes if c in havuz_idx})
+        if komsu_idx and idx >= 0:
+            mesafe = min(abs(k - idx) for k in komsu_idx)
+            toplam[f"mesafe_{min(mesafe, 9)}"] += 1
+            for esik in (1, 2, 3, 5):
+                if mesafe <= esik:
+                    toplam[f"pencere_{esik}"] += 1
+            hukum = ("±1 pencere KURTARIR" if mesafe <= 1 else
+                     f"±{mesafe} gerekir" if mesafe <= 5 else
+                     "pencere KURTARMAZ (çok uzak)")
+            print(f"        havuzdaki kardeş index'ler {komsu_idx[:12]} · "
+                  f"en yakın komşu mesafesi {mesafe} → {hukum}")
+        else:
+            toplam["mesafe_yok"] += 1
         print(f"        metin: {ozet!r}")
 
 
