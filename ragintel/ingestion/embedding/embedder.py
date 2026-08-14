@@ -111,6 +111,15 @@ class OllamaEmbedder:
                  timeout: float = 30.0, client=None, api_key: str = ""):
         if not base_url:
             raise EmbeddingBackendError("Ollama base_url tanımsız (RAGINTEL_OLLAMA_BASE_URL)")
+        if not model:
+            # SESSİZ KESME KAPISI: boş model `ollama_wire_tag("")` üzerinden `":latest"`
+            # olur ve /api/embed 500'ü ~575µs'de döner — kaynak sorunu gibi okunur.
+            # Ölçüldü (2026-08-14): eval yolunda TÜM RAGAS metriklerini sessizce
+            # sıfırlıyordu. Boş model artık çağrı ANINDA patlar.
+            raise EmbeddingBackendError(
+                "embedding modeli boş — `embedding.model` (DB otoritesi) ya da "
+                "RAGINTEL_OLLAMA_MODEL verilmeli"
+            )
         self.base_url = base_url.rstrip("/")
         self.hf_model = model
         self.model = ollama_wire_tag(model)   # M-9: /api/embed'e giden etiket (`bge-m3:latest`)

@@ -26,6 +26,10 @@ from ..observability.logging import get_logger
 JUDGE_LABEL = "groq/dev-mode"  # geriye-uyum sabiti; gerçek etiket dev_label() ile üretilir
 _LOG = get_logger("eval.judge")
 
+# Son çare: ne çağıran ne de `.env` model verdiyse. Korpusun gömme modeliyle AYNI
+# olmalı (ADR-012) — answer_relevancy kosinüsü aynı uzayda ölçülür.
+_VARSAYILAN_EMBED = "BAAI/bge-m3"
+
 
 # M-9: judge'ın nerede koştuğu VERİ EGEMENLİĞİ meselesidir — belge içeriği judge'a
 # gider. Dış sağlayıcılar AÇIK LİSTE ile tanınır; listede olmayan uç KENDİ ALTYAPIMIZ
@@ -144,9 +148,17 @@ class Judge:
 
 # --- Embedding (answer_relevancy için bge-m3, ADR-012 tutarlılığı) ------------
 class JudgeEmbedder:
-    def __init__(self):
+    """`model` = `embedding.model` (DB, TEK OTORİTE). Çağıran vermezse `OllamaSettings`
+    bootstrap-fallback'ine düşülür — ki o alanın BOŞ olması normaldir (M-4), bu yüzden
+    son çare olarak repo varsayılanı kullanılır. Eskiden burada koşulsuz `s.model`
+    geçiliyordu: host'ta (konteyner dışı) o değer boş olduğu için uca `":latest"`
+    gidiyor ve answer_relevancy her cevaplanan kayıtta 500 alıyordu.
+    """
+
+    def __init__(self, model: str = ""):
         s = OllamaSettings()
-        self._emb = OllamaEmbedder(s.base_url, model=s.model, timeout=s.timeout,
+        self._emb = OllamaEmbedder(s.base_url, model=model or s.model or _VARSAYILAN_EMBED,
+                                   timeout=s.timeout,
                                    api_key=s.api_key)   # M-9: auth'lu H200 ucu
 
     def embed(self, texts: list[str]) -> list[list[float]]:

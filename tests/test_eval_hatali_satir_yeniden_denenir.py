@@ -37,7 +37,10 @@ class _Grup:
 class _SahteCfg:
     def group(self, ad: str):
         return {"eval": _Grup(ctx_cap=10, judge_model="j"),
-                "agent": _Grup(temperature=0.0)}[ad]
+                "agent": _Grup(temperature=0.0),
+                # judge gömücüsü model otoritesini buradan alır (bkz.
+                # test_judge_embed_model_otoritesi.py)
+                "embedding": _Grup(model="BAAI/bge-m3")}[ad]
 
 
 class _SahteDB:

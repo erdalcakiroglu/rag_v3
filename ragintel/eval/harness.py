@@ -350,7 +350,8 @@ def evaluate(*, version: str = "v0", limit: int | None = None, runs: int = 3,
 
         judge = Judge(model=judge_model or LiteLLMSettings().model
                       or cfg.group("eval").judge_model or DEFAULT_JUDGE_MODEL)
-        embedder = JudgeEmbedder()
+        # Gömme modeli DB otoritesinden (M-4) — retrieval/service.py:211 ile aynı idiom.
+        embedder = JudgeEmbedder(model=cfg.group("embedding").model)
         t0 = time.perf_counter()
         ck = _load_ck(out_path)
         queue = answerable + unanswerable
